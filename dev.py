@@ -2,6 +2,8 @@
 """Run the BIGPOPA backend and frontend dev servers together."""
 from __future__ import annotations
 
+import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -25,6 +27,27 @@ SERVICES = (
 
 processes: list[tuple[str, subprocess.Popen[bytes]]] = []
 _shutting_down = False
+
+
+def _ensure_executable(cmd: list[str], *, service_name: str) -> list[str]:
+    """Return a command list whose first element resolves to an executable."""
+
+    if not cmd:
+        raise ValueError(f"Service '{service_name}' did not specify a command to run.")
+
+    exec_path = shutil.which(cmd[0])
+    if exec_path is None and os.name == "nt":
+        for ext in (".cmd", ".bat", ".exe"):
+            exec_path = shutil.which(cmd[0] + ext)
+            if exec_path:
+                break
+
+    if exec_path is None:
+        raise FileNotFoundError(
+            f"Unable to locate executable '{cmd[0]}' for the {service_name} service."
+        )
+
+    return [exec_path, *cmd[1:]]
 
 
 def _shutdown(signum: int | None = None, frame: object | None = None, *, reason: str | None = None, exit_code: int = 0) -> None:
@@ -68,7 +91,7 @@ def main() -> None:
 
     for service in SERVICES:
         name = service["name"]
-        cmd = service["cmd"]
+        cmd = _ensure_executable(service["cmd"], service_name=name)
         cwd = service["cwd"]
         print(f"Starting {name} server: {' '.join(cmd)}")
         try:
