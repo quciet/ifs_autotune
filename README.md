@@ -10,9 +10,19 @@ Local-first application for automating and optimizing IFs model runs.
    cd ifs_autotune
    ```
 
-2. **Start the backend API**
+2. **(Optional) Set up a Python virtual environment**
+   - Using the built-in `venv` module:
+     ```bash
+     cd backend
+     python -m venv .venv
+     source .venv/bin/activate  # On Windows use: .venv\\Scripts\\activate
+     ```
+   - When you're done, exit the virtual environment with `deactivate`.
+   - Using Conda or another environment manager works as well—just create and activate your environment before installing dependencies.
+   - If you prefer to work without a virtual environment, ensure the following commands are run in the Python environment where you want the dependencies installed.
+
+3. **Start the backend API**
    - Ensure you have Python 3.11 or later installed.
-   - (Optional but recommended) create and activate a virtual environment.
    - Install dependencies and launch the FastAPI server:
      ```bash
      cd backend
@@ -21,7 +31,7 @@ Local-first application for automating and optimizing IFs model runs.
      ```
    - The backend exposes a health endpoint at http://localhost:8000/health which should respond with `{ "status": "ok" }`.
 
-3. **Start the frontend**
+4. **Start the frontend**
    - Ensure you have Node.js 18+ and npm available.
    - In a new terminal window, install dependencies and run the dev server:
      ```bash
