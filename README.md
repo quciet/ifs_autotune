@@ -11,3 +11,6 @@ Open http://localhost:8000/health and expect {"status":"ok"}.
 ## Tests
 cd backend
 pytest -q
+
+## Stubbed IFs run
+POST /ifs/run with a JSON body (e.g. {"parameters":{"tfrmin":1.5}}) returns a run_id, a toy metric, and a fake output.
