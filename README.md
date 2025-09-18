@@ -21,27 +21,32 @@ Local-first application for automating and optimizing IFs model runs.
    - Using Conda or another environment manager works as well—just create and activate your environment before installing dependencies.
    - If you prefer to work without a virtual environment, ensure the following commands are run in the Python environment where you want the dependencies installed.
 
-3. **Start the backend API**
+3. **Install backend dependencies**
    - Ensure you have Python 3.11 or later installed.
-   - Install dependencies and launch the FastAPI server:
+   - Install the FastAPI app in editable mode:
      ```bash
      cd backend
      pip install -e .
-     uvicorn app.main:app --reload
+     cd ..
      ```
-   - The backend exposes a health endpoint at http://localhost:8000/health which should respond with `{ "status": "ok" }`.
+   - The backend exposes a health endpoint at http://localhost:8000/health which should respond with `{ "status": "ok" }` once the server is running.
 
-4. **Start the frontend**
+4. **Install frontend dependencies**
    - Ensure you have Node.js 18+ and npm available.
-   - In a new terminal window, install dependencies and run the dev server:
+   - Install packages with:
      ```bash
      cd frontend
      npm install
-     npm run dev
+     cd ..
      ```
-   - Open http://localhost:5173 in your browser. Type an IFs folder path into the form and click **Validate** to send a request to the backend checker.
 
-Once both servers are running, the frontend will communicate with the backend API locally.
+5. **Launch the combined dev environment**
+   - Run the helper script from the project root to start both servers with hot reload:
+     ```bash
+     python dev.py
+     # or, if you prefer, ./dev.py
+     ```
+   - The backend will be available at http://localhost:8000 and the frontend at http://localhost:5173. Open the frontend in your browser, type an IFs folder path into the form, and click **Validate** to send a request to the backend checker.
 
 ## Tests
 
