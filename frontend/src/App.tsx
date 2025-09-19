@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { checkIFsFolder, type CheckResponse } from "./api";
 
 function App() {
@@ -6,6 +6,19 @@ function App() {
   const [result, setResult] = useState<CheckResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const input = fileInputRef.current;
+    if (!input) {
+      return;
+    }
+
+    input.setAttribute("directory", "");
+    input.setAttribute("webkitdirectory", "");
+    input.setAttribute("mozdirectory", "");
+    input.multiple = true;
+  }, []);
 
   const handleFolderChange = (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -42,6 +55,12 @@ function App() {
     setResult(null);
     setError(null);
     event.target.value = "";
+  };
+
+  const handlePathInputChange = (event: ChangeEvent<HTMLInputElement>) => {
+    setPath(event.target.value);
+    setResult(null);
+    setError(null);
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -81,19 +100,21 @@ function App() {
           <label className="file-picker">
             <span>Browse</span>
             <input
+              ref={fileInputRef}
               type="file"
               className="file-input"
-              webkitdirectory
               onChange={handleFolderChange}
             />
           </label>
           <div className="actions">
-            <div
-              className={`selected-path${path ? "" : " empty"}`}
-              title={path || undefined}
-            >
-              {path ? path : "No folder selected"}
-            </div>
+            <input
+              type="text"
+              className="path-input"
+              placeholder="Enter or paste a folder path"
+              value={path}
+              onChange={handlePathInputChange}
+              spellCheck={false}
+            />
             <button type="submit" className="button" disabled={loading}>
               {loading ? "Validating..." : "Validate"}
             </button>
