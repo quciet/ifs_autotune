@@ -1,7 +1,12 @@
+export type RequirementCheck = {
+  file: string;
+  exists: boolean;
+};
+
 export type CheckResponse = {
   valid: boolean;
   base_year?: number | null;
-  missing?: string[];
+  requirements: RequirementCheck[];
 };
 
 export async function checkIFsFolder(path: string): Promise<CheckResponse> {
