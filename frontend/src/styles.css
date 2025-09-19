@@ -52,8 +52,36 @@ body {
   align-items: center;
 }
 
+.file-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.75rem;
+  background: linear-gradient(135deg, #5a67d8 0%, #805ad5 100%);
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  white-space: nowrap;
+}
+
+.file-picker:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px rgba(90, 103, 216, 0.25);
+}
+
+.file-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
 .text-input {
   flex: 1;
+  min-width: 0;
   padding: 0.75rem 1rem;
   border: 1px solid #cbd5e0;
   border-radius: 0.75rem;
@@ -117,37 +145,83 @@ body {
   margin-bottom: 1rem;
 }
 
-.result-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 1.25rem;
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.status.success {
+  color: #276749;
+  background: rgba(72, 187, 120, 0.15);
+}
+
+.status.error {
+  color: #c53030;
+  background: rgba(245, 101, 101, 0.15);
+}
+
+.base-year {
+  font-weight: 600;
+  color: #2d3748;
   margin-bottom: 1rem;
 }
 
-.value {
-  display: inline-block;
-  margin-top: 0.4rem;
-  font-size: 1.1rem;
+.requirements h3 {
+  margin-bottom: 0.75rem;
+  color: #2d3748;
 }
 
-.value.success {
-  color: #2f855a;
+.requirements ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
 }
 
-.value.error {
+.requirements .item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: 0.75rem;
+  font-weight: 500;
+}
+
+.requirements .item.success {
+  background: rgba(72, 187, 120, 0.12);
+  color: #276749;
+}
+
+.requirements .item.error {
+  background: rgba(245, 101, 101, 0.12);
   color: #c53030;
 }
 
-.missing ul {
-  margin: 0.5rem 0 0;
-  padding-left: 1.25rem;
-  color: #4a5568;
+.requirements .icon {
+  font-size: 1.1rem;
+  line-height: 1;
 }
 
 @media (max-width: 600px) {
   .input-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .file-picker {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .text-input {
+    width: 100%;
   }
 
   .button {

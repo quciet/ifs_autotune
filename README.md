@@ -46,7 +46,7 @@ Local-first application for automating and optimizing IFs model runs.
      python dev.py
      # or, if you prefer, ./dev.py
      ```
-   - The backend will be available at http://localhost:8000 and the frontend at http://localhost:5173. Open the frontend in your browser, type an IFs folder path into the form, and click **Validate** to send a request to the backend checker.
+  - The backend will be available at http://localhost:8000 and the frontend at http://localhost:5173. Open the frontend in your browser, browse to your IFs installation with the folder picker or type the path manually, and click **Validate** to send a request to the backend checker.
    - During development, the frontend at http://localhost:5173 must call backend APIs at http://localhost:8000. CORS middleware has been enabled to allow this. In production, the frontend can be built and served from the backend directly.
 
 ## Tests
