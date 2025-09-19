@@ -1,5 +1,11 @@
-import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useRef, useState } from "react";
 import { checkIFsFolder, type CheckResponse } from "./api";
+
+const directoryAttributes = {
+  webkitdirectory: "true",
+  directory: "",
+  mozdirectory: "",
+} satisfies Record<string, string>;
 
 function App() {
   const [path, setPath] = useState("");
@@ -7,18 +13,6 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    const input = fileInputRef.current;
-    if (!input) {
-      return;
-    }
-
-    input.setAttribute("directory", "");
-    input.setAttribute("webkitdirectory", "");
-    input.setAttribute("mozdirectory", "");
-    input.multiple = true;
-  }, []);
 
   const handleFolderChange = (event: ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
@@ -104,6 +98,8 @@ function App() {
               type="file"
               className="file-input"
               onChange={handleFolderChange}
+              multiple
+              {...directoryAttributes}
             />
           </label>
           <div className="actions">
