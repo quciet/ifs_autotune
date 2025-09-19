@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useState } from "react";
 import { checkIFsFolder, type CheckResponse } from "./api";
 
 function App() {
@@ -6,36 +6,24 @@ function App() {
   const [result, setResult] = useState<CheckResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const handleFolderChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) {
-      setPath("");
-      return;
-    }
-
-    // Always take the parent folder of the first file selected
-    const firstFile = files[0] as File & { path?: string; webkitRelativePath?: string };
-    let folderPath = "";
-
-    if (firstFile.path) {
-      folderPath = firstFile.path.replace(/[\\/][^\\/]*$/, ""); // remove filename
-    } else if (firstFile.webkitRelativePath) {
-      folderPath = firstFile.webkitRelativePath.split("/")[0]; // fallback
-    }
-
-    if (!folderPath) {
-      setPath("");
-      setError("Unable to read the folder path. Please try again in Chrome or Edge.");
-      event.target.value = "";
-      return;
-    }
-
-    setPath(folderPath.replace(/[\\/]+$/, "")); // strip trailing slashes
-    setResult(null);
+  const handleBrowseClick = async () => {
     setError(null);
-    event.target.value = "";
+
+    if (!window.electron?.selectFolder) {
+      setError("Native folder browsing is only available in the desktop app.");
+      return;
+    }
+
+    try {
+      const selectedPath = await window.electron.selectFolder();
+      if (selectedPath) {
+        setPath(selectedPath);
+        setResult(null);
+      }
+    } catch (err) {
+      setError("Unable to open the folder picker. Please try again.");
+    }
   };
 
   const handlePathInputChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -78,19 +66,9 @@ function App() {
       <form className="form" onSubmit={handleSubmit}>
         <label className="label">IFs folder</label>
         <div className="input-row">
-          <label className="file-picker">
-            <span>Browse</span>
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="file-input"
-              onChange={handleFolderChange}
-              multiple
-              webkitdirectory=""
-              directory=""
-              mozdirectory=""
-            />
-          </label>
+          <button type="button" className="button" onClick={handleBrowseClick}>
+            Browse
+          </button>
           <div className="actions">
             <input
               type="text"

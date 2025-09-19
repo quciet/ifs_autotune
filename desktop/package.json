@@ -1,0 +1,40 @@
+{
+  "name": "bigpopa-desktop",
+  "version": "0.1.0",
+  "description": "Electron desktop shell for BIGPOPA",
+  "main": "main.js",
+  "scripts": {
+    "dev:frontend": "cd ../frontend && npm run dev",
+    "start:electron": "wait-on tcp:5173 && electron .",
+    "electron-dev": "concurrently -k \"npm:dev:frontend\" \"npm:start:electron\"",
+    "build:frontend": "cd ../frontend && npm run build",
+    "electron-build": "npm run build:frontend && electron-builder",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.bigpopa.desktop",
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json",
+      {
+        "from": "../frontend/dist",
+        "to": "frontend/dist",
+        "filter": ["**/*"]
+      }
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": "nsis"
+    }
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "electron": "^28.3.1",
+    "electron-builder": "^24.9.1",
+    "wait-on": "^7.1.0"
+  }
+}

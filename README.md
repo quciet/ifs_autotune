@@ -46,11 +46,25 @@ Local-first application for automating and optimizing IFs model runs.
      python dev.py
      # or, if you prefer, ./dev.py
      ```
-  - The backend will be available at http://localhost:8000 and the frontend at http://localhost:5173. Open the frontend in your browser. Click **Browse** to select your IFs installation folder—the selected path will be displayed above the **Validate** button. Click **Validate** to send a request to the backend checker.
-  - You can now browse for an IFs folder using the folder picker. The selected path will display automatically in the text field.
-  - Validation now checks `net8/ifs.exe` directly instead of separate `net8` + `ifs.exe` entries.
+  - The backend will be available at http://localhost:8000 and the frontend at http://localhost:5173. Open the frontend in your browser. Use the **Browse** button (or paste a path into the input) to select your IFs installation folder, then click **Validate** to send a request to the backend checker.
   - Validation results display a checklist of required files/folders with ✅ or ❌ indicators.
    - During development, the frontend at http://localhost:5173 must call backend APIs at http://localhost:8000. CORS middleware has been enabled to allow this. In production, the frontend can be built and served from the backend directly.
+
+## Desktop app workflow
+
+Install the desktop dependencies:
+
+```bash
+cd desktop
+npm install
+```
+
+Then run each part of the stack in separate terminals:
+
+- Run backend: `cd backend && uvicorn app.main:app --reload`
+- Run frontend: `cd frontend && npm run dev`
+- Run electron: `cd desktop && npm run electron-dev`
+- Build desktop app (from `desktop/`): `npm run electron-build`
 
 ## Tests
 
