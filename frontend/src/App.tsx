@@ -1,32 +1,9 @@
 import { ChangeEvent, FormEvent, useState } from "react";
-import { checkIFsFolder } from "./api";
-
-type CheckResult = {
-  valid: boolean;
-  base_year?: number | null;
-  missing?: string[];
-};
-
-type Requirement = {
-  id: string;
-  label: string;
-};
-
-const REQUIREMENTS: Requirement[] = [
-  { id: "ifs.exe", label: "ifs.exe" },
-  { id: "IFsInit.db", label: "IFsInit.db" },
-  { id: "net8", label: "net8/" },
-  { id: "RUNFILES", label: "RUNFILES/" },
-  { id: "Scenario", label: "Scenario/" },
-  { id: "DATA", label: "DATA/" },
-  { id: "DATA/SAMBase.db", label: "DATA/SAMBase.db" },
-  { id: "DATA/DataDict.db", label: "DATA/DataDict.db" },
-  { id: "DATA/IFsHistSeries.db", label: "DATA/IFsHistSeries.db" },
-];
+import { checkIFsFolder, type CheckResponse } from "./api";
 
 function App() {
   const [path, setPath] = useState("");
-  const [result, setResult] = useState<CheckResult | null>(null);
+  const [result, setResult] = useState<CheckResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,12 +44,6 @@ function App() {
     event.target.value = "";
   };
 
-  const handlePathInputChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setPath(event.target.value);
-    setResult(null);
-    setError(null);
-  };
-
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!path.trim()) {
@@ -105,31 +76,28 @@ function App() {
       </header>
 
       <form className="form" onSubmit={handleSubmit}>
-        <label htmlFor="path-input" className="label">
-          IFs folder
-        </label>
+        <label className="label">IFs folder</label>
         <div className="input-row">
           <label className="file-picker">
-            <span>Select folder</span>
+            <span>Browse</span>
             <input
               type="file"
               className="file-input"
-              webkitdirectory="true"
+              webkitdirectory
               onChange={handleFolderChange}
             />
           </label>
-          <input
-            id="path-input"
-            type="text"
-            className="text-input"
-            value={path}
-            onChange={handlePathInputChange}
-            placeholder="Type or paste your IFs folder path"
-            autoComplete="off"
-          />
-          <button type="submit" className="button" disabled={loading}>
-            {loading ? "Validating..." : "Validate"}
-          </button>
+          <div className="actions">
+            <div
+              className={`selected-path${path ? "" : " empty"}`}
+              title={path || undefined}
+            >
+              {path ? path : "No folder selected"}
+            </div>
+            <button type="submit" className="button" disabled={loading}>
+              {loading ? "Validating..." : "Validate"}
+            </button>
+          </div>
         </div>
       </form>
 
@@ -141,22 +109,22 @@ function App() {
           <div className={result.valid ? "status success" : "status error"}>
             {result.valid ? "Valid ✅" : "Invalid ❌"}
           </div>
-          <div className="base-year">
-            Base year: {result.base_year ?? "N/A"}
-          </div>
+          {result.base_year != null && (
+            <div className="base-year">Base year: {result.base_year}</div>
+          )}
 
           <div className="requirements">
             <h3>Required files &amp; folders</h3>
             <ul>
-              {REQUIREMENTS.map((item) => {
-                const isMissing = result.missing?.includes(item.id);
-                return (
-                  <li key={item.id} className={isMissing ? "item error" : "item success"}>
-                    <span className="icon">{isMissing ? "❌" : "✅"}</span>
-                    <span>{item.label}</span>
-                  </li>
-                );
-              })}
+              {result.requirements.map((item) => (
+                <li
+                  key={item.file}
+                  className={item.exists ? "item success" : "item error"}
+                >
+                  <span className="icon">{item.exists ? "✅" : "❌"}</span>
+                  <span>{item.file}</span>
+                </li>
+              ))}
             </ul>
           </div>
         </section>

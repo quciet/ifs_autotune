@@ -4,9 +4,15 @@ from typing import Optional
 
 from fastapi import APIRouter
 
-REQUIRED_ROOT_FILES = ["ifs.exe", "IFsInit.db"]
-REQUIRED_DATA_FILES = ["SAMBase.db", "DataDict.db", "IFsHistSeries.db"]
-REQUIRED_FOLDERS = ["net8", "RUNFILES", "Scenario", "DATA"]
+REQUIRED_PATHS = [
+    "IFsInit.db",
+    "DATA/SAMBase.db",
+    "DATA/DataDict.db",
+    "DATA/IFsHistSeries.db",
+    "net8/ifs.exe",
+    "RUNFILES/",
+    "Scenario/",
+]
 
 
 router = APIRouter()
@@ -37,30 +43,24 @@ def _fetch_year(cur: sqlite3.Cursor, like_pattern: str) -> Optional[int]:
     return _extract_year(row[0])
 
 
+def _path_exists(base_path: str, required_path: str) -> bool:
+    normalized = required_path[:-1] if required_path.endswith("/") else required_path
+    absolute = os.path.join(base_path, normalized)
+    if required_path.endswith("/"):
+        return os.path.isdir(absolute)
+    return os.path.isfile(absolute)
+
+
 def validate_ifs_folder(path: str) -> dict:
-    missing = []
-
-    # 1. Root files
-    for f in REQUIRED_ROOT_FILES:
-        if not os.path.exists(os.path.join(path, f)):
-            missing.append(f)
-
-    # 2. Required folders
-    for folder in REQUIRED_FOLDERS:
-        if not os.path.isdir(os.path.join(path, folder)):
-            missing.append(folder)
-
-    # 3. Data folder files
-    data_folder = os.path.join(path, "DATA")
-    for f in REQUIRED_DATA_FILES:
-        if not os.path.exists(os.path.join(data_folder, f)):
-            missing.append(f"DATA/{f}")
+    requirements = []
+    for required in REQUIRED_PATHS:
+        exists = _path_exists(path, required)
+        requirements.append({"file": required, "exists": exists})
 
     base_year: Optional[int] = None
 
-    # 4. Extract base year from IFsInit.db
     init_db = os.path.join(path, "IFsInit.db")
-    if os.path.exists(init_db):
+    if os.path.isfile(init_db):
         try:
             with sqlite3.connect(init_db) as con:
                 cur = con.cursor()
@@ -80,8 +80,8 @@ def validate_ifs_folder(path: str) -> dict:
             base_year = None
 
     return {
-        "valid": len(missing) == 0,
-        "missing": missing,
+        "valid": all(item["exists"] for item in requirements),
+        "requirements": requirements,
         "base_year": base_year,
     }
 

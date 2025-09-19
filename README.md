@@ -46,7 +46,9 @@ Local-first application for automating and optimizing IFs model runs.
      python dev.py
      # or, if you prefer, ./dev.py
      ```
-  - The backend will be available at http://localhost:8000 and the frontend at http://localhost:5173. Open the frontend in your browser, browse to your IFs installation with the folder picker or type the path manually, and click **Validate** to send a request to the backend checker.
+  - The backend will be available at http://localhost:8000 and the frontend at http://localhost:5173. Open the frontend in your browser. Click **Browse** to select your IFs installation folder—the selected path will be displayed above the **Validate** button. Click **Validate** to send a request to the backend checker.
+  - Validation now checks `net8/ifs.exe` directly instead of separate `net8` + `ifs.exe` entries.
+  - Validation results display a checklist of required files/folders with ✅ or ❌ indicators.
    - During development, the frontend at http://localhost:5173 must call backend APIs at http://localhost:8000. CORS middleware has been enabled to allow this. In production, the frontend can be built and served from the backend directly.
 
 ## Tests
@@ -70,8 +72,7 @@ As of now, the BIGPOPA backend can:
   - Produces a fake output and toy metric
   - Logs each run into a local SQLite database (`bigpopa.db`)
 - Validate an IFs installation folder via `/ifs/check`
-  - Checks presence of `ifs.exe`, `IFsInit.db`, key subfolders (`net8`, `RUNFILES`, `Scenario`, `DATA`)
-  - Ensures required data files exist in `DATA`
+  - Checks for `IFsInit.db`, `DATA/SAMBase.db`, `DATA/DataDict.db`, `DATA/IFsHistSeries.db`, `net8/ifs.exe`, `RUNFILES/`, and `Scenario/`
   - Extracts the model base year from `IFsInit.db`
 
 This provides the skeleton plumbing: API, stubbed run logging, and IFs environment validation. Next stages will implement real IFs subprocess calls, results parsing, and optimization loop logic.
