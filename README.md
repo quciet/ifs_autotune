@@ -47,6 +47,7 @@ Local-first application for automating and optimizing IFs model runs.
      # or, if you prefer, ./dev.py
      ```
   - The backend will be available at http://localhost:8000 and the frontend at http://localhost:5173. Open the frontend in your browser. Click **Browse** to select your IFs installation folder—the selected path will be displayed above the **Validate** button. Click **Validate** to send a request to the backend checker.
+  - You can now browse for an IFs folder using the folder picker. The selected path will display automatically in the text field.
   - Validation now checks `net8/ifs.exe` directly instead of separate `net8` + `ifs.exe` entries.
   - Validation results display a checklist of required files/folders with ✅ or ❌ indicators.
    - During development, the frontend at http://localhost:5173 must call backend APIs at http://localhost:8000. CORS middleware has been enabled to allow this. In production, the frontend can be built and served from the backend directly.
