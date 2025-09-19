@@ -2,9 +2,15 @@ import os
 import sqlite3
 from typing import Optional
 
+from fastapi import APIRouter
+
 REQUIRED_ROOT_FILES = ["ifs.exe", "IFsInit.db"]
 REQUIRED_DATA_FILES = ["SAMBase.db", "DataDict.db", "IFsHistSeries.db"]
 REQUIRED_FOLDERS = ["net8", "RUNFILES", "Scenario", "DATA"]
+
+
+router = APIRouter()
+
 
 
 def _extract_year(raw_value: object) -> Optional[int]:
@@ -78,3 +84,8 @@ def validate_ifs_folder(path: str) -> dict:
         "missing": missing,
         "base_year": base_year,
     }
+
+
+@router.post("/check")
+def check_folder(payload: dict) -> dict:
+    return validate_ifs_folder(payload["path"])
