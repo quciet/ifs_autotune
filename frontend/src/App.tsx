@@ -1,12 +1,6 @@
 import { ChangeEvent, FormEvent, useRef, useState } from "react";
 import { checkIFsFolder, type CheckResponse } from "./api";
 
-const directoryAttributes = {
-  webkitdirectory: "true",
-  directory: "",
-  mozdirectory: "",
-} satisfies Record<string, string>;
-
 function App() {
   const [path, setPath] = useState("");
   const [result, setResult] = useState<CheckResponse | null>(null);
@@ -21,22 +15,15 @@ function App() {
       return;
     }
 
-    const firstFile = files[0] as File & {
-      path?: string;
-      webkitRelativePath?: string;
-    };
-
-    const filePath = firstFile.path ?? "";
-    const relativePath = firstFile.webkitRelativePath ?? "";
+    // Always take the parent folder of the first file selected
+    const firstFile = files[0] as File & { path?: string; webkitRelativePath?: string };
     let folderPath = "";
 
-    if (filePath && relativePath) {
-      folderPath = filePath.slice(0, filePath.length - relativePath.length);
-    } else if (filePath) {
-      folderPath = filePath.replace(/[\\/][^\\/]*$/, "");
+    if (firstFile.path) {
+      folderPath = firstFile.path.replace(/[\\/][^\\/]*$/, ""); // remove filename
+    } else if (firstFile.webkitRelativePath) {
+      folderPath = firstFile.webkitRelativePath.split("/")[0]; // fallback
     }
-
-    folderPath = folderPath.replace(/[\\/]+$/, "");
 
     if (!folderPath) {
       setPath("");
@@ -45,7 +32,7 @@ function App() {
       return;
     }
 
-    setPath(folderPath);
+    setPath(folderPath.replace(/[\\/]+$/, "")); // strip trailing slashes
     setResult(null);
     setError(null);
     event.target.value = "";
@@ -99,7 +86,9 @@ function App() {
               className="file-input"
               onChange={handleFolderChange}
               multiple
-              {...directoryAttributes}
+              webkitdirectory=""
+              directory=""
+              mozdirectory=""
             />
           </label>
           <div className="actions">
