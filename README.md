@@ -1,8 +1,11 @@
-# BIGPOPA (local web app)
+# BIGPOPA (Desktop App)
 
-Local-first application for automating and optimizing IFs model runs.
+Local-first desktop application for automating and optimizing IFs model runs.  
+Runs fully offline: React/Electron frontend + Python backend, with Electron acting as the bridge.
 
-## Run the app locally
+---
+
+## Run the app locally (development)
 
 1. **Clone the repository**
    ```bash
@@ -15,56 +18,61 @@ Local-first application for automating and optimizing IFs model runs.
      ```bash
      cd backend
      python -m venv .venv
-     source .venv/bin/activate  # On Windows use: .venv\\Scripts\\activate
+     .venv\Scripts\activate    # On Windows
+     # or: source .venv/bin/activate  # On Linux/Mac
      ```
-   - When you're done, exit the virtual environment with `deactivate`.
-   - Using Conda or another environment manager works as well—just create and activate your environment before installing dependencies.
-   - If you prefer to work without a virtual environment, ensure the following commands are run in the Python environment where you want the dependencies installed.
+   - Exit the environment with `deactivate` when done.
+   - Using Conda or another manager also works.
 
 3. **Install backend dependencies**
-   - Ensure you have Python 3.11 or later installed.
-   - Install the FastAPI app in editable mode:
-     ```bash
-     cd backend
-     pip install -e .
-     cd ..
-     ```
-   - The backend exposes a health endpoint at http://localhost:8000/health which should respond with `{ "status": "ok" }` once the server is running.
+   ```bash
+   cd backend
+   pip install -r requirements.txt
+   cd ..
+   ```
 
-4. **Install frontend dependencies**
-   - Ensure you have Node.js 18+ and npm available.
-   - Install packages with:
+4. **Install frontend + desktop dependencies**
+   - Ensure you have Node.js 18+ and npm installed.
+   - Install packages for both frontend and Electron:
      ```bash
      cd frontend
+     npm install
+     cd ../desktop
      npm install
      cd ..
      ```
 
-5. **Launch the combined dev environment**
-   - Run the helper script from the project root to start both servers with hot reload:
+5. **Launch the desktop app (dev mode)**
+   - From the `desktop/` folder:
      ```bash
-     python dev.py
-     # or, if you prefer, ./dev.py
+     npm run electron-dev
      ```
-  - The backend will be available at http://localhost:8000 and the frontend at http://localhost:5173. Open the frontend in your browser. Use the **Browse** button (or paste a path into the input) to select your IFs installation folder, then click **Validate** to send a request to the backend checker.
-  - Validation results display a checklist of required files/folders with ✅ or ❌ indicators.
-   - During development, the frontend at http://localhost:5173 must call backend APIs at http://localhost:8000. CORS middleware has been enabled to allow this. In production, the frontend can be built and served from the backend directly.
+   - This will:
+     - Start the React frontend with hot reload (Vite).
+     - Start Electron and open a desktop window.
+   - Use the **Browse** button (native folder picker) or paste a path to select your IFs installation folder, then click **Validate**.
+   - Validation results display:
+     - ✅ or ❌ for required files/folders (`IFsInit.db`, `DATA/...`, `net8/ifs.exe`, `RUNFILES`, `Scenario`).
+     - Extracted base year from `IFsInit.db`.
 
-## Desktop app workflow
+---
 
-Install the desktop dependencies:
+## Build the desktop app (production)
+
+From the `desktop/` folder, run:
 
 ```bash
-cd desktop
-npm install
+npm run electron-build
 ```
 
-Then run each part of the stack in separate terminals:
+This produces an installer (`.exe`) that bundles:
+- Electron runtime
+- React UI (compiled build)
+- Python backend scripts
 
-- Run backend: `cd backend && uvicorn app.main:app --reload`
-- Run frontend: `cd frontend && npm run dev`
-- Run electron: `cd desktop && npm run electron-dev`
-- Build desktop app (from `desktop/`): `npm run electron-build`
+Users can install and run BIGPOPA locally with no extra setup.
+
+---
 
 ## Tests
 
@@ -73,21 +81,18 @@ cd backend
 pytest -q
 ```
 
-## Stubbed IFs run
-
-`POST /ifs/run` with a JSON body (e.g. `{ "parameters": { "tfrmin": 1.5 } }`) returns a `run_id`, a toy metric, and a fake output.
+---
 
 ## Current status
 
-As of now, the BIGPOPA backend can:
+As of now, the BIGPOPA desktop app can:
 
-- Serve a FastAPI app with a `/health` endpoint
-- Run a stubbed IFs run via `/ifs/run`
-  - Accepts a JSON config
-  - Produces a fake output and toy metric
-  - Logs each run into a local SQLite database (`bigpopa.db`)
-- Validate an IFs installation folder via `/ifs/check`
-  - Checks for `IFsInit.db`, `DATA/SAMBase.db`, `DATA/DataDict.db`, `DATA/IFsHistSeries.db`, `net8/ifs.exe`, `RUNFILES/`, and `Scenario/`
-  - Extracts the model base year from `IFsInit.db`
-
-This provides the skeleton plumbing: API, stubbed run logging, and IFs environment validation. Next stages will implement real IFs subprocess calls, results parsing, and optimization loop logic.
+- Run as a true **desktop application** (no local server needed).
+- Validate an IFs installation folder:
+  - Checks for `IFsInit.db`, `DATA/SAMBase.db`, `DATA/DataDict.db`, `DATA/IFsHistSeries.db`, `net8/ifs.exe`, `RUNFILES/`, and `Scenario/`.
+  - Extracts the model base year from `IFsInit.db`.
+- Display validation results in the Electron window (green ✅ / red ❌).
+- Provide a foundation for later stages:
+  - Running IFs.exe in subprocess
+  - Logging runs to SQLite
+  - Optimization loop with ML
