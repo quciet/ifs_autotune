@@ -49,7 +49,11 @@ body {
 .input-row {
   display: flex;
   gap: 1rem;
-  align-items: flex-start;
+  align-items: center;
+}
+
+.input-row .path-input {
+  flex: 1;
 }
 
 .file-picker {
@@ -77,13 +81,6 @@ body {
   inset: 0;
   opacity: 0;
   cursor: pointer;
-}
-
-.actions {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
 }
 
 .path-input {
@@ -144,6 +141,21 @@ body {
 
 .button.secondary:not(:disabled):hover {
   box-shadow: 0 10px 20px rgba(148, 163, 184, 0.25);
+}
+
+.button-row {
+  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.button-row .button {
+  width: 100%;
+}
+
+.button-row.multi {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
 }
 
 .alert {
@@ -244,12 +256,6 @@ body {
 .requirements .icon {
   font-size: 1.1rem;
   line-height: 1;
-}
-
-.view-actions {
-  margin-top: 1.5rem;
-  display: flex;
-  justify-content: flex-end;
 }
 
 .tune-container {
