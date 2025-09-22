@@ -1,6 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { spawn } = require('node:child_process');
-const fs = require('node:fs');
 const path = require('node:path');
 
 const isDev = !app.isPackaged;
@@ -141,7 +140,6 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
   }
 
   const scriptPath = path.join(__dirname, '..', 'backend', 'run_ifs.py');
-  const progressPath = path.join(lastValidatedPath, 'RUNFILES', 'progress.txt');
   const args = [
     scriptPath,
     '--ifs-root',
@@ -173,16 +171,11 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
 
   return new Promise((resolve) => {
     let resolved = false;
-    let pollTimer = null;
     let lastYear = null;
 
     const finish = (payload) => {
       if (!resolved) {
         resolved = true;
-        if (pollTimer) {
-          clearInterval(pollTimer);
-          pollTimer = null;
-        }
         resolve(payload);
       }
     };
@@ -200,8 +193,9 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
       return;
     }
 
-    let stdout = '';
     let stderr = '';
+    let stdoutBuffer = '';
+    const jsonCandidates = [];
 
     const sendProgress = (year) => {
       if (lastYear === year) {
@@ -213,34 +207,31 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
       }
     };
 
-    const pollProgress = () => {
-      fs.promises
-        .readFile(progressPath, 'utf8')
-        .then((content) => {
-          const trimmed = content.trim();
-          if (!trimmed) {
-            return;
-          }
+    const handleStdoutLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        return;
+      }
 
-          const lines = trimmed.split(/\r?\n/);
-          const lastLine = lines[lines.length - 1];
-          if (!lastLine) {
-            return;
-          }
+      const progressMatch = /^Year\s+(\d{1,4})/i.exec(trimmed);
+      if (progressMatch) {
+        const year = Number(progressMatch[1]);
+        if (Number.isFinite(year)) {
+          sendProgress(year);
+        }
+        return;
+      }
 
-          const [yearToken] = lastLine.trim().split(/\s+/);
-          const year = Number(yearToken);
-          if (Number.isFinite(year)) {
-            sendProgress(year);
-          }
-        })
-        .catch(() => {
-          // progress file might not exist yet; ignore errors
-        });
+      jsonCandidates.push(trimmed);
     };
 
     pythonProcess.stdout.on('data', (data) => {
-      stdout += data.toString();
+      const chunk = data.toString();
+      stdoutBuffer += chunk;
+
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() ?? '';
+      lines.forEach(handleStdoutLine);
     });
 
     pythonProcess.stderr.on('data', (data) => {
@@ -251,13 +242,10 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
       finish(fallback(error?.message || 'Failed to execute IFs.'));
     });
 
-    pollTimer = setInterval(pollProgress, 1000);
-    pollProgress();
-
     pythonProcess.on('close', (code) => {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
+      if (stdoutBuffer) {
+        handleStdoutLine(stdoutBuffer);
+        stdoutBuffer = '';
       }
 
       if (stderr.trim()) {
@@ -265,14 +253,24 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
         return;
       }
 
-      if (code !== 0 && stdout.trim().length === 0) {
+      if (code !== 0 && jsonCandidates.length === 0) {
         finish(fallback('IFs runner exited unexpectedly.'));
         return;
       }
 
       try {
-        const parsed = JSON.parse(stdout || '{}');
-        if (parsed && parsed.status === 'ok') {
+        let parsed = null;
+        for (let idx = jsonCandidates.length - 1; idx >= 0; idx -= 1) {
+          const candidate = jsonCandidates[idx];
+          try {
+            parsed = JSON.parse(candidate);
+            break;
+          } catch (err) {
+            // Not JSON, keep searching backwards.
+          }
+        }
+
+        if (parsed && parsed.status === 'success') {
           if (typeof parsed.end_year === 'number') {
             sendProgress(parsed.end_year);
           }
