@@ -137,6 +137,15 @@ body {
   box-shadow: 0 10px 20px rgba(118, 75, 162, 0.25);
 }
 
+.button.secondary {
+  background: linear-gradient(135deg, #e2e8f0 0%, #cbd5f5 100%);
+  color: #1a202c;
+}
+
+.button.secondary:not(:disabled):hover {
+  box-shadow: 0 10px 20px rgba(148, 163, 184, 0.25);
+}
+
 .alert {
   margin-top: 1.5rem;
   padding: 1rem 1.25rem;
@@ -148,6 +157,15 @@ body {
   background: rgba(245, 101, 101, 0.15);
   color: #c53030;
   border: 1px solid rgba(245, 101, 101, 0.3);
+}
+
+.alert-message {
+  margin: 0 0 0.75rem;
+}
+
+.alert-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .results {
@@ -226,6 +244,113 @@ body {
 .requirements .icon {
   font-size: 1.1rem;
   line-height: 1;
+}
+
+.view-actions {
+  margin-top: 1.5rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tune-container {
+  background: #ffffff;
+  padding: 2rem;
+  border-radius: 1rem;
+  box-shadow: 0 12px 30px rgba(72, 89, 241, 0.12);
+  border: 1px solid rgba(72, 84, 96, 0.08);
+}
+
+.tune-header h2 {
+  margin: 0;
+}
+
+.tune-description {
+  color: #4a5568;
+  margin: 0.5rem 0 1rem;
+}
+
+.tune-path,
+.tune-base {
+  color: #2d3748;
+  font-weight: 500;
+  margin: 0.25rem 0;
+}
+
+.tune-controls {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.progress-wrapper {
+  margin-top: 1.5rem;
+  background: #f7fafc;
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid rgba(203, 213, 224, 0.6);
+}
+
+.progress-text {
+  font-weight: 600;
+  color: #2d3748;
+  margin-bottom: 0.75rem;
+}
+
+.progress-indicator {
+  width: 100%;
+  height: 0.75rem;
+  border-radius: 9999px;
+  background-color: #e2e8f0;
+  overflow: hidden;
+}
+
+.progress-indicator::-webkit-progress-bar {
+  background-color: #e2e8f0;
+  border-radius: 9999px;
+}
+
+.progress-indicator::-webkit-progress-value {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 9999px;
+}
+
+.progress-indicator::-moz-progress-bar {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 9999px;
+}
+
+.metadata {
+  margin-top: 1.5rem;
+  background: #f8fafc;
+  border-radius: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid rgba(203, 213, 224, 0.7);
+}
+
+.metadata h3 {
+  margin: 0 0 0.75rem;
+}
+
+.metadata ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.metadata li {
+  color: #2d3748;
+}
+
+.metadata strong {
+  color: #1a202c;
+}
+
+.tune-footer {
+  margin-top: 2rem;
+  display: flex;
+  justify-content: flex-end;
 }
 
 @media (max-width: 600px) {
