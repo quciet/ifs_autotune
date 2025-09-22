@@ -13,7 +13,7 @@ import json
 import os
 import subprocess
 import sys
-from typing import List
+from typing import List, Tuple
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -58,8 +58,17 @@ def main(argv: list[str] | None = None) -> int:
     ifs_root = os.path.abspath(args.ifs_root)
     working_dir = os.path.join(ifs_root, "net8")
 
+    progress_path = os.path.join(ifs_root, "RUNFILES", "progress.txt")
+
     try:
-        process = subprocess.Popen(command, cwd=working_dir)
+        process = subprocess.Popen(
+            command,
+            cwd=working_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
     except Exception as exc:  # pragma: no cover - surface unexpected spawn errors
         payload = {
             "status": "error",
@@ -68,20 +77,92 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload))
         return 1
 
+    assert process.stdout is not None  # for the type checker
+    try:
+        for raw_line in process.stdout:
+            # Re-emit the IFs output so the desktop shell can relay progress updates
+            # to the UI in real time.
+            sys.stdout.write(raw_line)
+            sys.stdout.flush()
+    finally:
+        process.stdout.close()
+
     return_code = process.wait()
 
+    if return_code != 0:
+        payload = {
+            "status": "error",
+            "message": f"IFs exited with code {return_code}",
+        }
+        print(json.dumps(payload))
+        return 1
+
+    try:
+        end_year, w_gdp = _read_progress_summary(progress_path)
+    except FileNotFoundError:
+        payload = {
+            "status": "error",
+            "message": "progress.txt was not found after the IFs run finished.",
+        }
+        print(json.dumps(payload))
+        return 1
+    except ValueError as exc:
+        payload = {
+            "status": "error",
+            "message": str(exc),
+        }
+        print(json.dumps(payload))
+        return 1
+
+    if end_year != args.end_year:
+        payload = {
+            "status": "error",
+            "message": (
+                f"Progress file reports end year {end_year}, expected {args.end_year}."
+            ),
+        }
+        print(json.dumps(payload))
+        return 1
+
     payload = {
-        "end_year": args.end_year,
-        "log": args.log,
-        "session_id": args.websessionid,
-        "status": "ok" if return_code == 0 else "error",
+        "status": "success",
+        "end_year": end_year,
+        "w_gdp": w_gdp,
     }
 
-    if return_code != 0:
-        payload["message"] = f"IFs exited with code {return_code}"
-
     print(json.dumps(payload))
-    return 0 if return_code == 0 else 1
+    return 0
+
+
+def _read_progress_summary(progress_path: str) -> Tuple[int, float]:
+    try:
+        with open(progress_path, "r", encoding="utf-8") as progress_file:
+            last_line: str | None = None
+            for raw_line in progress_file:
+                stripped = raw_line.strip()
+                if stripped:
+                    last_line = stripped
+    except FileNotFoundError:
+        raise
+
+    if not last_line:
+        raise ValueError("progress.txt is empty and cannot be parsed.")
+
+    parts = [segment.strip() for segment in last_line.split(",") if segment.strip()]
+    if len(parts) < 2:
+        raise ValueError("The final line in progress.txt is malformed.")
+
+    try:
+        year = int(parts[0])
+    except ValueError as exc:
+        raise ValueError("Unable to parse the end year from progress.txt.") from exc
+
+    try:
+        w_gdp = float(parts[-1])
+    except ValueError as exc:
+        raise ValueError("Unable to parse WGDP from progress.txt.") from exc
+
+    return year, w_gdp
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point

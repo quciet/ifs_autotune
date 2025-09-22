@@ -135,10 +135,10 @@ function TuneIFsPage({ onBack, validatedPath, baseYear }: TuneIFsPageProps) {
               <strong>End year:</strong> {metadata.end_year}
             </li>
             <li>
-              <strong>Log file:</strong> {metadata.log}
-            </li>
-            <li>
-              <strong>Session ID:</strong> {metadata.session_id}
+              <strong>World GDP (WGDP):</strong>{' '}
+              {metadata.w_gdp.toLocaleString(undefined, {
+                maximumFractionDigits: 2,
+              })}
             </li>
           </ul>
         </div>

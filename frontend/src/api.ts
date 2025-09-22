@@ -11,10 +11,9 @@ export type CheckResponse = {
 };
 
 export type RunIFsSuccess = {
-  status: "ok";
+  status: "success";
   end_year: number;
-  log: string;
-  session_id: string;
+  w_gdp: number;
 };
 
 export type RunIFsError = {
@@ -59,7 +58,7 @@ export async function runIFs(endYear: number): Promise<RunIFsResponse> {
     const payload = await window.electron.invoke("run-ifs", { end_year: endYear });
     if (payload && typeof payload === "object" && "status" in payload) {
       const typed = payload as RunIFsResponse;
-      if (typed.status === "ok") {
+      if (typed.status === "success") {
         return typed;
       }
 
