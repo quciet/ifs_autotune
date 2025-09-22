@@ -215,6 +215,7 @@ function App() {
 
   const missingFiles = useMemo(() => result?.missingFiles ?? [], [result]);
   const requirements = useMemo(() => result?.requirements ?? [], [result]);
+  const hasValidResult = result?.valid === true;
 
   return (
     <div className="container">
@@ -243,19 +244,32 @@ function App() {
               >
                 Browse
               </button>
-              <div className="actions">
-                <input
-                  type="text"
-                  className="path-input"
-                  placeholder="Enter or paste a folder path"
-                  value={path}
-                  onChange={handlePathInputChange}
-                  spellCheck={false}
-                />
-                <button type="submit" className="button" disabled={loading}>
-                  {loading ? "Validating..." : "Validate"}
-                </button>
-              </div>
+              <input
+                type="text"
+                className="path-input"
+                placeholder="Enter or paste a folder path"
+                value={path}
+                onChange={handlePathInputChange}
+                spellCheck={false}
+              />
+            </div>
+            <div className="button-row">
+              <button type="submit" className="button">
+                {loading ? "Validating..." : "Validate"}
+              </button>
+            </div>
+            <div className="button-row multi">
+              <button
+                type="button"
+                className="button"
+                onClick={() => setView("tune")}
+                disabled={!hasValidResult}
+              >
+                Tune IFs
+              </button>
+              <button type="button" className="button" disabled={!hasValidResult}>
+                Base Year Change
+              </button>
             </div>
           </form>
 
@@ -302,16 +316,6 @@ function App() {
                 </div>
               )}
 
-              <div className="view-actions">
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => setView("tune")}
-                  disabled={!result.valid}
-                >
-                  Tune IFs
-                </button>
-              </div>
             </section>
           )}
         </>

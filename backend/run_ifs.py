@@ -40,7 +40,7 @@ def build_command(args: argparse.Namespace) -> List[str]:
         "-1",
         "true",
         "true",
-        "0",
+        "1",
         "false",
         "--log",
         args.log,

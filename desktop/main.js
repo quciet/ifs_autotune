@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const isDev = !app.isPackaged;
+const STATIC_IFS_ARGS = ['-1', 'true', 'true', '1', 'false'];
 let mainWindow = null;
 let lastValidatedPath = null;
 
@@ -154,6 +155,21 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
     '--websessionid',
     'qsdqsqsdqsdqsdqs',
   ];
+
+  if (isDev) {
+    const ifsExecutable = path.join(lastValidatedPath, 'net8', 'ifs.exe');
+    const commandPreview = [
+      ifsExecutable,
+      '5',
+      String(desiredEndYear),
+      ...STATIC_IFS_ARGS,
+      '--log',
+      'jrs.txt',
+      '--websessionid',
+      'qsdqsqsdqsdqsdqs',
+    ];
+    console.log('Launching IFs via runner with command:', commandPreview.join(' '));
+  }
 
   return new Promise((resolve) => {
     let resolved = false;
