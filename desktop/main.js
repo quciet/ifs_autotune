@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { spawn } = require('node:child_process');
 const path = require('node:path');
 
 const isDev = !app.isPackaged;
@@ -49,4 +50,62 @@ ipcMain.handle('dialog:selectFolder', async () => {
   }
 
   return filePaths[0];
+});
+
+ipcMain.handle('validate-ifs-folder', async (_event, folderPath) => {
+  return new Promise((resolve) => {
+    const scriptPath = path.join(__dirname, '..', 'backend', 'validate_ifs.py');
+    const fallbackResponse = { valid: false, missingFiles: ['Python error'] };
+    let resolved = false;
+
+    const finish = (payload) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(payload);
+      }
+    };
+
+    try {
+      if (typeof folderPath !== 'string' || folderPath.trim().length === 0) {
+        finish(fallbackResponse);
+        return;
+      }
+
+      const pythonProcess = spawn('python', [scriptPath, folderPath], {
+        cwd: path.join(__dirname, '..'),
+        windowsHide: true,
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      pythonProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      pythonProcess.on('error', () => {
+        finish(fallbackResponse);
+      });
+
+      pythonProcess.on('close', (code) => {
+        if (stderr.trim() || code !== 0) {
+          finish(fallbackResponse);
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(stdout);
+          finish(parsed);
+        } catch (err) {
+          finish(fallbackResponse);
+        }
+      });
+    } catch (error) {
+      finish(fallbackResponse);
+    }
+  });
 });

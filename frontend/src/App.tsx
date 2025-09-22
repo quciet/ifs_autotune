@@ -1,5 +1,5 @@
-import { ChangeEvent, FormEvent, useState } from "react";
-import { checkIFsFolder, type CheckResponse } from "./api";
+import { ChangeEvent, FormEvent, useMemo, useState } from "react";
+import { validateIFsFolder, type CheckResponse } from "./api";
 
 function App() {
   const [path, setPath] = useState("");
@@ -45,14 +45,17 @@ function App() {
     setResult(null);
 
     try {
-      const res = await checkIFsFolder(path.trim());
+      const res = await validateIFsFolder(path.trim());
       setResult(res);
     } catch (err) {
-      setError("Failed to reach backend. Ensure it is running on port 8000.");
+      setError("Failed to validate the IFs folder. Please try again.");
     } finally {
       setLoading(false);
     }
   };
+
+  const missingFiles = useMemo(() => result?.missingFiles ?? [], [result]);
+  const requirements = useMemo(() => result?.requirements ?? [], [result]);
 
   return (
     <div className="container">
@@ -97,20 +100,36 @@ function App() {
             <div className="base-year">Base year: {result.base_year}</div>
           )}
 
-          <div className="requirements">
-            <h3>Required files &amp; folders</h3>
-            <ul>
-              {result.requirements.map((item) => (
-                <li
-                  key={item.file}
-                  className={item.exists ? "item success" : "item error"}
-                >
-                  <span className="icon">{item.exists ? "✅" : "❌"}</span>
-                  <span>{item.file}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+          {requirements.length > 0 && (
+            <div className="requirements">
+              <h3>Required files &amp; folders</h3>
+              <ul>
+                {requirements.map((item) => (
+                  <li
+                    key={item.file}
+                    className={item.exists ? "item success" : "item error"}
+                  >
+                    <span className="icon">{item.exists ? "✅" : "❌"}</span>
+                    <span>{item.file}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {missingFiles.length > 0 && (
+            <div className="requirements">
+              <h3>Missing files</h3>
+              <ul>
+                {missingFiles.map((file) => (
+                  <li key={file} className="item error">
+                    <span className="icon">❌</span>
+                    <span>{file}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
     </div>

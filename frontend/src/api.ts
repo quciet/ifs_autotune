@@ -6,22 +6,29 @@ export type RequirementCheck = {
 export type CheckResponse = {
   valid: boolean;
   base_year?: number | null;
-  requirements: RequirementCheck[];
+  requirements?: RequirementCheck[];
+  missingFiles?: string[];
 };
 
-export async function checkIFsFolder(path: string): Promise<CheckResponse> {
-  const response = await fetch("http://localhost:8000/ifs/check", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ path })
-  });
+const FALLBACK_RESPONSE: CheckResponse = {
+  valid: false,
+  base_year: null,
+  requirements: [],
+  missingFiles: ["Electron/Python IPC call failed"],
+};
 
-  if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || "Request failed");
+export async function validateIFsFolder(folderPath: string): Promise<CheckResponse> {
+  if (!window.electron?.invoke) {
+    return { ...FALLBACK_RESPONSE };
   }
 
-  return response.json();
+  try {
+    const result = await window.electron.invoke("validate-ifs-folder", folderPath);
+    if (result && typeof result === "object") {
+      return result as CheckResponse;
+    }
+    return { ...FALLBACK_RESPONSE };
+  } catch (error) {
+    return { ...FALLBACK_RESPONSE };
+  }
 }
