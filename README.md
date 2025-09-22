@@ -24,12 +24,14 @@ Runs fully offline: React/Electron frontend + Python backend, with Electron acti
    - Exit the environment with `deactivate` when done.
    - Using Conda or another manager also works.
 
-3. **Install backend dependencies**
-   ```bash
-   cd backend
-   pip install -r requirements.txt
-   cd ..
-   ```
+3. **Install backend in editable mode**
+   - Ensure you have Python 3.11 or later installed.
+   - From the `backend` folder:
+     ```bash
+     cd backend
+     pip install -e .
+     cd ..
+     ```
 
 4. **Install frontend + desktop dependencies**
    - Ensure you have Node.js 18+ and npm installed.
