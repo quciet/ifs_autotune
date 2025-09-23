@@ -6,6 +6,7 @@ const isDev = !app.isPackaged;
 const STATIC_IFS_ARGS = ['-1', 'true', 'true', '1', 'false'];
 let mainWindow = null;
 let lastValidatedPath = null;
+let lastBaseYear = null;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -73,8 +74,13 @@ ipcMain.handle('validate-ifs-folder', async (_event, folderPath) => {
       ) {
         if (payload.valid) {
           lastValidatedPath = path.resolve(folderPath);
+          const candidateBaseYear = Number(payload.base_year);
+          lastBaseYear = Number.isFinite(candidateBaseYear)
+            ? candidateBaseYear
+            : null;
         } else {
           lastValidatedPath = null;
+          lastBaseYear = null;
         }
       }
 
@@ -139,6 +145,19 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
     return { status: 'error', message: 'Invalid end year provided.' };
   }
 
+  const candidateBaseYear = Number(payload?.base_year ?? lastBaseYear ?? NaN);
+  const baseYear = Number.isFinite(candidateBaseYear) ? candidateBaseYear : null;
+
+  const outputDirectoryRaw =
+    typeof payload?.output_dir === 'string' ? payload.output_dir : null;
+  if (!outputDirectoryRaw || !outputDirectoryRaw.trim()) {
+    return {
+      status: 'error',
+      message: 'Please choose an output folder before running IFs.',
+    };
+  }
+
+  const resolvedOutputDirectory = path.resolve(outputDirectoryRaw);
   const scriptPath = path.join(__dirname, '..', 'backend', 'run_ifs.py');
   const args = [
     scriptPath,
@@ -146,6 +165,8 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
     lastValidatedPath,
     '--end-year',
     String(desiredEndYear),
+    '--output-dir',
+    resolvedOutputDirectory,
     '--start-token',
     '5',
     '--log',
@@ -153,6 +174,10 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
     '--websessionid',
     'qsdqsqsdqsdqsdqs',
   ];
+
+  if (baseYear != null) {
+    args.push('--base-year', String(baseYear));
+  }
 
   if (isDev) {
     const ifsExecutable = path.join(lastValidatedPath, 'net8', 'ifs.exe');
@@ -167,11 +192,32 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
       'qsdqsqsdqsdqsdqs',
     ];
     console.log('Launching IFs via runner with command:', commandPreview.join(' '));
+    console.log('Output directory:', resolvedOutputDirectory);
+    if (baseYear != null) {
+      console.log('Base year for progress calculations:', baseYear);
+    }
   }
 
   return new Promise((resolve) => {
     let resolved = false;
     let lastYear = null;
+    let lastPercent = null;
+
+    const clampPercent = (value) => Math.max(0, Math.min(100, value));
+
+    const computePercent = (year) => {
+      if (!Number.isFinite(baseYear)) {
+        return undefined;
+      }
+      if (desiredEndYear === baseYear) {
+        return year >= desiredEndYear ? 100 : 0;
+      }
+      const denominator = desiredEndYear - baseYear;
+      if (denominator === 0) {
+        return undefined;
+      }
+      return clampPercent(((year - baseYear) / denominator) * 100);
+    };
 
     const finish = (payload) => {
       if (!resolved) {
@@ -197,14 +243,28 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
     let stdoutBuffer = '';
     const jsonCandidates = [];
 
-    const sendProgress = (year) => {
-      if (lastYear === year) {
+    const sendProgress = (year, explicitPercent) => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
         return;
       }
-      lastYear = year;
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('ifs-progress', year);
+
+      const resolvedPercent =
+        typeof explicitPercent === 'number' && Number.isFinite(explicitPercent)
+          ? clampPercent(explicitPercent)
+          : computePercent(year);
+
+      if (lastYear === year && (resolvedPercent == null || resolvedPercent === lastPercent)) {
+        return;
       }
+
+      lastYear = year;
+      if (resolvedPercent != null) {
+        lastPercent = resolvedPercent;
+      }
+
+      const progressPayload =
+        resolvedPercent != null ? { year, percent: resolvedPercent } : { year };
+      mainWindow.webContents.send('ifs-progress', progressPayload);
     };
 
     const handleStdoutLine = (line) => {
@@ -272,7 +332,10 @@ ipcMain.handle('run-ifs', async (_event, payload) => {
 
         if (parsed && parsed.status === 'success') {
           if (typeof parsed.end_year === 'number') {
-            sendProgress(parsed.end_year);
+            sendProgress(parsed.end_year, 100);
+          }
+          if (typeof parsed.base_year === 'number' && Number.isFinite(parsed.base_year)) {
+            lastBaseYear = parsed.base_year;
           }
           finish(parsed);
           return;

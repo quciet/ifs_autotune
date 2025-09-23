@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import uuid
 from typing import List, Tuple
 
 
@@ -20,6 +22,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Launch IFs with custom arguments.")
     parser.add_argument("--ifs-root", required=True, help="Path to the IFs installation root.")
     parser.add_argument("--end-year", type=int, default=2050, help="Final simulation year.")
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Directory where IFs artifacts should be written.",
+    )
+    parser.add_argument(
+        "--base-year",
+        type=int,
+        default=None,
+        help="Base year used for the simulation run.",
+    )
     parser.add_argument("--start-token", default="5", help="Starting token passed to IFs.")
     parser.add_argument("--log", default="jrs.txt", help="Log file name to pass to IFs.")
     parser.add_argument(
@@ -56,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
 
     command = build_command(args)
     ifs_root = os.path.abspath(args.ifs_root)
+    output_dir = os.path.abspath(args.output_dir)
+    base_year = args.base_year
     working_dir = os.path.join(ifs_root, "net8")
 
     progress_path = os.path.join(ifs_root, "RUNFILES", "progress.txt")
@@ -124,14 +139,74 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload))
         return 1
 
-    payload = {
-        "status": "success",
-        "end_year": end_year,
-        "w_gdp": w_gdp,
-    }
+    try:
+        payload = _prepare_run_artifacts(
+            ifs_root=ifs_root,
+            output_dir=output_dir,
+            base_year=base_year,
+            end_year=end_year,
+            w_gdp=w_gdp,
+        )
+    except FileNotFoundError:
+        error_payload = {
+            "status": "error",
+            "message": "Working.run.db was not found after the IFs run finished.",
+        }
+        print(json.dumps(error_payload))
+        return 1
+    except OSError as exc:
+        error_payload = {
+            "status": "error",
+            "message": str(exc),
+        }
+        print(json.dumps(error_payload))
+        return 1
 
     print(json.dumps(payload))
     return 0
+
+
+def _prepare_run_artifacts(
+    *,
+    ifs_root: str,
+    output_dir: str,
+    base_year: int | None,
+    end_year: int,
+    w_gdp: float,
+) -> dict:
+    runfiles_dir = os.path.join(os.path.abspath(ifs_root), "RUNFILES")
+    source_db = os.path.join(runfiles_dir, "Working.run.db")
+
+    if not os.path.exists(source_db):
+        raise FileNotFoundError(source_db)
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    model_id = uuid.uuid4().hex
+    destination_db = os.path.join(output_dir, f"model_{model_id}.db")
+    shutil.copy2(source_db, destination_db)
+
+    metadata_path = os.path.join(output_dir, f"model_{model_id}.json")
+    metadata_contents = {
+        "model_id": model_id,
+        "base_year": base_year,
+        "end_year": end_year,
+        "output_file": destination_db,
+        "WGDP": w_gdp,
+    }
+
+    with open(metadata_path, "w", encoding="utf-8") as metadata_file:
+        json.dump(metadata_contents, metadata_file, indent=2)
+
+    return {
+        "status": "success",
+        "model_id": model_id,
+        "base_year": base_year,
+        "end_year": end_year,
+        "w_gdp": w_gdp,
+        "output_file": destination_db,
+        "metadata_file": metadata_path,
+    }
 
 
 def _read_progress_summary(progress_path: str) -> Tuple[int, float]:

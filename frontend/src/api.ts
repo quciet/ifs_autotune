@@ -12,8 +12,12 @@ export type CheckResponse = {
 
 export type RunIFsSuccess = {
   status: "success";
+  model_id: string;
+  base_year: number | null;
   end_year: number;
   w_gdp: number;
+  output_file: string;
+  metadata_file: string;
 };
 
 export type RunIFsError = {
@@ -46,7 +50,22 @@ export async function validateIFsFolder(folderPath: string): Promise<CheckRespon
   }
 }
 
-export async function runIFs(endYear: number): Promise<RunIFsResponse> {
+export type RunIFsParams = {
+  endYear: number;
+  baseYear: number | null | undefined;
+  outputDirectory: string;
+};
+
+export type IFsProgressEvent = {
+  year: number;
+  percent?: number;
+};
+
+export async function runIFs({
+  endYear,
+  baseYear,
+  outputDirectory,
+}: RunIFsParams): Promise<RunIFsResponse> {
   if (!window.electron?.invoke) {
     return {
       status: "error",
@@ -55,7 +74,11 @@ export async function runIFs(endYear: number): Promise<RunIFsResponse> {
   }
 
   try {
-    const payload = await window.electron.invoke("run-ifs", { end_year: endYear });
+    const payload = await window.electron.invoke("run-ifs", {
+      end_year: endYear,
+      base_year: baseYear ?? null,
+      output_dir: outputDirectory,
+    });
     if (payload && typeof payload === "object" && "status" in payload) {
       const typed = payload as RunIFsResponse;
       if (typed.status === "success") {
@@ -79,7 +102,7 @@ export async function runIFs(endYear: number): Promise<RunIFsResponse> {
 }
 
 export function subscribeToIFsProgress(
-  callback: (year: number) => void,
+  callback: (event: IFsProgressEvent) => void,
 ): () => void {
   if (!window.electron?.on) {
     return () => undefined;
@@ -87,7 +110,23 @@ export function subscribeToIFsProgress(
 
   const handler = (value: unknown) => {
     if (typeof value === "number" && Number.isFinite(value)) {
-      callback(value);
+      callback({ year: value });
+      return;
+    }
+
+    if (value && typeof value === "object") {
+      const maybeEvent = value as { year?: unknown; percent?: unknown };
+      const { year } = maybeEvent;
+      if (typeof year === "number" && Number.isFinite(year)) {
+        const percent = maybeEvent.percent;
+        callback({
+          year,
+          percent:
+            typeof percent === "number" && Number.isFinite(percent)
+              ? percent
+              : undefined,
+        });
+      }
     }
   };
 
