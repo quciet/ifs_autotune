@@ -394,16 +394,33 @@ function App() {
     }
   });
   const [runModalTrigger, setRunModalTrigger] = useState(0);
+  const [info, setInfo] = useState<string | null>(null);
+  const [nativeFolderPickerAvailable, setNativeFolderPickerAvailable] =
+    useState<boolean>(() =>
+      typeof window !== "undefined" && Boolean(window.electron?.selectFolder),
+    );
+  const pathInputRef = useRef<HTMLInputElement | null>(null);
+  const outputInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setNativeFolderPickerAvailable(Boolean(window.electron?.selectFolder));
+    }
+  }, []);
 
   const handleBrowseClick = async () => {
     setError(null);
 
-    if (!window.electron?.selectFolder) {
-      setError("Native folder browsing is only available in the desktop app.");
+    if (!nativeFolderPickerAvailable || !window.electron?.selectFolder) {
+      setInfo(
+        "Native folder browsing is only available in the desktop app. Paste the IFs folder path manually.",
+      );
+      pathInputRef.current?.focus();
       return;
     }
 
     try {
+      setInfo(null);
       const selectedPath = await window.electron.selectFolder();
       if (selectedPath) {
         setPath(selectedPath);
@@ -419,6 +436,7 @@ function App() {
     setPath(event.target.value);
     setResult(null);
     setError(null);
+    setInfo(null);
     setView("validate");
   };
 
@@ -432,6 +450,7 @@ function App() {
 
     setLoading(true);
     setError(null);
+    setInfo(null);
     setResult(null);
 
     try {
@@ -445,7 +464,7 @@ function App() {
   };
 
   const requestOutputDirectory = async () => {
-    if (!window.electron?.selectFolder) {
+    if (!nativeFolderPickerAvailable || !window.electron?.selectFolder) {
       throw new Error("Native folder browsing is only available in the desktop app.");
     }
 
@@ -464,7 +483,16 @@ function App() {
   const handleOutputDirectoryChange = async () => {
     setError(null);
 
+    if (!nativeFolderPickerAvailable || !window.electron?.selectFolder) {
+      setInfo(
+        "Native folder browsing is only available in the desktop app. Enter an output folder path manually.",
+      );
+      outputInputRef.current?.focus();
+      return;
+    }
+
     try {
+      setInfo(null);
       await requestOutputDirectory();
     } catch (err) {
       const message =
@@ -477,6 +505,7 @@ function App() {
 
   const handleTuneClick = () => {
     setError(null);
+    setInfo(null);
 
     if (!result?.valid) {
       setError("You must validate an IFs folder first.");
@@ -490,6 +519,21 @@ function App() {
   const missingFiles = useMemo(() => result?.missingFiles ?? [], [result]);
   const requirements = useMemo(() => result?.requirements ?? [], [result]);
   const hasValidResult = result?.valid === true;
+  const outputTitle =
+    outputDirectory && outputDirectory.length > 0
+      ? outputDirectory
+      : "No folder selected";
+
+  const handleOutputDirectoryInputChange = (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    if (nativeFolderPickerAvailable) {
+      return;
+    }
+
+    setOutputDirectory(event.target.value);
+    setInfo(null);
+  };
 
   return (
     <div className="container">
@@ -523,29 +567,31 @@ function App() {
                 className="path-input"
                 placeholder="Enter or paste a folder path"
                 value={path}
+                ref={pathInputRef}
                 onChange={handlePathInputChange}
                 spellCheck={false}
               />
             </div>
             <label className="label">Output folder</label>
             <div className="input-row">
-              <input
-                type="text"
-                className="path-input"
-                value={outputDirectory ?? ""}
-                readOnly
-                placeholder="No folder selected"
-                spellCheck={false}
-                title={outputDirectory ?? "No folder selected"}
-              />
               <button
                 type="button"
                 className="button secondary"
                 onClick={handleOutputDirectoryChange}
-                disabled={!window.electron?.selectFolder}
               >
                 Change Output Folder
               </button>
+              <input
+                type="text"
+                className="path-input"
+                value={outputDirectory ?? ""}
+                ref={outputInputRef}
+                readOnly={nativeFolderPickerAvailable}
+                onChange={handleOutputDirectoryInputChange}
+                placeholder="No folder selected"
+                spellCheck={false}
+                title={outputTitle}
+              />
             </div>
             <div className="button-row">
               <button type="submit" className="button">
@@ -567,6 +613,7 @@ function App() {
             </div>
           </form>
 
+          {info && <div className="alert alert-info">{info}</div>}
           {error && <div className="alert alert-error">{error}</div>}
 
           {result && (
