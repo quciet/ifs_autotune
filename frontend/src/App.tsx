@@ -211,10 +211,8 @@ function TuneIFsPage({
     }
 
     try {
-      const selected = await requestOutputDirectory();
-      if (selected) {
-        setShowRunModal(true);
-      }
+      setError(null);
+      await requestOutputDirectory();
     } catch (err) {
       const message =
         err instanceof Error
@@ -388,7 +386,13 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("validate");
-  const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
+  const [outputDirectory, setOutputDirectory] = useState<string | null>(() => {
+    try {
+      return window.electron?.getDefaultOutputDir?.() ?? null;
+    } catch (err) {
+      return null;
+    }
+  });
   const [runModalTrigger, setRunModalTrigger] = useState(0);
 
   const handleBrowseClick = async () => {
@@ -457,15 +461,11 @@ function App() {
     }
   };
 
-  const handleTuneClick = async () => {
+  const handleOutputDirectoryChange = async () => {
     setError(null);
 
     try {
-      const selected = await requestOutputDirectory();
-      if (selected) {
-        setView("tune");
-        setRunModalTrigger((prev) => prev + 1);
-      }
+      await requestOutputDirectory();
     } catch (err) {
       const message =
         err instanceof Error
@@ -473,6 +473,18 @@ function App() {
           : "Unable to open the folder picker. Please try again.";
       setError(message);
     }
+  };
+
+  const handleTuneClick = () => {
+    setError(null);
+
+    if (!result?.valid) {
+      setError("You must validate an IFs folder first.");
+      return;
+    }
+
+    setView("tune");
+    setRunModalTrigger((prev) => prev + 1);
   };
 
   const missingFiles = useMemo(() => result?.missingFiles ?? [], [result]);
@@ -514,6 +526,26 @@ function App() {
                 onChange={handlePathInputChange}
                 spellCheck={false}
               />
+            </div>
+            <label className="label">Output folder</label>
+            <div className="input-row">
+              <input
+                type="text"
+                className="path-input"
+                value={outputDirectory ?? ""}
+                readOnly
+                placeholder="No folder selected"
+                spellCheck={false}
+                title={outputDirectory ?? "No folder selected"}
+              />
+              <button
+                type="button"
+                className="button secondary"
+                onClick={handleOutputDirectoryChange}
+                disabled={!window.electron?.selectFolder}
+              >
+                Change Output Folder
+              </button>
             </div>
             <div className="button-row">
               <button type="submit" className="button">
