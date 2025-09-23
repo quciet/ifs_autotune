@@ -282,8 +282,28 @@ body {
   margin: 0.25rem 0;
 }
 
+.tune-path .label,
+.tune-output .label {
+  display: inline;
+  margin-right: 0.35rem;
+}
+
+.tune-output {
+  color: #2d3748;
+  font-weight: 500;
+  margin: 0.25rem 0 0;
+  word-break: break-word;
+}
+
 .tune-controls {
   display: grid;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.tune-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.75rem;
   margin-top: 1.5rem;
 }
@@ -353,10 +373,64 @@ body {
   color: #1a202c;
 }
 
+.run-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 9999px;
+  font-weight: 600;
+  background: rgba(72, 187, 120, 0.15);
+  color: #276749;
+  margin-bottom: 0.75rem;
+}
+
 .tune-footer {
   margin-top: 2rem;
   display: flex;
   justify-content: flex-end;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: #ffffff;
+  border-radius: 1rem;
+  padding: 2rem;
+  width: min(480px, 100%);
+  box-shadow: 0 20px 45px rgba(60, 66, 87, 0.3);
+  border: 1px solid rgba(72, 84, 96, 0.12);
+}
+
+.modal-title {
+  margin: 0;
+}
+
+.modal-subtitle {
+  margin: 0.75rem 0 1.25rem;
+  color: #4a5568;
+}
+
+.modal-base-year {
+  margin: 0 0 1rem;
+  color: #2d3748;
+  font-weight: 500;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
 }
 
 @media (max-width: 600px) {
@@ -380,5 +454,9 @@ body {
 
   .button {
     width: 100%;
+  }
+
+  .tune-actions {
+    grid-template-columns: 1fr;
   }
 }
