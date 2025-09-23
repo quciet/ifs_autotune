@@ -9,6 +9,7 @@ declare global {
         channel: string,
         listener: (...args: unknown[]) => void,
       ) => () => void;
+      getDefaultOutputDir: () => string;
     };
   }
 }
