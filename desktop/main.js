@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+const fs = require('fs');
 
 const isDev = !app.isPackaged;
 const STATIC_IFS_ARGS = ['-1', 'true', 'true', '1', 'false'];
@@ -48,9 +49,20 @@ app.on('window-all-closed', () => {
   }
 });
 
-ipcMain.handle('select-folder', async () => {
+ipcMain.handle('select-folder', async (_event, payload = {}) => {
+  const { type, defaultPath } = payload;
+
+  let startPath = defaultPath;
+  if (!startPath && type === 'output') {
+    startPath = path.join(app.getAppPath(), 'output');
+    if (!fs.existsSync(startPath)) {
+      fs.mkdirSync(startPath, { recursive: true });
+    }
+  }
+
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openDirectory'],
+    defaultPath: startPath,
   });
 
   if (canceled || filePaths.length === 0) {
@@ -61,7 +73,11 @@ ipcMain.handle('select-folder', async () => {
 });
 
 ipcMain.handle('get-default-output-dir', async () => {
-  return path.join(app.getPath('documents'), 'IFs_Output');
+  const outputPath = path.join(app.getAppPath(), 'output');
+  if (!fs.existsSync(outputPath)) {
+    fs.mkdirSync(outputPath, { recursive: true });
+  }
+  return outputPath;
 });
 
 ipcMain.handle('validate-ifs-folder', async (_event, folderPath) => {
