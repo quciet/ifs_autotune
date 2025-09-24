@@ -382,6 +382,8 @@ function TuneIFsPage({
 
 function App() {
   const [ifsFolderPath, setIfsFolderPath] = useState<string | null>(null);
+  const [lastValidatedIfsFolder, setLastValidatedIfsFolder] =
+    useState<string | null>(null);
   const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
   const [result, setResult] = useState<CheckResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -459,7 +461,10 @@ function App() {
       );
       if (selectedPath) {
         setIfsFolderPath(selectedPath);
-        setResult(null);
+        if (selectedPath !== lastValidatedIfsFolder) {
+          setResult(null);
+          setLastValidatedIfsFolder(null);
+        }
         setView("validate");
       }
     } catch (err) {
@@ -483,8 +488,9 @@ function App() {
 
     try {
       const res = await validateIFsFolder(trimmedPath);
-      setResult(res);
       setIfsFolderPath(trimmedPath);
+      setResult(res);
+      setLastValidatedIfsFolder(res.valid ? trimmedPath : null);
     } catch (err) {
       setError("Failed to validate the IFs folder. Please try again.");
     } finally {
@@ -545,6 +551,11 @@ function App() {
     setRunModalTrigger((prev) => prev + 1);
   };
 
+  const handleBaseYearChange = () => {
+    setError(null);
+    setInfo("Base year change functionality is coming soon.");
+  };
+
   const missingFiles = useMemo(() => result?.missingFiles ?? [], [result]);
   const requirements = useMemo(() => result?.requirements ?? [], [result]);
   const hasValidResult = result?.valid === true;
@@ -587,7 +598,14 @@ function App() {
                 type="text"
                 className="path-input"
                 value={ifsFolderPath ?? ""}
-                readOnly
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  setIfsFolderPath(nextValue);
+                  if (nextValue !== lastValidatedIfsFolder) {
+                    setResult(null);
+                    setLastValidatedIfsFolder(null);
+                  }
+                }}
                 spellCheck={false}
                 placeholder="No folder selected"
                 title={ifsFolderTitle}
@@ -596,7 +614,7 @@ function App() {
             <div className="input-row">
               <button
                 type="button"
-                className="button secondary"
+                className="button"
                 onClick={handleChangeOutputDirectory}
               >
                 Change Output Folder
@@ -605,7 +623,7 @@ function App() {
                 type="text"
                 className="path-input"
                 value={outputDirectory ?? ""}
-                readOnly
+                onChange={(e) => setOutputDirectory(e.target.value)}
                 placeholder="No folder selected"
                 spellCheck={false}
                 title={outputTitle}
@@ -625,7 +643,12 @@ function App() {
               >
                 Tune IFs
               </button>
-              <button type="button" className="button" disabled={!hasValidResult}>
+              <button
+                type="button"
+                className="button"
+                onClick={handleBaseYearChange}
+                disabled={!hasValidResult}
+              >
                 Base Year Change
               </button>
             </div>

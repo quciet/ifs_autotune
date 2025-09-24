@@ -48,12 +48,15 @@ body {
 
 .input-row {
   display: flex;
-  gap: 1rem;
   align-items: center;
+  margin-bottom: 1rem;
 }
 
-.input-row .path-input {
-  flex: 1;
+.input-row .button {
+  min-width: 180px;
+  margin-right: 10px;
+  background: linear-gradient(90deg, #6a5acd, #7b68ee);
+  color: white;
 }
 
 .file-picker {
@@ -84,11 +87,11 @@ body {
 }
 
 .path-input {
+  flex: 1;
   width: 100%;
-  min-height: 3rem;
-  padding: 0.75rem 1rem;
-  border: 1px dashed #cbd5e0;
-  border-radius: 0.75rem;
+  padding: 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
   background: #f7fafc;
   color: #2d3748;
   font-size: 0.95rem;
