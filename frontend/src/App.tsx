@@ -386,13 +386,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("validate");
-  const [outputDirectory, setOutputDirectory] = useState<string | null>(() => {
-    try {
-      return window.electron?.getDefaultOutputDir?.() ?? null;
-    } catch (err) {
-      return null;
-    }
-  });
+  const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
   const [runModalTrigger, setRunModalTrigger] = useState(0);
   const [info, setInfo] = useState<string | null>(null);
   const [nativeFolderPickerAvailable, setNativeFolderPickerAvailable] =
@@ -406,6 +400,49 @@ function App() {
     if (typeof window !== "undefined") {
       setNativeFolderPickerAvailable(Boolean(window.electron?.selectFolder));
     }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    let isMounted = true;
+
+    const applyFallback = () => {
+      if (!isMounted) {
+        return;
+      }
+      setOutputDirectory((current) => current ?? "C:/IFs_Output");
+    };
+
+    const loadDefaultOutputDir = async () => {
+      if (!window.electron?.getDefaultOutputDir) {
+        applyFallback();
+        return;
+      }
+
+      try {
+        const defaultDir = await window.electron.getDefaultOutputDir();
+        if (!isMounted) {
+          return;
+        }
+
+        if (typeof defaultDir === "string" && defaultDir.trim().length > 0) {
+          setOutputDirectory(defaultDir);
+        } else {
+          applyFallback();
+        }
+      } catch {
+        applyFallback();
+      }
+    };
+
+    loadDefaultOutputDir();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const handleBrowseClick = async () => {

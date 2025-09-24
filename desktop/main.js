@@ -48,7 +48,7 @@ app.on('window-all-closed', () => {
   }
 });
 
-ipcMain.handle('dialog:selectFolder', async () => {
+ipcMain.handle('select-folder', async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openDirectory'],
   });
@@ -58,6 +58,10 @@ ipcMain.handle('dialog:selectFolder', async () => {
   }
 
   return filePaths[0];
+});
+
+ipcMain.handle('get-default-output-dir', async () => {
+  return path.join(app.getPath('documents'), 'IFs_Output');
 });
 
 ipcMain.handle('validate-ifs-folder', async (_event, folderPath) => {
