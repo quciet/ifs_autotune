@@ -381,20 +381,18 @@ function TuneIFsPage({
 }
 
 function App() {
-  const [path, setPath] = useState("");
+  const [ifsFolderPath, setIfsFolderPath] = useState<string | null>(null);
+  const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
   const [result, setResult] = useState<CheckResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("validate");
-  const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
   const [runModalTrigger, setRunModalTrigger] = useState(0);
   const [info, setInfo] = useState<string | null>(null);
   const [nativeFolderPickerAvailable, setNativeFolderPickerAvailable] =
     useState<boolean>(() =>
       typeof window !== "undefined" && Boolean(window.electron?.selectFolder),
     );
-  const pathInputRef = useRef<HTMLInputElement | null>(null);
-  const outputInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -445,22 +443,22 @@ function App() {
     };
   }, []);
 
-  const handleBrowseClick = async () => {
+  const handleChangeIFsFolder = async () => {
     setError(null);
 
     if (!nativeFolderPickerAvailable || !window.electron?.selectFolder) {
-      setInfo(
-        "Native folder browsing is only available in the desktop app. Paste the IFs folder path manually.",
-      );
-      pathInputRef.current?.focus();
+      setInfo("Native folder browsing is only available in the desktop app.");
       return;
     }
 
     try {
       setInfo(null);
-      const selectedPath = await window.electron.selectFolder();
+      const selectedPath = await window.electron.selectFolder(
+        "ifs",
+        ifsFolderPath ?? undefined,
+      );
       if (selectedPath) {
-        setPath(selectedPath);
+        setIfsFolderPath(selectedPath);
         setResult(null);
         setView("validate");
       }
@@ -469,17 +467,10 @@ function App() {
     }
   };
 
-  const handlePathInputChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setPath(event.target.value);
-    setResult(null);
-    setError(null);
-    setInfo(null);
-    setView("validate");
-  };
-
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!path.trim()) {
+    const trimmedPath = ifsFolderPath?.trim() ?? "";
+    if (!trimmedPath) {
       setError("Please select an IFs folder before validating.");
       setResult(null);
       return;
@@ -491,8 +482,9 @@ function App() {
     setResult(null);
 
     try {
-      const res = await validateIFsFolder(path.trim());
+      const res = await validateIFsFolder(trimmedPath);
       setResult(res);
+      setIfsFolderPath(trimmedPath);
     } catch (err) {
       setError("Failed to validate the IFs folder. Please try again.");
     } finally {
@@ -506,7 +498,10 @@ function App() {
     }
 
     try {
-      const selected = await window.electron.selectFolder();
+      const selected = await window.electron.selectFolder(
+        "output",
+        outputDirectory ?? undefined,
+      );
       if (selected) {
         setOutputDirectory(selected);
         return selected;
@@ -517,14 +512,11 @@ function App() {
     }
   };
 
-  const handleOutputDirectoryChange = async () => {
+  const handleChangeOutputDirectory = async () => {
     setError(null);
 
     if (!nativeFolderPickerAvailable || !window.electron?.selectFolder) {
-      setInfo(
-        "Native folder browsing is only available in the desktop app. Enter an output folder path manually.",
-      );
-      outputInputRef.current?.focus();
+      setInfo("Native folder browsing is only available in the desktop app.");
       return;
     }
 
@@ -560,17 +552,10 @@ function App() {
     outputDirectory && outputDirectory.length > 0
       ? outputDirectory
       : "No folder selected";
-
-  const handleOutputDirectoryInputChange = (
-    event: ChangeEvent<HTMLInputElement>,
-  ) => {
-    if (nativeFolderPickerAvailable) {
-      return;
-    }
-
-    setOutputDirectory(event.target.value);
-    setInfo(null);
-  };
+  const ifsFolderTitle =
+    ifsFolderPath && ifsFolderPath.length > 0
+      ? ifsFolderPath
+      : "No folder selected";
 
   return (
     <div className="container">
@@ -590,31 +575,29 @@ function App() {
       {view === "validate" && (
         <>
           <form className="form" onSubmit={handleSubmit}>
-            <label className="label">IFs folder</label>
             <div className="input-row">
               <button
                 type="button"
                 className="button"
-                onClick={handleBrowseClick}
+                onClick={handleChangeIFsFolder}
               >
-                Browse
+                Change IFs Folder
               </button>
               <input
                 type="text"
                 className="path-input"
-                placeholder="Enter or paste a folder path"
-                value={path}
-                ref={pathInputRef}
-                onChange={handlePathInputChange}
+                value={ifsFolderPath ?? ""}
+                readOnly
                 spellCheck={false}
+                placeholder="No folder selected"
+                title={ifsFolderTitle}
               />
             </div>
-            <label className="label">Output folder</label>
             <div className="input-row">
               <button
                 type="button"
                 className="button secondary"
-                onClick={handleOutputDirectoryChange}
+                onClick={handleChangeOutputDirectory}
               >
                 Change Output Folder
               </button>
@@ -622,9 +605,7 @@ function App() {
                 type="text"
                 className="path-input"
                 value={outputDirectory ?? ""}
-                ref={outputInputRef}
-                readOnly={nativeFolderPickerAvailable}
-                onChange={handleOutputDirectoryInputChange}
+                readOnly
                 placeholder="No folder selected"
                 spellCheck={false}
                 title={outputTitle}
@@ -701,7 +682,7 @@ function App() {
       {view === "tune" && result?.valid && (
         <TuneIFsPage
           onBack={() => setView("validate")}
-          validatedPath={path.trim()}
+          validatedPath={ifsFolderPath?.trim() ?? ""}
           baseYear={result?.base_year}
           outputDirectory={outputDirectory}
           requestOutputDirectory={requestOutputDirectory}

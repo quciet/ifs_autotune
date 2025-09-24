@@ -1,7 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electron', {
-  selectFolder: () => ipcRenderer.invoke('select-folder'),
+  selectFolder: (type, defaultPath) =>
+    ipcRenderer.invoke('select-folder', { type, defaultPath }),
+  getDefaultOutputDir: () => ipcRenderer.invoke('get-default-output-dir'),
   invoke: (channel, data) => ipcRenderer.invoke(channel, data),
   on: (channel, callback) => {
     const subscription = (_event, ...args) => {
@@ -14,5 +16,4 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.removeListener(channel, subscription);
     };
   },
-  getDefaultOutputDir: () => ipcRenderer.invoke('get-default-output-dir'),
 });
