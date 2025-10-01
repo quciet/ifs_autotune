@@ -162,6 +162,23 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(error_payload))
         return 1
 
+    try:
+        _reset_working_database(ifs_root)
+    except FileNotFoundError as exc:
+        error_payload = {
+            "status": "error",
+            "message": f"Unable to reset working database: {exc}",
+        }
+        print(json.dumps(error_payload))
+        return 1
+    except OSError as exc:
+        error_payload = {
+            "status": "error",
+            "message": str(exc),
+        }
+        print(json.dumps(error_payload))
+        return 1
+
     print(json.dumps(payload))
     return 0
 
@@ -207,6 +224,17 @@ def _prepare_run_artifacts(
         "output_file": destination_db,
         "metadata_file": metadata_path,
     }
+
+
+def _reset_working_database(ifs_root: str) -> None:
+    runfiles_dir = os.path.join(os.path.abspath(ifs_root), "RUNFILES")
+    base_run = os.path.join(runfiles_dir, "IFsBase.run.db")
+    working_run = os.path.join(runfiles_dir, "Working.run.db")
+
+    if not os.path.exists(base_run):
+        raise FileNotFoundError(base_run)
+
+    shutil.copy2(base_run, working_run)
 
 
 def _read_progress_summary(progress_path: str) -> Tuple[int, float]:
