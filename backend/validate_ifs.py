@@ -8,6 +8,7 @@ stdout.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -36,7 +37,14 @@ except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency shi
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2:
+    parser = argparse.ArgumentParser(description="Validate an IFs installation folder")
+    parser.add_argument("path", nargs="?")
+    parser.add_argument("--output-path", dest="output_path")
+    parser.add_argument("--input-file", dest="input_file")
+
+    args = parser.parse_args(argv[1:])
+
+    if not args.path:
         payload: dict[str, Any] = {
             "valid": False,
             "missingFiles": ["No folder path provided"],
@@ -44,10 +52,12 @@ def main(argv: list[str]) -> int:
         print(json.dumps(payload))
         return 1
 
-    folder_path = argv[1]
-
     try:
-        result = validate_ifs_folder(folder_path)
+        result = validate_ifs_folder(
+            args.path,
+            output_path=args.output_path,
+            input_file=args.input_file,
+        )
     except Exception:  # pragma: no cover - surface any unexpected error
         payload = {"valid": False, "missingFiles": ["Python error"]}
         print(json.dumps(payload))

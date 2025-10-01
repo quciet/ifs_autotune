@@ -230,6 +230,69 @@ body {
   margin-bottom: 1rem;
 }
 
+.summary {
+  margin-bottom: 1.5rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.summary-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  border-radius: 0.75rem;
+  font-weight: 500;
+}
+
+.summary-line.success {
+  background: rgba(72, 187, 120, 0.12);
+  color: #276749;
+}
+
+.summary-line.error {
+  background: rgba(245, 101, 101, 0.12);
+  color: #c53030;
+}
+
+.summary-label {
+  font-weight: 600;
+}
+
+.summary-value {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  word-break: break-word;
+}
+
+.summary-message {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+
+.sheet-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.sheet-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+
+.sheet-status.present {
+  color: #276749;
+}
+
+.sheet-status.missing {
+  color: #c53030;
+}
+
 .requirements h3 {
   margin-bottom: 0.75rem;
   color: #2d3748;

@@ -8,6 +8,24 @@ export type CheckResponse = {
   base_year?: number | null;
   requirements?: RequirementCheck[];
   missingFiles?: string[];
+  pathChecks?: {
+    ifsFolder?: ValidationPathCheck;
+    outputFolder?: ValidationPathCheck;
+    inputFile?: ValidationInputFileCheck;
+  };
+};
+
+export type ValidationPathCheck = {
+  displayPath: string | null;
+  exists: boolean;
+  readable?: boolean;
+  writable?: boolean | null;
+  message?: string | null;
+};
+
+export type ValidationInputFileCheck = ValidationPathCheck & {
+  sheets?: Record<string, boolean>;
+  missingSheets?: string[];
 };
 
 export type RunIFsSuccess = {
@@ -32,15 +50,31 @@ const FALLBACK_RESPONSE: CheckResponse = {
   base_year: null,
   requirements: [],
   missingFiles: ["Electron/Python IPC call failed"],
+  pathChecks: {},
 };
 
-export async function validateIFsFolder(folderPath: string): Promise<CheckResponse> {
+export type ValidateIFsPayload = {
+  ifsPath: string;
+  outputPath?: string | null;
+  inputFilePath?: string | null;
+};
+
+export async function validateIFsFolder({
+  ifsPath,
+  outputPath,
+  inputFilePath,
+}: ValidateIFsPayload): Promise<CheckResponse> {
   if (!window.electron?.invoke) {
     return { ...FALLBACK_RESPONSE };
   }
 
   try {
-    const result = await window.electron.invoke("validate-ifs-folder", folderPath);
+    const payload = {
+      ifsPath,
+      outputPath: outputPath ?? null,
+      inputFilePath: inputFilePath ?? null,
+    };
+    const result = await window.electron.invoke("validate-ifs-folder", payload);
     if (result && typeof result === "object") {
       return result as CheckResponse;
     }
