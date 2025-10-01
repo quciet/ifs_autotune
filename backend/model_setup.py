@@ -48,6 +48,18 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Path to StartingPointTable.xlsx",
     )
+    parser.add_argument(
+        "--base-year",
+        type=int,
+        default=None,
+        help="Base year used to seed Working.sce",
+    )
+    parser.add_argument(
+        "--end-year",
+        type=int,
+        default=None,
+        help="Forecast year used to seed Working.sce",
+    )
     return parser
 
 
@@ -115,6 +127,102 @@ def _extract_years_from_sce(path: Path) -> Optional[Tuple[int, int]]:
     if base_year is None or forecast_year is None:
         return None
     return base_year, forecast_year
+
+
+def _infer_base_year_from_db(db_path: Path) -> Optional[int]:
+    try:
+        conn = sqlite3.connect(str(db_path))
+    except Exception:
+        return None
+
+    try:
+        cursor = conn.cursor()
+        try:
+            tables = [
+                row[0]
+                for row in cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            ]
+        except sqlite3.Error:
+            return None
+
+        candidate_column_names = {"baseyear", "base_year", "yrbase", "yr_base"}
+
+        for table in tables:
+            try:
+                cursor.execute(f"PRAGMA table_info(\"{table}\")")
+            except sqlite3.Error:
+                continue
+
+            columns = cursor.fetchall()
+            if not columns:
+                continue
+
+            match: Optional[str] = None
+            for column in columns:
+                column_name = column[1]
+                if not column_name:
+                    continue
+                normalized = column_name.lower().replace("_", "")
+                if normalized in candidate_column_names:
+                    match = column_name
+                    break
+
+            if match is None:
+                continue
+
+            try:
+                cursor.execute(f"SELECT \"{match}\" FROM \"{table}\" LIMIT 1")
+            except sqlite3.Error:
+                continue
+
+            row = cursor.fetchone()
+            if not row:
+                continue
+
+            value = row[0]
+            if value is None:
+                continue
+
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                continue
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return None
+
+
+def create_working_sce(
+    ifs_root: Path, base_year: Optional[int], forecast_year: Optional[int]
+) -> Path:
+    scenario_dir = ifs_root / "Scenario"
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+
+    sce_path = scenario_dir / "Working.sce"
+    try:
+        sce_path.unlink()
+    except FileNotFoundError:
+        pass
+
+    if forecast_year is None:
+        raise ValueError("forecast_year is required to create Working.sce")
+
+    lines: List[str] = []
+    if base_year is not None:
+        lines.append(f"yr_base,{int(base_year)}")
+    lines.append(f"yr_forecast,{int(forecast_year)}")
+
+    with sce_path.open("w", encoding="utf-8") as handle:
+        for line in lines:
+            handle.write(line + "\n")
+
+    return sce_path
 
 
 def add_from_startingpoint(ifs_root: Path, excel_path: Path) -> int:
@@ -251,6 +359,38 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 1
 
+    existing_sce_path = ifs_root / "Scenario" / "Working.sce"
+    existing_years = _extract_years_from_sce(existing_sce_path)
+
+    base_year: Optional[int] = args.base_year
+    forecast_year: Optional[int] = args.end_year
+
+    if forecast_year is None and existing_years:
+        forecast_year = existing_years[1]
+
+    if base_year is None and existing_years:
+        base_year = existing_years[0]
+
+    if base_year is None:
+        base_year = _infer_base_year_from_db(db_path)
+
+    if forecast_year is None:
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": "Unable to determine forecast year for Working.sce.",
+                }
+            )
+        )
+        return 1
+
+    try:
+        sce_path = create_working_sce(ifs_root, base_year, forecast_year)
+    except ValueError as exc:
+        print(json.dumps({"status": "error", "message": str(exc)}))
+        return 1
+
     sheets = [
         _load_sheet(input_path, "TablFunc"),
         _load_sheet(input_path, "AnalFunc"),
@@ -330,6 +470,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "status": "success",
                 "updates": updates,
                 "sce_variables_appended": appended_variables,
+                "sce_file": str(sce_path.resolve()),
             }
         )
     )
