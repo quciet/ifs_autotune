@@ -1,144 +1,212 @@
-"""Perform IFs model setup operations via a CLI entry point.
+"""Randomize IFs regression coefficients based on a starting point table.
 
-This script is invoked by the Electron shell to prepare the IFs working
-environment before a model run. The heavy lifting is delegated to the
-``IFsModel`` class provided by the IFs Python tooling when available. For
-development and testing environments where the dependency is absent, a light
-weight stub implementation is used so the flow can still succeed.
+This script is invoked by the desktop shell as part of the "Model Setup"
+process. It reads coefficients from ``StartingPointTable.xlsx`` (``TablFunc``
+and ``AnalFunc`` sheets) and updates the corresponding entries in
+``RUNFILES/Working.run.db``.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
+import random
+import sqlite3
 import sys
-import uuid
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Optional
+
+import pandas as pd
 
 
-try:  # pragma: no cover - the real implementation is optional in CI
-    from IFsCoreModel import IFsModel as _IFsModel  # type: ignore[import]
-except ImportError:  # pragma: no cover - executed when IFs dependencies are missing
-    _IFsModel = None
-
-
-def _ensure_mapping(value: object) -> Dict[str, Any]:
-    if isinstance(value, Mapping):
-        return dict(value)
-    return {}
-
-
-class _StubIFsModel:
-    """Fallback IFs model implementation for development environments."""
-
-    def __init__(self, *, root_dir: str, yr_start: Optional[int], yr_end: int) -> None:
-        self.root_dir = Path(root_dir)
-        self.yr_start = yr_start
-        self.yr_end = yr_end
-        self.dir_runfiles = self.root_dir / "RUNFILES"
-        self.dir_baserun = self.dir_runfiles / "IFsBase.run.db"
-        self.dir_workingrun = self.dir_runfiles / "Working.run.db"
-        self.dir_scenario = self.root_dir / "Scenario"
-        self.parameters: Dict[str, Any] = {}
-        self.coefficients: Dict[str, Any] = {}
-        self.param_dim_dict: Dict[str, Any] = {}
-
-    def get_param_coef(self, parameters: Mapping[str, Any], coefficients: Mapping[str, Any]) -> None:
-        self.parameters = dict(parameters)
-        self.coefficients = dict(coefficients)
-
-    def get_param_dim(self, param_dim_dict: Mapping[str, Any]) -> None:
-        self.param_dim_dict = dict(param_dim_dict)
-
-    def create_sce(self) -> tuple[str, str]:
-        self.dir_runfiles.mkdir(parents=True, exist_ok=True)
-        sce_id = uuid.uuid4().hex
-        sce_path = self.dir_runfiles / "Working.sce"
-        content = {
-            "sce_id": sce_id,
-            "base_year": self.yr_start,
-            "end_year": self.yr_end,
-            "parameters": self.parameters,
-            "coefficients": self.coefficients,
-            "dimensions": self.param_dim_dict,
-        }
-        sce_path.write_text(json.dumps(content, indent=2), encoding="utf-8")
-        return sce_id, str(sce_path)
-
-    def update_beta_model(self) -> None:
-        self.dir_runfiles.mkdir(parents=True, exist_ok=True)
-        if self.dir_baserun.exists():
-            shutil.copy2(self.dir_baserun, self.dir_workingrun)
-        else:
-            self.dir_workingrun.touch()
-
-
-IFsModel = _IFsModel or _StubIFsModel
+COEFFICIENT_COLUMNS: List[str] = [
+    "a",
+    "b1",
+    "b2",
+    "b3",
+    "b4",
+    "b5",
+    "b6",
+    "b7",
+    "b8",
+    "b9",
+]
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Execute IFs model setup tasks.")
+    parser = argparse.ArgumentParser(
+        description="Randomize coefficients for Model Setup",
+    )
     parser.add_argument(
-        "--payload",
+        "--ifs-root",
         required=True,
-        help="JSON encoded payload containing setup parameters.",
+        help="Path to IFs root folder (with RUNFILES directory)",
+    )
+    parser.add_argument(
+        "--input-file",
+        required=True,
+        help="Path to StartingPointTable.xlsx",
     )
     return parser
 
 
-def _normalize_year(value: object) -> Optional[int]:
+def _load_sheet(path: Path, sheet_name: str) -> pd.DataFrame:
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _is_enabled(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        return int(value) == 1
+    return str(value).strip() == "1"
+
+
+def _normalize_number(value: Any) -> Optional[float]:
     if value is None:
         return None
     try:
-        return int(value)
+        if isinstance(value, str) and not value.strip():
+            return None
+        return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _randomize_intercept(value: float) -> float:
+    if abs(value) < 1e-12:
+        return random.uniform(-1.0, 1.0)
+    magnitude = random.uniform(abs(value) * 0.5, abs(value) * 1.5)
+    sign = -1.0 if random.random() < 0.5 else 1.0
+    return magnitude * sign
+
+
+def _randomize_slope(value: float) -> Optional[float]:
+    if abs(value) < 1e-12:
+        return None
+    if value > 0:
+        low, high = value * 0.8, value * 1.2
+    else:
+        low, high = value * 1.2, value * 0.8
+    return random.uniform(low, high)
+
+
+def _collect_rows(frames: Iterable[pd.DataFrame]) -> Iterable[Dict[str, Any]]:
+    for frame in frames:
+        if frame.empty:
+            continue
+        for _, row in frame.iterrows():
+            if not _is_enabled(row.get("Switch")):
+                continue
+            yield dict(row)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    db_path = Path(args.ifs_root) / "RUNFILES" / "Working.run.db"
+    if not db_path.exists():
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": f"Missing Working.run.db at {db_path}",
+                }
+            )
+        )
+        return 1
+
+    input_path = Path(args.input_file)
+    if not input_path.exists():
+        print(
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": f"Missing StartingPointTable.xlsx at {input_path}",
+                }
+            )
+        )
+        return 1
+
+    sheets = [
+        _load_sheet(input_path, "TablFunc"),
+        _load_sheet(input_path, "AnalFunc"),
+    ]
+
+    updates: List[Dict[str, Any]] = []
+
     try:
-        payload = json.loads(args.payload)
-    except json.JSONDecodeError as exc:
-        print(json.dumps({"status": "error", "message": f"Invalid payload: {exc}"}))
-        return 1
+        conn = sqlite3.connect(str(db_path))
+        cursor = conn.cursor()
 
-    if not isinstance(payload, dict):
-        print(json.dumps({"status": "error", "message": "Payload must be an object."}))
-        return 1
+        for row in _collect_rows(sheets):
+            func_name = row.get("Function Name")
+            x_var = row.get("XVariable")
+            y_var = row.get("YVariable")
 
-    ifs_root = payload.get("ifs_root")
-    if not isinstance(ifs_root, str) or not ifs_root.strip():
-        print(json.dumps({"status": "error", "message": "Missing IFs root path."}))
-        return 1
+            if not all(isinstance(value, str) and value.strip() for value in (func_name, x_var, y_var)):
+                continue
 
-    end_year = _normalize_year(payload.get("endYear"))
-    if end_year is None:
-        print(json.dumps({"status": "error", "message": "Invalid end year provided."}))
-        return 1
+            cursor.execute(
+                "SELECT Seq FROM ifs_reg WHERE Name=? AND InputName=? AND OutputName=?",
+                (func_name, x_var, y_var),
+            )
+            seq_row = cursor.fetchone()
+            if not seq_row:
+                continue
+            seq = seq_row[0]
 
-    base_year = _normalize_year(payload.get("baseYear"))
-    parameters = _ensure_mapping(payload.get("parameters"))
-    coefficients = _ensure_mapping(payload.get("coefficients"))
-    param_dim = _ensure_mapping(payload.get("param_dim_dict"))
+            for coef_name in COEFFICIENT_COLUMNS:
+                raw_value = _normalize_number(row.get(coef_name))
+                if raw_value is None:
+                    continue
 
-    try:
-        model = IFsModel(root_dir=ifs_root, yr_start=base_year, yr_end=end_year)
-        model.get_param_coef(parameters, coefficients)
-        model.get_param_dim(param_dim)
-        sce_id, sce_file = model.create_sce()
-        model.update_beta_model()
-    except Exception as exc:  # pragma: no cover - surface unexpected issues to the UI
-        print(json.dumps({"status": "error", "message": str(exc)}))
-        return 1
+                cursor.execute(
+                    "SELECT Value FROM ifs_reg_coeff WHERE RegressionName=? AND RegressionSeq=? AND Name=?",
+                    (func_name, seq, coef_name),
+                )
+                existing = cursor.fetchone()
+                if existing is None:
+                    continue
 
-    print(json.dumps({"status": "success", "sce_id": sce_id, "sce_file": sce_file}))
+                if coef_name == "a":
+                    new_value = _randomize_intercept(raw_value)
+                else:
+                    randomized = _randomize_slope(raw_value)
+                    if randomized is None:
+                        continue
+                    new_value = randomized
+
+                cursor.execute(
+                    "UPDATE ifs_reg_coeff SET Value=? WHERE RegressionName=? AND RegressionSeq=? AND Name=?",
+                    (float(new_value), func_name, seq, coef_name),
+                )
+                updates.append(
+                    {
+                        "Function": func_name,
+                        "XVariable": x_var,
+                        "YVariable": y_var,
+                        "Seq": seq,
+                        "Coefficient": coef_name,
+                        "OldValue": float(existing[0]),
+                        "NewValue": float(new_value),
+                    }
+                )
+
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    print(json.dumps({"status": "success", "updates": updates}))
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover - script entry point
+if __name__ == "__main__":
     sys.exit(main())
