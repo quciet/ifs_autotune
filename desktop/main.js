@@ -583,7 +583,19 @@ ipcMain.handle('model_setup', async (_event, payload) => {
     throw new Error('model_setup requires an inputFilePath');
   }
 
-  const args = ['--ifs-root', validatedPath, '--input-file', inputFilePath];
+  const baseYear = payload.baseYear ?? null;
+  const endYear = payload.endYear;
+
+  const args = [
+    '--ifs-root',
+    validatedPath,
+    '--input-file',
+    inputFilePath,
+    '--base-year',
+    String(baseYear ?? ''),
+    '--end-year',
+    String(endYear),
+  ];
   return runPythonScript('model_setup.py', args);
 });
 
