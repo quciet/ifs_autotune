@@ -45,6 +45,19 @@ export type RunIFsError = {
 
 export type RunIFsResponse = RunIFsSuccess | RunIFsError;
 
+export type ModelSetupSuccess = {
+  status: "success";
+  sce_id: string;
+  sce_file: string;
+};
+
+export type ModelSetupError = {
+  status: "error";
+  message: string;
+};
+
+export type ModelSetupResponse = ModelSetupSuccess | ModelSetupError;
+
 const FALLBACK_RESPONSE: CheckResponse = {
   valid: false,
   base_year: null,
@@ -88,6 +101,8 @@ export type RunIFsParams = {
   endYear: number;
   baseYear: number | null | undefined;
   outputDirectory: string;
+  sceId?: string | null;
+  sceFile?: string | null;
 };
 
 export type IFsProgressEvent = {
@@ -95,10 +110,56 @@ export type IFsProgressEvent = {
   percent?: number;
 };
 
+export async function modelSetup({
+  baseYear,
+  endYear,
+  parameters,
+  coefficients,
+  paramDim,
+}: {
+  baseYear: number | null | undefined;
+  endYear: number;
+  parameters?: Record<string, unknown>;
+  coefficients?: Record<string, unknown>;
+  paramDim?: Record<string, unknown>;
+}): Promise<ModelSetupResponse> {
+  if (!window.electron?.invoke) {
+    return {
+      status: "error",
+      message: "Electron bridge is unavailable.",
+    };
+  }
+
+  try {
+    const payload = {
+      baseYear: baseYear ?? null,
+      endYear,
+      parameters: parameters ?? {},
+      coefficients: coefficients ?? {},
+      param_dim_dict: paramDim ?? {},
+    };
+    const result = await window.electron.invoke("model_setup", payload);
+    if (result && typeof result === "object" && "status" in result) {
+      return result as ModelSetupResponse;
+    }
+
+    return {
+      status: "error",
+      message: "Unexpected response from model setup.",
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unable to complete model setup.";
+    return { status: "error", message };
+  }
+}
+
 export async function runIFs({
   endYear,
   baseYear,
   outputDirectory,
+  sceId,
+  sceFile,
 }: RunIFsParams): Promise<RunIFsResponse> {
   if (!window.electron?.invoke) {
     return {
@@ -108,10 +169,12 @@ export async function runIFs({
   }
 
   try {
-    const payload = await window.electron.invoke("run-ifs", {
+    const payload = await window.electron.invoke("run_ifs", {
       end_year: endYear,
       base_year: baseYear ?? null,
       output_dir: outputDirectory,
+      sce_id: sceId ?? null,
+      sce_file: sceFile ?? null,
     });
     if (payload && typeof payload === "object" && "status" in payload) {
       const typed = payload as RunIFsResponse;

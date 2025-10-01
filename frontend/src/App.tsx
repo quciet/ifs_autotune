@@ -7,11 +7,13 @@ import {
   useState,
 } from "react";
 import {
+  modelSetup,
   runIFs,
   subscribeToIFsProgress,
   validateIFsFolder,
   type CheckResponse,
   type IFsProgressEvent,
+  type ModelSetupSuccess,
   type RunIFsSuccess,
 } from "./api";
 
@@ -68,6 +70,10 @@ function TuneIFsPage({
   const [endYearInput, setEndYearInput] = useState("2050");
   const [endYear, setEndYear] = useState<number>(DEFAULT_END_YEAR);
   const [running, setRunning] = useState(false);
+  const [modelSetupRunning, setModelSetupRunning] = useState(false);
+  const [modelSetupResult, setModelSetupResult] = useState<ModelSetupSuccess | null>(
+    null,
+  );
   const [progressYear, setProgressYear] = useState<number | null>(null);
   const [progressPercent, setProgressPercent] = useState(0);
   const [metadata, setMetadata] = useState<RunIFsSuccess | null>(null);
@@ -77,6 +83,9 @@ function TuneIFsPage({
   );
   const baseYearRef = useRef<number | null>(baseYear ?? null);
   const targetEndYearRef = useRef<number | null>(DEFAULT_END_YEAR);
+  const parameterRef = useRef<Record<string, unknown>>({});
+  const coefficientRef = useRef<Record<string, unknown>>({});
+  const paramDimensionRef = useRef<Record<string, unknown>>({});
 
   const minEndYear =
     typeof effectiveBaseYear === "number" && Number.isFinite(effectiveBaseYear)
@@ -144,9 +153,18 @@ function TuneIFsPage({
     }
   }, [metadata]);
 
+  useEffect(() => {
+    setModelSetupResult((current) => (current ? null : current));
+  }, [effectiveBaseYear]);
+
+  const resetModelSetupState = () => {
+    setModelSetupResult((current) => (current ? null : current));
+  };
+
   const handleEndYearInputChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
     setEndYearInput(value);
+    resetModelSetupState();
 
     const parsed = Number(value);
     if (Number.isFinite(parsed)) {
@@ -169,6 +187,8 @@ function TuneIFsPage({
       setEndYearInput(String(fallback));
       targetEndYearRef.current = fallback;
     }
+
+    resetModelSetupState();
   };
 
   const handleSliderChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -177,22 +197,68 @@ function TuneIFsPage({
     setEndYear(clamped);
     setEndYearInput(String(clamped));
     targetEndYearRef.current = clamped;
+    resetModelSetupState();
   };
 
   const handleChangeOutputDirectory = async () => {
-    if (running) {
+    if (running || modelSetupRunning) {
       return;
     }
 
     try {
       setError(null);
       await requestOutputDirectory();
+      resetModelSetupState();
     } catch (err) {
       const message =
         err instanceof Error
           ? err.message
           : "Unable to update the output directory.";
       setError(message);
+    }
+  };
+
+  const handleModelSetup = async () => {
+    if (running || modelSetupRunning) {
+      return;
+    }
+
+    setError(null);
+
+    const parsedEndYear = Number(endYearInput);
+    if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
+      setError("Please enter a valid end year.");
+      return;
+    }
+
+    const clampedEndYear = clampEndYear(parsedEndYear);
+    setEndYear(clampedEndYear);
+    setEndYearInput(String(clampedEndYear));
+    targetEndYearRef.current = clampedEndYear;
+
+    setModelSetupRunning(true);
+    setModelSetupResult(null);
+
+    try {
+      const response = await modelSetup({
+        endYear: clampedEndYear,
+        baseYear: baseYearRef.current,
+        parameters: parameterRef.current,
+        coefficients: coefficientRef.current,
+        paramDim: paramDimensionRef.current,
+      });
+
+      if (response.status === "success") {
+        setModelSetupResult(response);
+      } else {
+        setError(response.message ?? "Model setup failed.");
+      }
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Unable to complete model setup.";
+      setError(message);
+    } finally {
+      setModelSetupRunning(false);
     }
   };
 
@@ -210,6 +276,11 @@ function TuneIFsPage({
       return;
     }
 
+    if (!modelSetupResult || modelSetupRunning) {
+      setError("Please run model setup before starting IFs.");
+      return;
+    }
+
     const clampedEndYear = clampEndYear(parsedEndYear);
     targetEndYearRef.current = clampedEndYear;
     setEndYear(clampedEndYear);
@@ -223,6 +294,8 @@ function TuneIFsPage({
       endYear: clampedEndYear,
       baseYear: baseYearRef.current,
       outputDirectory,
+      sceId: modelSetupResult.sce_id,
+      sceFile: modelSetupResult.sce_file,
     });
 
     if (response.status === "success") {
@@ -239,6 +312,7 @@ function TuneIFsPage({
     }
 
     setRunning(false);
+    setModelSetupResult(null);
   };
 
   const displayPercent = Math.min(100, Math.max(0, progressPercent));
@@ -310,8 +384,21 @@ function TuneIFsPage({
         <button
           type="button"
           className="button"
+          onClick={handleModelSetup}
+          disabled={running || modelSetupRunning}
+        >
+          {modelSetupRunning ? "Setting up..." : "Model Setup"}
+        </button>
+        <button
+          type="button"
+          className="button"
           onClick={handleRunClick}
-          disabled={running || !outputDirectory}
+          disabled={
+            running ||
+            modelSetupRunning ||
+            !outputDirectory ||
+            !modelSetupResult
+          }
         >
           {running ? "Running..." : "Run IFs"}
         </button>
@@ -319,7 +406,7 @@ function TuneIFsPage({
           type="button"
           className="button secondary"
           onClick={handleChangeOutputDirectory}
-          disabled={running}
+          disabled={running || modelSetupRunning}
         >
           Change output folder
         </button>
