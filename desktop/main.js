@@ -2,7 +2,6 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('fs');
-const axios = require('axios');
 
 const isDev = !app.isPackaged;
 const STATIC_IFS_ARGS = ['-1', 'true', 'true', '1', 'false'];
@@ -101,6 +100,66 @@ ipcMain.handle('get-default-output-dir', async () => {
 });
 
 const REQUIRED_INPUT_SHEETS = ['AnalFunc', 'TablFunc', 'IFsVar', 'DataDict'];
+
+function runPythonScript(scriptName, args = []) {
+  return new Promise((resolve, reject) => {
+    const scriptPath = path.join(__dirname, '..', 'backend', scriptName);
+    const pythonArgs = [scriptPath, ...args];
+
+    const processOptions = {
+      cwd: path.join(__dirname, '..'),
+      windowsHide: true,
+    };
+
+    let stdout = '';
+    let stderr = '';
+
+    const pythonProcess = spawn('python', pythonArgs, processOptions);
+
+    pythonProcess.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    pythonProcess.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    pythonProcess.on('error', (error) => {
+      reject(error);
+    });
+
+    pythonProcess.on('close', (code) => {
+      if (stderr.trim()) {
+        reject(new Error(stderr.trim()));
+        return;
+      }
+
+      if (code !== 0) {
+        const message = stdout.trim();
+        reject(new Error(message || `Python process exited with code ${code}`));
+        return;
+      }
+
+      const lines = stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (let idx = lines.length - 1; idx >= 0; idx -= 1) {
+        const candidate = lines[idx];
+        try {
+          const parsed = JSON.parse(candidate);
+          resolve(parsed);
+          return;
+        } catch (error) {
+          // Not JSON, continue searching.
+        }
+      }
+
+      reject(new Error(`Failed to parse JSON output: ${stdout.trim()}`));
+    });
+  });
+}
 
 function normalizeValidationPayload(payload) {
   if (typeof payload === 'string') {
@@ -202,91 +261,48 @@ function ensurePathChecks(payload, normalized) {
 
 ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
   const normalized = normalizeValidationPayload(rawPayload);
-  return new Promise((resolve) => {
-    const scriptPath = path.join(__dirname, '..', 'backend', 'validate_ifs.py');
-    const fallbackResponse = createFallbackValidation(normalized, ['Python error']);
-    let resolved = false;
+  const fallbackResponse = createFallbackValidation(normalized, ['Python error']);
 
-    const finish = (payload) => {
-      const result = ensurePathChecks(payload, normalized);
-      if (
-        result &&
-        typeof result === 'object' &&
-        Object.prototype.hasOwnProperty.call(result, 'valid')
-      ) {
-        if (result.valid) {
-          const displayPath = result.pathChecks?.ifsFolder?.displayPath;
-          lastValidatedPath = displayPath ? path.resolve(displayPath) : null;
-          const candidateBaseYear = Number(result.base_year);
-          lastBaseYear = Number.isFinite(candidateBaseYear)
-            ? candidateBaseYear
-            : null;
-        } else {
-          lastValidatedPath = null;
-          lastBaseYear = null;
-        }
+  if (!normalized.ifsPath) {
+    lastValidatedPath = null;
+    lastBaseYear = null;
+    return createFallbackValidation(normalized, ['No folder path provided']);
+  }
+
+  const args = [normalized.ifsPath];
+  if (normalized.outputPath) {
+    args.push('--output-path', normalized.outputPath);
+  }
+  if (normalized.inputFilePath) {
+    args.push('--input-file', normalized.inputFilePath);
+  }
+
+  try {
+    const response = await runPythonScript('validate_ifs.py', args);
+    const result = ensurePathChecks(response, normalized);
+    if (
+      result &&
+      typeof result === 'object' &&
+      Object.prototype.hasOwnProperty.call(result, 'valid')
+    ) {
+      if (result.valid) {
+        const displayPath = result.pathChecks?.ifsFolder?.displayPath;
+        lastValidatedPath = displayPath ? path.resolve(displayPath) : null;
+        const candidateBaseYear = Number(result.base_year);
+        lastBaseYear = Number.isFinite(candidateBaseYear)
+          ? candidateBaseYear
+          : null;
+      } else {
+        lastValidatedPath = null;
+        lastBaseYear = null;
       }
-
-      if (!resolved) {
-        resolved = true;
-        resolve(result);
-      }
-    };
-
-    try {
-      if (!normalized.ifsPath) {
-        const missingPathFallback = createFallbackValidation(normalized, [
-          'No folder path provided',
-        ]);
-        finish(missingPathFallback);
-        return;
-      }
-
-      const args = [scriptPath, normalized.ifsPath];
-      if (normalized.outputPath) {
-        args.push('--output-path', normalized.outputPath);
-      }
-      if (normalized.inputFilePath) {
-        args.push('--input-file', normalized.inputFilePath);
-      }
-
-      const pythonProcess = spawn('python', args, {
-        cwd: path.join(__dirname, '..'),
-        windowsHide: true,
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      pythonProcess.stdout.on('data', (data) => {
-        stdout += data.toString();
-      });
-
-      pythonProcess.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
-      pythonProcess.on('error', () => {
-        finish(fallbackResponse);
-      });
-
-      pythonProcess.on('close', (code) => {
-        if (stderr.trim() || code !== 0) {
-          finish(fallbackResponse);
-          return;
-        }
-
-        try {
-          const parsed = JSON.parse(stdout);
-          finish(parsed);
-        } catch (err) {
-          finish(fallbackResponse);
-        }
-      });
-    } catch (error) {
-      finish(fallbackResponse);
     }
-  });
+    return result;
+  } catch (error) {
+    lastValidatedPath = null;
+    lastBaseYear = null;
+    return ensurePathChecks(fallbackResponse, normalized);
+  }
 });
 
 function launchIFsRun(payload) {
@@ -516,13 +532,67 @@ function launchIFsRun(payload) {
 }
 
 ipcMain.handle('run-ifs', async (_event, payload) => launchIFsRun(payload));
-ipcMain.handle('run_ifs', async (_event, payload) => launchIFsRun(payload));
-ipcMain.handle('model_setup', async (_event, payload) => {
-  try {
-    const res = await axios.post('http://127.0.0.1:5000/model_setup', payload);
-    return res.data;
-  } catch (err) {
-    console.error('Model Setup error:', err);
-    throw err;
+ipcMain.handle('run_ifs', async (_event, payload) => {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Invalid payload for run_ifs');
   }
+
+  if (!payload.validatedPath) {
+    throw new Error('run_ifs requires a validatedPath');
+  }
+
+  if (!payload.outputDirectory) {
+    throw new Error('run_ifs requires an outputDirectory');
+  }
+
+  if (payload.endYear == null) {
+    throw new Error('run_ifs requires an endYear');
+  }
+
+  const args = [
+    '--ifs-root',
+    payload.validatedPath,
+    '--end-year',
+    String(payload.endYear),
+    '--output-dir',
+    payload.outputDirectory,
+  ];
+
+  if (payload.baseYear != null) {
+    args.push('--base-year', String(payload.baseYear));
+  }
+
+  return runPythonScript('run_ifs.py', args);
+});
+
+ipcMain.handle('model_setup', async (_event, payload) =>
+  runPythonScript('model_setup.py', [
+    '--payload',
+    JSON.stringify({
+      ifs_root: payload.validatedPath,
+      baseYear: payload.baseYear,
+      endYear: payload.endYear,
+      parameters: payload.parameters,
+      coefficients: payload.coefficients,
+      param_dim_dict: payload.paramDim || {},
+    }),
+  ]),
+);
+
+ipcMain.handle('validate_ifs', async (_event, payload = {}) => {
+  if (!payload.ifsPath || typeof payload.ifsPath !== 'string') {
+    throw new Error('validate_ifs requires an ifsPath');
+  }
+
+  const args = [payload.ifsPath];
+
+  if (payload.outputPath) {
+    args.push('--output-path', payload.outputPath);
+  }
+
+  if (payload.inputFilePath) {
+    args.push('--input-file', payload.inputFilePath);
+  }
+
+  return runPythonScript('validate_ifs.py', args);
 });
