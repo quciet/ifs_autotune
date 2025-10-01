@@ -25,6 +25,7 @@ type View = "validate" | "tune";
 type TuneIFsPageProps = {
   onBack: () => void;
   validatedPath: string;
+  validatedInputPath: string;
   baseYear?: number | null;
   outputDirectory: string | null;
   requestOutputDirectory: () => Promise<string | null>;
@@ -59,6 +60,7 @@ function calculateProgressPercentage(
 function TuneIFsPage({
   onBack,
   validatedPath,
+  validatedInputPath,
   baseYear,
   outputDirectory,
   requestOutputDirectory,
@@ -225,6 +227,18 @@ function TuneIFsPage({
 
     setError(null);
 
+    if (!validatedPath || !validatedPath.trim()) {
+      setError("Validated IFs folder path is missing. Please re-run validation.");
+      return;
+    }
+
+    if (!validatedInputPath || !validatedInputPath.trim()) {
+      setError(
+        "Validated input file path is missing. Please re-run validation to continue.",
+      );
+      return;
+    }
+
     const parsedEndYear = Number(endYearInput);
     if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
       setError("Please enter a valid end year.");
@@ -246,6 +260,8 @@ function TuneIFsPage({
         parameters: parameterRef.current,
         coefficients: coefficientRef.current,
         paramDim: paramDimensionRef.current,
+        validatedPath,
+        inputFilePath: validatedInputPath,
       });
 
       if (response.status === "success") {
@@ -1013,7 +1029,12 @@ function App() {
       {view === "tune" && result?.valid && (
         <TuneIFsPage
           onBack={() => setView("validate")}
-          validatedPath={ifsFolderPath?.trim() ?? ""}
+          validatedPath={
+            lastValidatedIfsFolder ?? ifsFolderPath?.trim() ?? ""
+          }
+          validatedInputPath={
+            lastValidatedInputFile ?? inputFilePath?.trim() ?? ""
+          }
           baseYear={result?.base_year}
           outputDirectory={outputDirectory}
           requestOutputDirectory={requestOutputDirectory}

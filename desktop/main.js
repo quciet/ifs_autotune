@@ -565,19 +565,27 @@ ipcMain.handle('run_ifs', async (_event, payload) => {
   return runPythonScript('run_ifs.py', args);
 });
 
-ipcMain.handle('model_setup', async (_event, payload) =>
-  runPythonScript('model_setup.py', [
-    '--payload',
-    JSON.stringify({
-      ifs_root: payload.validatedPath,
-      baseYear: payload.baseYear,
-      endYear: payload.endYear,
-      parameters: payload.parameters,
-      coefficients: payload.coefficients,
-      param_dim_dict: payload.paramDim || {},
-    }),
-  ]),
-);
+ipcMain.handle('model_setup', async (_event, payload) => {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Invalid payload for model_setup');
+  }
+
+  const validatedPath =
+    typeof payload.validatedPath === 'string' ? payload.validatedPath.trim() : '';
+  const inputFilePath =
+    typeof payload.inputFilePath === 'string' ? payload.inputFilePath.trim() : '';
+
+  if (!validatedPath) {
+    throw new Error('model_setup requires a validatedPath');
+  }
+
+  if (!inputFilePath) {
+    throw new Error('model_setup requires an inputFilePath');
+  }
+
+  const args = ['--ifs-root', validatedPath, '--input-file', inputFilePath];
+  return runPythonScript('model_setup.py', args);
+});
 
 ipcMain.handle('validate_ifs', async (_event, payload = {}) => {
   if (!payload.ifsPath || typeof payload.ifsPath !== 'string') {
