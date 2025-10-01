@@ -5,7 +5,9 @@ requires-python = ">=3.11"
 dependencies = [
   "pydantic",
   "pydantic-settings",
-  "pytest"
+  "pytest",
+  "pandas",
+  "openpyxl",
 ]
 
 [tool.pytest.ini_options]
