@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('fs');
+const axios = require('axios');
 
 const isDev = !app.isPackaged;
 const STATIC_IFS_ARGS = ['-1', 'true', 'true', '1', 'false'];
@@ -288,121 +289,6 @@ ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
   });
 });
 
-ipcMain.handle('model_setup', async (_event, payload = {}) => {
-  if (!lastValidatedPath) {
-    return { status: 'error', message: 'Please validate an IFs folder first.' };
-  }
-
-  const desiredEndYear = Number(payload?.endYear ?? payload?.end_year ?? NaN);
-  if (!Number.isFinite(desiredEndYear) || desiredEndYear <= 0) {
-    return { status: 'error', message: 'Invalid end year provided.' };
-  }
-
-  const rawBaseYear = payload?.baseYear ?? payload?.base_year ?? lastBaseYear ?? null;
-  const candidateBaseYear = Number(rawBaseYear);
-  const baseYear = Number.isFinite(candidateBaseYear) ? candidateBaseYear : null;
-  if (baseYear != null) {
-    lastBaseYear = baseYear;
-  }
-
-  const parameters =
-    payload && typeof payload === 'object' && typeof payload.parameters === 'object'
-      ? payload.parameters
-      : {};
-  const coefficients =
-    payload && typeof payload === 'object' && typeof payload.coefficients === 'object'
-      ? payload.coefficients
-      : {};
-  const paramDim =
-    payload && typeof payload === 'object' && typeof payload.param_dim_dict === 'object'
-      ? payload.param_dim_dict
-      : {};
-
-  const scriptPath = path.join(__dirname, '..', 'backend', 'model_setup.py');
-  const args = [
-    scriptPath,
-    '--payload',
-    JSON.stringify({
-      ifs_root: lastValidatedPath,
-      baseYear,
-      endYear: desiredEndYear,
-      parameters,
-      coefficients,
-      param_dim_dict: paramDim,
-    }),
-  ];
-
-  return new Promise((resolve) => {
-    let resolved = false;
-
-    const finish = (result) => {
-      if (!resolved) {
-        resolved = true;
-        resolve(result);
-      }
-    };
-
-    let pythonProcess;
-    try {
-      pythonProcess = spawn('python', args, {
-        cwd: path.join(__dirname, '..'),
-        windowsHide: true,
-      });
-    } catch (error) {
-      finish({ status: 'error', message: 'Unable to launch model setup.' });
-      return;
-    }
-
-    let stdout = '';
-    let stderr = '';
-
-    pythonProcess.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    pythonProcess.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    pythonProcess.on('error', (error) => {
-      finish({ status: 'error', message: error?.message || 'Model setup failed.' });
-    });
-
-    pythonProcess.on('close', () => {
-      if (stderr.trim()) {
-        finish({ status: 'error', message: stderr.trim() });
-        return;
-      }
-
-      const trimmed = stdout.trim();
-      if (!trimmed) {
-        finish({ status: 'error', message: 'No response from model setup.' });
-        return;
-      }
-
-      const lines = trimmed.split(/\r?\n/);
-      for (let idx = lines.length - 1; idx >= 0; idx -= 1) {
-        const candidate = lines[idx];
-        try {
-          const parsed = JSON.parse(candidate);
-          if (parsed && parsed.status === 'success') {
-            finish(parsed);
-            return;
-          }
-          if (parsed && parsed.status === 'error') {
-            finish(parsed);
-            return;
-          }
-        } catch (error) {
-          // continue searching
-        }
-      }
-
-      finish({ status: 'error', message: 'Unexpected response from model setup.' });
-    });
-  });
-});
-
 function launchIFsRun(payload) {
   if (!lastValidatedPath) {
     return Promise.resolve({
@@ -631,3 +517,12 @@ function launchIFsRun(payload) {
 
 ipcMain.handle('run-ifs', async (_event, payload) => launchIFsRun(payload));
 ipcMain.handle('run_ifs', async (_event, payload) => launchIFsRun(payload));
+ipcMain.handle('model_setup', async (_event, payload) => {
+  try {
+    const res = await axios.post('http://127.0.0.1:5000/model_setup', payload);
+    return res.data;
+  } catch (err) {
+    console.error('Model Setup error:', err);
+    throw err;
+  }
+});
