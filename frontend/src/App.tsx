@@ -17,23 +17,12 @@ import {
 
 type View = "validate" | "tune";
 
-type RunConfigModalProps = {
-  isOpen: boolean;
-  onClose: () => void;
-  onSubmit: () => void;
-  endYearInput: string;
-  onEndYearChange: (event: ChangeEvent<HTMLInputElement>) => void;
-  running: boolean;
-  baseYear: number | null;
-};
-
 type TuneIFsPageProps = {
   onBack: () => void;
   validatedPath: string;
   baseYear?: number | null;
   outputDirectory: string | null;
   requestOutputDirectory: () => Promise<string | null>;
-  runModalTrigger: number;
 };
 
 function calculateProgressPercentage(
@@ -62,96 +51,56 @@ function calculateProgressPercentage(
   return clamped;
 }
 
-function RunConfigModal({
-  isOpen,
-  onClose,
-  onSubmit,
-  endYearInput,
-  onEndYearChange,
-  running,
-  baseYear,
-}: RunConfigModalProps) {
-  if (!isOpen) {
-    return null;
-  }
-
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-content">
-        <h3 className="modal-title">Configure IFs Run</h3>
-        <p className="modal-subtitle">
-          Select the target end year and launch the simulation.
-        </p>
-        <p className="modal-base-year">
-          <strong>Base year:</strong>{" "}
-          {typeof baseYear === "number" && Number.isFinite(baseYear)
-            ? baseYear
-            : "Unknown"}
-        </p>
-        <label className="label" htmlFor="modal-end-year">
-          End Year
-        </label>
-        <input
-          id="modal-end-year"
-          type="number"
-          className="path-input"
-          value={endYearInput}
-          onChange={onEndYearChange}
-          disabled={running}
-          min={baseYear ?? undefined}
-        />
-        <div className="modal-actions">
-          <button
-            type="button"
-            className="button secondary"
-            onClick={onClose}
-            disabled={running}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="button"
-            onClick={onSubmit}
-            disabled={running}
-          >
-            {running ? "Running..." : "Run"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function TuneIFsPage({
   onBack,
   validatedPath,
   baseYear,
   outputDirectory,
   requestOutputDirectory,
-  runModalTrigger,
 }: TuneIFsPageProps) {
+  const DEFAULT_END_YEAR = 2050;
+  const MAX_END_YEAR = 2150;
+  const FALLBACK_MIN_END_YEAR = 1900;
+
   const [endYearInput, setEndYearInput] = useState("2050");
+  const [endYear, setEndYear] = useState<number>(DEFAULT_END_YEAR);
   const [running, setRunning] = useState(false);
   const [progressYear, setProgressYear] = useState<number | null>(null);
   const [progressPercent, setProgressPercent] = useState(0);
   const [metadata, setMetadata] = useState<RunIFsSuccess | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showRunModal, setShowRunModal] = useState(false);
-  const [lastModalTrigger, setLastModalTrigger] = useState<number | null>(null);
+  const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
+    typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
+  );
   const baseYearRef = useRef<number | null>(baseYear ?? null);
-  const targetEndYearRef = useRef<number | null>(null);
+  const targetEndYearRef = useRef<number | null>(DEFAULT_END_YEAR);
+
+  const minEndYear =
+    typeof effectiveBaseYear === "number" && Number.isFinite(effectiveBaseYear)
+      ? Math.min(effectiveBaseYear, MAX_END_YEAR)
+      : FALLBACK_MIN_END_YEAR;
+
+  const clampEndYear = (value: number) =>
+    Math.min(MAX_END_YEAR, Math.max(minEndYear, value));
 
   useEffect(() => {
-    baseYearRef.current = baseYear ?? null;
+    const normalized =
+      typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null;
+    baseYearRef.current = normalized;
+    setEffectiveBaseYear(normalized);
   }, [baseYear]);
 
   useEffect(() => {
-    if (runModalTrigger && runModalTrigger !== lastModalTrigger) {
-      setShowRunModal(true);
-      setLastModalTrigger(runModalTrigger);
-    }
-  }, [runModalTrigger, lastModalTrigger]);
+    setEndYear((current) => {
+      const fallback = Number.isFinite(current) ? (current as number) : DEFAULT_END_YEAR;
+      const next = clampEndYear(fallback);
+      if (next !== current) {
+        setEndYearInput(String(next));
+      }
+      targetEndYearRef.current = next;
+      return next;
+    });
+  }, [minEndYear]);
 
   useEffect(() => {
     const unsubscribe = subscribeToIFsProgress((event: IFsProgressEvent) => {
@@ -188,21 +137,43 @@ function TuneIFsPage({
   useEffect(() => {
     if (metadata && typeof metadata.base_year === "number") {
       baseYearRef.current = metadata.base_year;
+      setEffectiveBaseYear(metadata.base_year);
     }
   }, [metadata]);
 
-  const handleEndYearChange = (event: ChangeEvent<HTMLInputElement>) => {
-    setEndYearInput(event.target.value);
-  };
+  const handleEndYearInputChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = event.target.value;
+    setEndYearInput(value);
 
-  const openRunModal = () => {
-    setShowRunModal(true);
-  };
-
-  const closeRunModal = () => {
-    if (!running) {
-      setShowRunModal(false);
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      const clamped = clampEndYear(parsed);
+      setEndYear(clamped);
+      targetEndYearRef.current = clamped;
     }
+  };
+
+  const handleEndYearBlur = () => {
+    const parsed = Number(endYearInput);
+    if (Number.isFinite(parsed)) {
+      const clamped = clampEndYear(parsed);
+      setEndYear(clamped);
+      setEndYearInput(String(clamped));
+      targetEndYearRef.current = clamped;
+    } else {
+      const fallback = clampEndYear(DEFAULT_END_YEAR);
+      setEndYear(fallback);
+      setEndYearInput(String(fallback));
+      targetEndYearRef.current = fallback;
+    }
+  };
+
+  const handleSliderChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const parsed = Number(event.target.value);
+    const clamped = clampEndYear(parsed);
+    setEndYear(clamped);
+    setEndYearInput(String(clamped));
+    targetEndYearRef.current = clamped;
   };
 
   const handleChangeOutputDirectory = async () => {
@@ -236,15 +207,17 @@ function TuneIFsPage({
       return;
     }
 
-    targetEndYearRef.current = parsedEndYear;
-    setShowRunModal(false);
+    const clampedEndYear = clampEndYear(parsedEndYear);
+    targetEndYearRef.current = clampedEndYear;
+    setEndYear(clampedEndYear);
+    setEndYearInput(String(clampedEndYear));
     setRunning(true);
     setMetadata(null);
     setProgressYear(null);
     setProgressPercent(0);
 
     const response = await runIFs({
-      endYear: parsedEndYear,
+      endYear: clampedEndYear,
       baseYear: baseYearRef.current,
       outputDirectory,
     });
@@ -256,6 +229,7 @@ function TuneIFsPage({
       targetEndYearRef.current = response.end_year;
       if (typeof response.base_year === "number") {
         baseYearRef.current = response.base_year;
+        setEffectiveBaseYear(response.base_year);
       }
     } else {
       setError(response.message);
@@ -290,8 +264,8 @@ function TuneIFsPage({
         <p className="tune-path">
           <span className="label">Validated folder:</span> {validatedPath || "Unknown"}
         </p>
-        {baseYearRef.current != null && (
-          <p className="tune-base">Base year detected: {baseYearRef.current}</p>
+        {effectiveBaseYear != null && (
+          <p className="tune-base">Base year detected: {effectiveBaseYear}</p>
         )}
         <p className="tune-output">
           <span className="label">Output folder:</span>{" "}
@@ -299,11 +273,41 @@ function TuneIFsPage({
         </p>
       </div>
 
+      <div className="tune-controls">
+        <div className="end-year-control">
+          <label className="label" htmlFor="end-year-input">
+            End Year
+          </label>
+          <div className="end-year-inputs">
+            <input
+              id="end-year-input"
+              type="number"
+              className="path-input end-year-number"
+              value={endYearInput}
+              onChange={handleEndYearInputChange}
+              onBlur={handleEndYearBlur}
+              min={minEndYear}
+              max={MAX_END_YEAR}
+              disabled={running}
+            />
+            <input
+              type="range"
+              className="end-year-slider"
+              value={endYear}
+              onChange={handleSliderChange}
+              min={minEndYear}
+              max={MAX_END_YEAR}
+              disabled={running}
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="tune-actions">
         <button
           type="button"
           className="button"
-          onClick={openRunModal}
+          onClick={handleRunClick}
           disabled={running || !outputDirectory}
         >
           {running ? "Running..." : "Run IFs"}
@@ -367,15 +371,6 @@ function TuneIFsPage({
         </button>
       </div>
 
-      <RunConfigModal
-        isOpen={showRunModal}
-        onClose={closeRunModal}
-        onSubmit={handleRunClick}
-        endYearInput={endYearInput}
-        onEndYearChange={handleEndYearChange}
-        running={running}
-        baseYear={baseYearRef.current}
-      />
     </section>
   );
 }
@@ -389,7 +384,6 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("validate");
-  const [runModalTrigger, setRunModalTrigger] = useState(0);
   const [info, setInfo] = useState<string | null>(null);
   const [nativeFolderPickerAvailable, setNativeFolderPickerAvailable] =
     useState<boolean>(() =>
@@ -548,7 +542,6 @@ function App() {
     }
 
     setView("tune");
-    setRunModalTrigger((prev) => prev + 1);
   };
 
   const handleBaseYearChange = () => {
@@ -709,7 +702,6 @@ function App() {
           baseYear={result?.base_year}
           outputDirectory={outputDirectory}
           requestOutputDirectory={requestOutputDirectory}
-          runModalTrigger={runModalTrigger}
         />
       )}
 
