@@ -15,6 +15,9 @@ import {
   type RunIFsSuccess,
 } from "./api";
 
+const REQUIRED_INPUT_SHEETS = ["AnalFunc", "TablFunc", "IFsVar", "DataDict"];
+const DEFAULT_INPUT_FILE = "./input/StartingPointTable.xlsx";
+
 type View = "validate" | "tune";
 
 type RunConfigModalProps = {
@@ -385,6 +388,11 @@ function App() {
   const [lastValidatedIfsFolder, setLastValidatedIfsFolder] =
     useState<string | null>(null);
   const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
+  const [lastValidatedOutputDirectory, setLastValidatedOutputDirectory] =
+    useState<string | null>(null);
+  const [inputFilePath, setInputFilePath] = useState<string>(DEFAULT_INPUT_FILE);
+  const [lastValidatedInputFile, setLastValidatedInputFile] =
+    useState<string | null>(null);
   const [result, setResult] = useState<CheckResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -395,10 +403,15 @@ function App() {
     useState<boolean>(() =>
       typeof window !== "undefined" && Boolean(window.electron?.selectFolder),
     );
+  const [nativeFilePickerAvailable, setNativeFilePickerAvailable] =
+    useState<boolean>(() =>
+      typeof window !== "undefined" && Boolean(window.electron?.selectFile),
+    );
 
   useEffect(() => {
     if (typeof window !== "undefined") {
       setNativeFolderPickerAvailable(Boolean(window.electron?.selectFolder));
+      setNativeFilePickerAvailable(Boolean(window.electron?.selectFile));
     }
   }, []);
 
@@ -474,8 +487,11 @@ function App() {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const trimmedPath = ifsFolderPath?.trim() ?? "";
-    if (!trimmedPath) {
+    const trimmedIfsPath = ifsFolderPath?.trim() ?? "";
+    const trimmedOutputPath = outputDirectory?.trim() ?? "";
+    const trimmedInputPath = inputFilePath?.trim() ?? "";
+
+    if (!trimmedIfsPath) {
       setError("Please select an IFs folder before validating.");
       setResult(null);
       return;
@@ -487,10 +503,31 @@ function App() {
     setResult(null);
 
     try {
-      const res = await validateIFsFolder(trimmedPath);
-      setIfsFolderPath(trimmedPath);
+      const res = await validateIFsFolder({
+        ifsPath: trimmedIfsPath,
+        outputPath: trimmedOutputPath || null,
+        inputFilePath: trimmedInputPath || null,
+      });
+      setIfsFolderPath(trimmedIfsPath);
+      setOutputDirectory(
+        trimmedOutputPath.length > 0 ? trimmedOutputPath : null,
+      );
+      setInputFilePath(trimmedInputPath || "");
       setResult(res);
-      setLastValidatedIfsFolder(res.valid ? trimmedPath : null);
+
+      if (res.valid) {
+        setLastValidatedIfsFolder(trimmedIfsPath);
+        setLastValidatedOutputDirectory(
+          trimmedOutputPath.length > 0 ? trimmedOutputPath : null,
+        );
+        setLastValidatedInputFile(
+          trimmedInputPath.length > 0 ? trimmedInputPath : null,
+        );
+      } else {
+        setLastValidatedIfsFolder(null);
+        setLastValidatedOutputDirectory(null);
+        setLastValidatedInputFile(null);
+      }
     } catch (err) {
       setError("Failed to validate the IFs folder. Please try again.");
     } finally {
@@ -510,6 +547,10 @@ function App() {
       );
       if (selected) {
         setOutputDirectory(selected);
+        if (selected !== lastValidatedOutputDirectory) {
+          setResult(null);
+          setLastValidatedOutputDirectory(null);
+        }
         return selected;
       }
       return null;
@@ -535,6 +576,33 @@ function App() {
           ? err.message
           : "Unable to open the folder picker. Please try again.";
       setError(message);
+    }
+  };
+
+  const handleBrowseInputFile = async () => {
+    setError(null);
+
+    if (!nativeFilePickerAvailable || !window.electron?.selectFile) {
+      setInfo("Native file browsing is only available in the desktop app.");
+      return;
+    }
+
+    try {
+      setInfo(null);
+      const selected = await window.electron.selectFile(
+        inputFilePath && inputFilePath.length > 0
+          ? inputFilePath
+          : DEFAULT_INPUT_FILE,
+      );
+      if (selected) {
+        setInputFilePath(selected);
+        if (selected !== lastValidatedInputFile) {
+          setResult(null);
+          setLastValidatedInputFile(null);
+        }
+      }
+    } catch (err) {
+      setError("Unable to open the file picker. Please try again.");
     }
   };
 
@@ -567,6 +635,32 @@ function App() {
     ifsFolderPath && ifsFolderPath.length > 0
       ? ifsFolderPath
       : "No folder selected";
+  const inputFileTitle =
+    inputFilePath && inputFilePath.length > 0
+      ? inputFilePath
+      : "No file selected";
+  const pathChecks = result?.pathChecks;
+  const ifsFolderCheck = pathChecks?.ifsFolder;
+  const outputFolderCheck = pathChecks?.outputFolder;
+  const inputFileCheck = pathChecks?.inputFile;
+  const ifsFolderReady =
+    Boolean(ifsFolderCheck?.exists) && (ifsFolderCheck?.readable ?? true);
+  const outputFolderReady =
+    Boolean(outputFolderCheck?.exists) && outputFolderCheck?.writable === true;
+  const inputFileAvailable =
+    Boolean(inputFileCheck?.exists) && Boolean(inputFileCheck?.readable);
+  const sheetStatuses = REQUIRED_INPUT_SHEETS.map((name) => ({
+    name,
+    present: Boolean(inputFileCheck?.sheets?.[name]),
+  }));
+  const allSheetsPresent = sheetStatuses.every((sheet) => sheet.present);
+  const missingSheetNames = inputFileCheck?.missingSheets ?? [];
+  const sheetMessage =
+    inputFileCheck?.exists &&
+    inputFileCheck?.readable &&
+    missingSheetNames.length > 0
+      ? `Missing sheets: ${missingSheetNames.join(", ")}`
+      : null;
 
   return (
     <div className="container">
@@ -623,10 +717,42 @@ function App() {
                 type="text"
                 className="path-input"
                 value={outputDirectory ?? ""}
-                onChange={(e) => setOutputDirectory(e.target.value)}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  setOutputDirectory(nextValue);
+                  if (nextValue !== lastValidatedOutputDirectory) {
+                    setResult(null);
+                    setLastValidatedOutputDirectory(null);
+                  }
+                }}
                 placeholder="No folder selected"
                 spellCheck={false}
                 title={outputTitle}
+              />
+            </div>
+            <div className="input-row">
+              <button
+                type="button"
+                className="button"
+                onClick={handleBrowseInputFile}
+              >
+                Change Input Folder
+              </button>
+              <input
+                type="text"
+                className="path-input"
+                value={inputFilePath}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  setInputFilePath(nextValue);
+                  if (nextValue !== lastValidatedInputFile) {
+                    setResult(null);
+                    setLastValidatedInputFile(null);
+                  }
+                }}
+                placeholder="No file selected"
+                spellCheck={false}
+                title={inputFileTitle}
               />
             </div>
             <div className="button-row">
@@ -665,6 +791,108 @@ function App() {
               </div>
               {result.base_year != null && (
                 <div className="base-year">Base year: {result.base_year}</div>
+              )}
+
+              {(ifsFolderCheck || outputFolderCheck || inputFileCheck) && (
+                <div className="summary">
+                  {ifsFolderCheck && (
+                    <div
+                      className={`summary-line ${
+                        ifsFolderReady ? "success" : "error"
+                      }`}
+                    >
+                      <span className="summary-label">
+                        {ifsFolderReady
+                          ? "IFs folder found:"
+                          : "IFs folder missing."}
+                      </span>
+                      {ifsFolderReady && (
+                        <span className="summary-value">
+                          {ifsFolderCheck.displayPath ?? ifsFolderTitle}
+                        </span>
+                      )}
+                      {!ifsFolderReady && ifsFolderCheck.message && (
+                        <span className="summary-message">
+                          {ifsFolderCheck.message}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {outputFolderCheck && (
+                    <div
+                      className={`summary-line ${
+                        outputFolderReady ? "success" : "error"
+                      }`}
+                    >
+                      <span className="summary-label">
+                        {outputFolderReady
+                          ? "Output folder ready:"
+                          : outputFolderCheck.exists
+                          ? "Output folder limited:"
+                          : "Output folder missing."}
+                      </span>
+                      {outputFolderCheck.exists && (
+                        <span className="summary-value">
+                          {outputFolderCheck.displayPath ?? outputTitle}
+                        </span>
+                      )}
+                      {outputFolderCheck.message && (
+                        <span className="summary-message">
+                          {outputFolderCheck.message}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {inputFileCheck && (
+                    <>
+                      <div
+                        className={`summary-line ${
+                          inputFileAvailable ? "success" : "error"
+                        }`}
+                      >
+                        <span className="summary-label">
+                          {inputFileAvailable
+                            ? "Input file found:"
+                            : "Input file missing."}
+                        </span>
+                        {inputFileAvailable && (
+                          <span className="summary-value">
+                            {inputFileCheck.displayPath ?? inputFileTitle}
+                          </span>
+                        )}
+                        {!inputFileAvailable && inputFileCheck.message && (
+                          <span className="summary-message">
+                            {inputFileCheck.message}
+                          </span>
+                        )}
+                      </div>
+                      <div
+                        className={`summary-line ${
+                          allSheetsPresent ? "success" : "error"
+                        }`}
+                      >
+                        <span className="summary-label">Sheets found:</span>
+                        <span className="summary-value sheet-list">
+                          {sheetStatuses.map(({ name, present }) => (
+                            <span
+                              key={name}
+                              className={`sheet-status ${
+                                present ? "present" : "missing"
+                              }`}
+                            >
+                              {name} {present ? "✓" : "✗"}
+                            </span>
+                          ))}
+                        </span>
+                        {sheetMessage && (
+                          <span className="summary-message">{sheetMessage}</span>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
 
               {requirements.length > 0 && (

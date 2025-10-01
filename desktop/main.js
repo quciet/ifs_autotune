@@ -72,6 +72,25 @@ ipcMain.handle('select-folder', async (_event, payload = {}) => {
   return filePaths[0];
 });
 
+ipcMain.handle('select-input-file', async (_event, payload = {}) => {
+  const defaultPath =
+    typeof payload?.defaultPath === 'string' && payload.defaultPath.trim().length > 0
+      ? payload.defaultPath
+      : path.join(app.getAppPath(), 'input');
+
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    defaultPath,
+    filters: [{ name: 'Excel Files', extensions: ['xlsx'] }],
+  });
+
+  if (canceled || filePaths.length === 0) {
+    return null;
+  }
+
+  return filePaths[0];
+});
+
 ipcMain.handle('get-default-output-dir', async () => {
   const outputPath = path.join(app.getAppPath(), 'output');
   if (!fs.existsSync(outputPath)) {
@@ -80,21 +99,124 @@ ipcMain.handle('get-default-output-dir', async () => {
   return outputPath;
 });
 
-ipcMain.handle('validate-ifs-folder', async (_event, folderPath) => {
+const REQUIRED_INPUT_SHEETS = ['AnalFunc', 'TablFunc', 'IFsVar', 'DataDict'];
+
+function normalizeValidationPayload(payload) {
+  if (typeof payload === 'string') {
+    return {
+      ifsPath: payload.trim() || null,
+      outputPath: null,
+      inputFilePath: null,
+    };
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return { ifsPath: null, outputPath: null, inputFilePath: null };
+  }
+
+  const rawIfs =
+    typeof payload.ifsPath === 'string'
+      ? payload.ifsPath
+      : typeof payload.path === 'string'
+      ? payload.path
+      : typeof payload.folderPath === 'string'
+      ? payload.folderPath
+      : null;
+  const rawOutput =
+    typeof payload.outputPath === 'string'
+      ? payload.outputPath
+      : typeof payload.outputDirectory === 'string'
+      ? payload.outputDirectory
+      : null;
+  const rawInput =
+    typeof payload.inputFilePath === 'string'
+      ? payload.inputFilePath
+      : typeof payload.inputFile === 'string'
+      ? payload.inputFile
+      : null;
+
+  const cleaned = (value) => {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  };
+
+  return {
+    ifsPath: cleaned(rawIfs),
+    outputPath: cleaned(rawOutput),
+    inputFilePath: cleaned(rawInput),
+  };
+}
+
+function createFallbackValidation(normalized, missingFiles) {
+  const sheets = REQUIRED_INPUT_SHEETS.reduce((acc, sheet) => {
+    acc[sheet] = false;
+    return acc;
+  }, {});
+
+  return {
+    valid: false,
+    missingFiles,
+    pathChecks: {
+      ifsFolder: {
+        displayPath: normalized.ifsPath,
+        exists: false,
+        readable: false,
+        writable: null,
+        message: 'Validation failed.',
+      },
+      outputFolder: {
+        displayPath: normalized.outputPath,
+        exists: false,
+        readable: false,
+        writable: false,
+        message: 'Validation failed.',
+      },
+      inputFile: {
+        displayPath: normalized.inputFilePath,
+        exists: false,
+        readable: false,
+        message: 'Validation failed.',
+        sheets,
+        missingSheets: [...REQUIRED_INPUT_SHEETS],
+      },
+    },
+  };
+}
+
+function ensurePathChecks(payload, normalized) {
+  if (!payload || typeof payload !== 'object') {
+    return createFallbackValidation(normalized, ['Python error']);
+  }
+
+  if (!payload.pathChecks || typeof payload.pathChecks !== 'object') {
+    const fallback = createFallbackValidation(normalized, ['Python error']);
+    return { ...payload, pathChecks: fallback.pathChecks };
+  }
+
+  return payload;
+}
+
+ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
+  const normalized = normalizeValidationPayload(rawPayload);
   return new Promise((resolve) => {
     const scriptPath = path.join(__dirname, '..', 'backend', 'validate_ifs.py');
-    const fallbackResponse = { valid: false, missingFiles: ['Python error'] };
+    const fallbackResponse = createFallbackValidation(normalized, ['Python error']);
     let resolved = false;
 
     const finish = (payload) => {
+      const result = ensurePathChecks(payload, normalized);
       if (
-        payload &&
-        typeof payload === 'object' &&
-        Object.prototype.hasOwnProperty.call(payload, 'valid')
+        result &&
+        typeof result === 'object' &&
+        Object.prototype.hasOwnProperty.call(result, 'valid')
       ) {
-        if (payload.valid) {
-          lastValidatedPath = path.resolve(folderPath);
-          const candidateBaseYear = Number(payload.base_year);
+        if (result.valid) {
+          const displayPath = result.pathChecks?.ifsFolder?.displayPath;
+          lastValidatedPath = displayPath ? path.resolve(displayPath) : null;
+          const candidateBaseYear = Number(result.base_year);
           lastBaseYear = Number.isFinite(candidateBaseYear)
             ? candidateBaseYear
             : null;
@@ -106,17 +228,28 @@ ipcMain.handle('validate-ifs-folder', async (_event, folderPath) => {
 
       if (!resolved) {
         resolved = true;
-        resolve(payload);
+        resolve(result);
       }
     };
 
     try {
-      if (typeof folderPath !== 'string' || folderPath.trim().length === 0) {
-        finish(fallbackResponse);
+      if (!normalized.ifsPath) {
+        const missingPathFallback = createFallbackValidation(normalized, [
+          'No folder path provided',
+        ]);
+        finish(missingPathFallback);
         return;
       }
 
-      const pythonProcess = spawn('python', [scriptPath, folderPath], {
+      const args = [scriptPath, normalized.ifsPath];
+      if (normalized.outputPath) {
+        args.push('--output-path', normalized.outputPath);
+      }
+      if (normalized.inputFilePath) {
+        args.push('--input-file', normalized.inputFilePath);
+      }
+
+      const pythonProcess = spawn('python', args, {
         cwd: path.join(__dirname, '..'),
         windowsHide: true,
       });
