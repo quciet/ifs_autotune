@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 
@@ -71,9 +72,126 @@ def _normalize_number(value: Any) -> Optional[float]:
     try:
         if isinstance(value, str) and not value.strip():
             return None
-        return float(value)
+        result = float(value)
+        if math.isnan(result):
+            return None
+        return result
     except (TypeError, ValueError):
         return None
+
+
+def _extract_years_from_sce(path: Path) -> Optional[Tuple[int, int]]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            base_year: Optional[int] = None
+            forecast_year: Optional[int] = None
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                parts = [segment.strip() for segment in line.split(",") if segment.strip()]
+                if len(parts) < 2:
+                    continue
+                key = parts[0].lower()
+
+                def _first_int(values: List[str]) -> Optional[int]:
+                    for candidate in values:
+                        try:
+                            return int(float(candidate))
+                        except (TypeError, ValueError):
+                            continue
+                    return None
+
+                if key == "yr_base" and base_year is None:
+                    base_year = _first_int(parts[1:])
+                elif key == "yr_forecast" and forecast_year is None:
+                    forecast_year = _first_int(parts[1:])
+
+                if base_year is not None and forecast_year is not None:
+                    break
+    except FileNotFoundError:
+        return None
+
+    if base_year is None or forecast_year is None:
+        return None
+    return base_year, forecast_year
+
+
+def add_from_startingpoint(ifs_root: Path, excel_path: Path) -> int:
+    sce_path = ifs_root / "Scenario" / "Working.sce"
+    if not sce_path.exists():
+        return 0
+
+    years = _extract_years_from_sce(sce_path)
+    if not years:
+        return 0
+    base_year, forecast_year = years
+    if forecast_year < base_year:
+        return 0
+
+    try:
+        df = pd.read_excel(excel_path, sheet_name="IFsVar", engine="openpyxl")
+    except Exception:
+        return 0
+
+    if df.empty:
+        return 0
+
+    value_count = forecast_year - base_year + 1
+    if value_count <= 0:
+        return 0
+
+    lines_to_append: List[str] = []
+    appended = 0
+
+    for _, row in df.iterrows():
+        switch_value = row.get("Switch")
+        if not isinstance(switch_value, str):
+            switch_value = "" if switch_value is None else str(switch_value)
+        if switch_value.strip().lower() != "on":
+            continue
+
+        variable = row.get("Variable")
+        if not isinstance(variable, str) or not variable.strip():
+            continue
+
+        dimension_raw = row.get("DIMENSION1")
+        try:
+            dimension_value = int(dimension_raw)
+        except (TypeError, ValueError):
+            dimension_value = None
+
+        minimum = _normalize_number(row.get("Minimum"))
+        maximum = _normalize_number(row.get("Maximum"))
+        if minimum is None or maximum is None:
+            continue
+
+        midpoint = (minimum + maximum) / 2.0
+        if math.isnan(midpoint):
+            continue
+
+        value_str = f"{midpoint:.6f}".rstrip("0").rstrip(".")
+        if not value_str:
+            value_str = "0"
+
+        repeated_values = [value_str] * value_count
+
+        if dimension_value == 1:
+            parts = ["CUSTOM", variable.strip(), "World", *repeated_values]
+        else:
+            parts = ["CUSTOM", variable.strip(), *repeated_values]
+
+        lines_to_append.append(",".join(parts))
+        appended += 1
+
+    if not lines_to_append:
+        return 0
+
+    with sce_path.open("a", encoding="utf-8") as handle:
+        for line in lines_to_append:
+            handle.write(line + "\n")
+
+    return appended
 
 
 def _randomize_intercept(value: float) -> float:
@@ -108,7 +226,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    db_path = Path(args.ifs_root) / "RUNFILES" / "Working.run.db"
+    ifs_root = Path(args.ifs_root)
+    db_path = ifs_root / "RUNFILES" / "Working.run.db"
     if not db_path.exists():
         print(
             json.dumps(
@@ -204,7 +323,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception:
             pass
 
-    print(json.dumps({"status": "success", "updates": updates}))
+    appended_variables = add_from_startingpoint(ifs_root, input_path)
+    print(
+        json.dumps(
+            {
+                "status": "success",
+                "updates": updates,
+                "sce_variables_appended": appended_variables,
+            }
+        )
+    )
     return 0
 
 
