@@ -75,7 +75,8 @@ def _is_enabled(value: Any) -> bool:
         return False
     if isinstance(value, (int, float)):
         return int(value) == 1
-    return str(value).strip() == "1"
+    normalized = str(value).strip().lower()
+    return normalized in {"1", "on"}
 
 
 def _normalize_number(value: Any) -> Optional[float]:
@@ -249,12 +250,10 @@ def add_from_startingpoint(ifs_root: Path, excel_path: Path) -> int:
 
     for _, row in df.iterrows():
         switch_value = row.get("Switch")
-        if not isinstance(switch_value, str):
-            switch_value = "" if switch_value is None else str(switch_value)
-        if switch_value.strip().lower() != "on":
+        if not _is_enabled(switch_value):
             continue
 
-        variable = row.get("Variable")
+        variable = row.get("Variable") or row.get("Name")
         if not isinstance(variable, str) or not variable.strip():
             continue
 
