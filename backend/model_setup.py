@@ -421,21 +421,66 @@ def main(argv: Optional[list[str]] = None) -> int:
         sys.stdout.flush()
 
         for row in _collect_rows(sheets):
-            func_name = row.get("Function Name")
-            x_var = row.get("XVariable")
-            y_var = row.get("YVariable")
+            func_name = str(row.get("Function Name") or "").strip()
+            x_var = str(row.get("XVariable") or "").strip()
+            y_var = str(row.get("YVariable") or "").strip()
 
-            if not all(isinstance(value, str) and value.strip() for value in (func_name, x_var, y_var)):
+            if not (func_name and x_var and y_var):
+                print(
+                    json.dumps(
+                        {
+                            "status": "warn",
+                            "message": (
+                                "Skipping row with missing identifiers: "
+                                f"Function={func_name}, X={x_var}, Y={y_var}"
+                            ),
+                        }
+                    )
+                )
                 continue
 
+            print(
+                json.dumps(
+                    {
+                        "status": "debug",
+                        "message": (
+                            f"Looking up Seq for Function={func_name}, X={x_var}, Y={y_var}"
+                        ),
+                    }
+                )
+            )
+
             cursor.execute(
-                "SELECT Seq FROM ifs_reg WHERE Name=? AND InputName=? AND OutputName=?",
+                "SELECT Seq FROM ifs_reg WHERE UPPER(Name)=UPPER(?) AND UPPER(InputName)=UPPER(?) AND UPPER(OutputName)=UPPER(?)",
                 (func_name, x_var, y_var),
             )
             seq_row = cursor.fetchone()
+
             if not seq_row:
+                print(
+                    json.dumps(
+                        {
+                            "status": "warn",
+                            "message": (
+                                "No match found in ifs_reg for "
+                                f"Function={func_name}, X={x_var}, Y={y_var}"
+                            ),
+                        }
+                    )
+                )
                 continue
+
             seq = seq_row[0]
+            print(
+                json.dumps(
+                    {
+                        "status": "debug",
+                        "message": (
+                            f"Found Seq={seq} for Function={func_name}, X={x_var}, Y={y_var}"
+                        ),
+                    }
+                )
+            )
 
             for coef_name in COEFFICIENT_COLUMNS:
                 raw_value = _normalize_number(row.get(coef_name))
@@ -461,6 +506,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                 cursor.execute(
                     "UPDATE ifs_reg_coeff SET Value=? WHERE RegressionName=? AND RegressionSeq=? AND Name=?",
                     (float(new_value), func_name, seq, coef_name),
+                )
+                print(
+                    json.dumps(
+                        {
+                            "status": "debug",
+                            "message": (
+                                f"Updated coef {coef_name} for {func_name} "
+                                f"(Seq={seq}, X={x_var}, Y={y_var})"
+                            ),
+                            "old": float(existing[0]),
+                            "new": float(new_value),
+                        }
+                    )
                 )
                 updates.append(
                     {
