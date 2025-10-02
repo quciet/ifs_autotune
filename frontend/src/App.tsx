@@ -307,6 +307,7 @@ function TuneIFsPage({
     setProgressPercent(0);
 
     const response = await runIFs({
+      validatedPath,
       endYear: clampedEndYear,
       baseYear: baseYearRef.current,
       outputDirectory,

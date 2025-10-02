@@ -98,6 +98,7 @@ export async function validateIFsFolder({
 }
 
 export type RunIFsParams = {
+  validatedPath: string;
   endYear: number;
   baseYear: number | null | undefined;
   outputDirectory: string;
@@ -161,6 +162,7 @@ export async function modelSetup({
 }
 
 export async function runIFs({
+  validatedPath,
   endYear,
   baseYear,
   outputDirectory,
@@ -176,6 +178,10 @@ export async function runIFs({
 
   try {
     const payload = await window.electron.invoke("run_ifs", {
+      validatedPath,
+      endYear,
+      baseYear: baseYear ?? null,
+      outputDirectory,
       end_year: endYear,
       base_year: baseYear ?? null,
       output_dir: outputDirectory,
