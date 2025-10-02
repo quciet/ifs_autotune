@@ -112,13 +112,14 @@ function runPythonScript(scriptName, args = []) {
     };
 
     const isModelSetupScript = scriptName === 'model_setup.py';
+    const isRunIFsScript = scriptName === 'run_ifs.py';
     const window = mainWindow;
     let stdout = '';
     let stderr = '';
     let stdoutBuffer = '';
 
-    const handleProgressLine = (line) => {
-      if (!isModelSetupScript) {
+    const emitModelSetupProgress = (line) => {
+      if (!isModelSetupScript || !window || window.isDestroyed()) {
         return;
       }
 
@@ -129,17 +130,38 @@ function runPythonScript(scriptName, args = []) {
 
       try {
         const parsed = JSON.parse(trimmed);
-        if (
-          parsed &&
-          parsed.status === 'info' &&
-          typeof parsed.message === 'string' &&
-          window
-        ) {
+        if (parsed && parsed.status === 'info' && typeof parsed.message === 'string') {
           window.webContents.send('model-setup-progress', parsed.message);
         }
       } catch (error) {
-        // Ignore non-JSON progress lines.
+        console.log('Non-JSON output from model_setup.py:', trimmed);
       }
+    };
+
+    const emitRunIFsProgress = (line) => {
+      if (!isRunIFsScript || !window || window.isDestroyed()) {
+        return;
+      }
+
+      const trimmed = typeof line === 'string' ? line.trim() : '';
+      if (!trimmed) {
+        return;
+      }
+
+      const yearMatch = trimmed.match(/Year\s+(\d{1,4})/i);
+      if (yearMatch) {
+        const year = Number.parseInt(yearMatch[1], 10);
+        if (Number.isFinite(year)) {
+          window.webContents.send('ifs-progress', { year });
+        }
+      }
+
+      console.log('IFS stdout:', trimmed);
+    };
+
+    const handleStdoutLine = (line) => {
+      emitModelSetupProgress(line);
+      emitRunIFsProgress(line);
     };
 
     const pythonProcess = spawn('python', pythonArgs, processOptions);
@@ -147,21 +169,22 @@ function runPythonScript(scriptName, args = []) {
     pythonProcess.stdout.on('data', (data) => {
       const text = data.toString();
       stdout += text;
+      stdoutBuffer += text;
 
-      if (isModelSetupScript) {
-        stdoutBuffer += text;
-        let newlineIndex = stdoutBuffer.indexOf('\n');
-        while (newlineIndex !== -1) {
-          const line = stdoutBuffer.slice(0, newlineIndex);
-          stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
-          handleProgressLine(line);
-          newlineIndex = stdoutBuffer.indexOf('\n');
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (line.trim()) {
+          handleStdoutLine(line);
         }
       }
     });
 
     pythonProcess.stderr.on('data', (data) => {
-      stderr += data.toString();
+      const text = data.toString();
+      stderr += text;
+      console.error(`[${scriptName}] stderr: ${text.trim()}`);
     });
 
     pythonProcess.on('error', (error) => {
@@ -169,20 +192,19 @@ function runPythonScript(scriptName, args = []) {
     });
 
     pythonProcess.on('close', (code) => {
-      if (isModelSetupScript && stdoutBuffer.trim().length > 0) {
-        handleProgressLine(stdoutBuffer);
+      if (stdoutBuffer.trim()) {
+        handleStdoutLine(stdoutBuffer);
         stdoutBuffer = '';
       }
 
-      if (stderr.trim()) {
-        reject(new Error(stderr.trim()));
+      if (code !== 0) {
+        const message = stderr.trim() || stdout.trim();
+        reject(new Error(message || `Python process exited with code ${code}`));
         return;
       }
 
-      if (code !== 0) {
-        const message = stdout.trim();
-        reject(new Error(message || `Python process exited with code ${code}`));
-        return;
+      if (stderr.trim()) {
+        console.error(`[${scriptName}] exited with stderr output.`);
       }
 
       const lines = stdout
