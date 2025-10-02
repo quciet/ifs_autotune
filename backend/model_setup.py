@@ -437,6 +437,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         }
                     )
                 )
+                sys.stdout.flush()
                 continue
 
             print(
@@ -449,6 +450,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     }
                 )
             )
+            sys.stdout.flush()
 
             cursor.execute(
                 "SELECT Seq FROM ifs_reg WHERE UPPER(Name)=UPPER(?) AND UPPER(InputName)=UPPER(?) AND UPPER(OutputName)=UPPER(?)",
@@ -468,6 +470,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         }
                     )
                 )
+                sys.stdout.flush()
                 continue
 
             seq = seq_row[0]
@@ -481,6 +484,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     }
                 )
             )
+            sys.stdout.flush()
 
             for coef_name in COEFFICIENT_COLUMNS:
                 raw_value = _normalize_number(row.get(coef_name))
@@ -520,6 +524,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         }
                     )
                 )
+                sys.stdout.flush()
                 updates.append(
                     {
                         "Function": func_name,
