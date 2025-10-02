@@ -119,8 +119,8 @@ function runPythonScript(scriptName, args = []) {
     let stderr = '';
     let stdoutBuffer = '';
 
-    const emitModelSetupProgress = (line) => {
-      if (!isModelSetupScript || !window || window.isDestroyed()) {
+    const forwardPythonOutputToFrontend = (line) => {
+      if (!window || window.isDestroyed()) {
         return;
       }
 
@@ -131,11 +131,14 @@ function runPythonScript(scriptName, args = []) {
 
       try {
         const parsed = JSON.parse(trimmed);
-        if (parsed && parsed.status === 'info' && typeof parsed.message === 'string') {
-          window.webContents.send('model-setup-progress', parsed.message);
+        if (parsed?.status) {
+          if (parsed.status !== 'success') {
+            window.webContents.send('model-setup-progress', parsed.message || trimmed);
+          }
+          return;
         }
-      } catch (error) {
-        console.log('Non-JSON output from model_setup.py:', trimmed);
+      } catch {
+        window.webContents.send('model-setup-progress', trimmed);
       }
     };
 
@@ -161,15 +164,20 @@ function runPythonScript(scriptName, args = []) {
     };
 
     const handleStdoutLine = (line) => {
-      emitModelSetupProgress(line);
-      emitRunIFsProgress(line);
+      const trimmed = typeof line === 'string' ? line.trim() : '';
+      if (!trimmed) {
+        return;
+      }
+
+      console.log('[PYTHON]', trimmed);
+      forwardPythonOutputToFrontend(trimmed);
+      emitRunIFsProgress(trimmed);
     };
 
     const pythonProcess = spawn('python', pythonArgs, processOptions);
 
     pythonProcess.stdout.on('data', (data) => {
       const text = data.toString();
-      console.log('[PYTHON]', text.trim());
       stdout += text;
       stdoutBuffer += text;
 
@@ -177,9 +185,7 @@ function runPythonScript(scriptName, args = []) {
       stdoutBuffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        if (line.trim()) {
-          handleStdoutLine(line);
-        }
+        handleStdoutLine(line);
       }
     });
 
