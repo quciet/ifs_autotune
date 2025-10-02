@@ -92,6 +92,9 @@ def _normalize_number(value: Any) -> Optional[float]:
         return None
 
 
+_LAST_KNOWN_YEARS: Optional[Tuple[int, int]] = None
+
+
 def _extract_years_from_sce(path: Path) -> Optional[Tuple[int, int]]:
     try:
         with path.open("r", encoding="utf-8") as handle:
@@ -124,9 +127,13 @@ def _extract_years_from_sce(path: Path) -> Optional[Tuple[int, int]]:
     except FileNotFoundError:
         return None
 
-    if base_year is None or forecast_year is None:
-        return None
-    return base_year, forecast_year
+    if base_year is not None and forecast_year is not None:
+        return base_year, forecast_year
+
+    if _LAST_KNOWN_YEARS is not None:
+        return _LAST_KNOWN_YEARS
+
+    return None
 
 
 def _infer_base_year_from_db(db_path: Path) -> Optional[int]:
@@ -198,9 +205,7 @@ def _infer_base_year_from_db(db_path: Path) -> Optional[int]:
     return None
 
 
-def create_working_sce(
-    ifs_root: Path, base_year: Optional[int], forecast_year: Optional[int]
-) -> Path:
+def create_working_sce(ifs_root: Path) -> Path:
     scenario_dir = ifs_root / "Scenario"
     scenario_dir.mkdir(parents=True, exist_ok=True)
 
@@ -210,17 +215,7 @@ def create_working_sce(
     except FileNotFoundError:
         pass
 
-    if forecast_year is None:
-        raise ValueError("forecast_year is required to create Working.sce")
-
-    lines: List[str] = []
-    if base_year is not None:
-        lines.append(f"yr_base,{int(base_year)}")
-    lines.append(f"yr_forecast,{int(forecast_year)}")
-
-    with sce_path.open("w", encoding="utf-8") as handle:
-        for line in lines:
-            handle.write(line + "\n")
+    sce_path.touch()
 
     return sce_path
 
@@ -385,11 +380,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 1
 
-    try:
-        sce_path = create_working_sce(ifs_root, base_year, forecast_year)
-    except ValueError as exc:
-        print(json.dumps({"status": "error", "message": str(exc)}))
-        return 1
+    global _LAST_KNOWN_YEARS
+    if base_year is not None:
+        _LAST_KNOWN_YEARS = (base_year, forecast_year)
+    else:
+        _LAST_KNOWN_YEARS = None
+
+    sce_path = create_working_sce(ifs_root)
 
     sheets = [
         _load_sheet(input_path, "TablFunc"),
