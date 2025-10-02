@@ -388,6 +388,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         _LAST_KNOWN_YEARS = None
 
+    print(
+        json.dumps(
+            {
+                "status": "info",
+                "message": "Creating Working.sce for parameters",
+            }
+        )
+    )
+    sys.stdout.flush()
     sce_path = create_working_sce(ifs_root)
 
     sheets = [
@@ -400,6 +409,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
+
+        print(
+            json.dumps(
+                {
+                    "status": "info",
+                    "message": "Updating coefficients in Working.run.db",
+                }
+            )
+        )
+        sys.stdout.flush()
 
         for row in _collect_rows(sheets):
             func_name = row.get("Function Name")
@@ -463,6 +482,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             pass
 
     appended_variables = add_from_startingpoint(ifs_root, input_path)
+    print(
+        json.dumps(
+            {
+                "status": "info",
+                "message": "Model Setup successful, waiting to start",
+            }
+        )
+    )
+    sys.stdout.flush()
     print(
         json.dumps(
             {
