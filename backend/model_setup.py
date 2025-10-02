@@ -71,10 +71,13 @@ def _load_sheet(path: Path, sheet_name: str) -> pd.DataFrame:
 
 
 def _is_enabled(value: Any) -> bool:
-    if value is None:
+    if value is None or pd.isna(value):
         return False
     if isinstance(value, (int, float)):
-        return int(value) == 1
+        try:
+            return int(value) == 1
+        except (TypeError, ValueError):
+            return False
     normalized = str(value).strip().lower()
     return normalized in {"1", "on"}
 
