@@ -80,6 +80,7 @@ function TuneIFsPage({
   const [progressPercent, setProgressPercent] = useState(0);
   const [metadata, setMetadata] = useState<RunIFsSuccess | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [setupMessage, setSetupMessage] = useState("Waiting to start.");
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
   );
@@ -158,6 +159,34 @@ function TuneIFsPage({
   useEffect(() => {
     setModelSetupResult((current) => (current ? null : current));
   }, [effectiveBaseYear]);
+
+  useEffect(() => {
+    if (!window.electron?.on) {
+      return;
+    }
+
+    const unsubscribe = window.electron.on(
+      "model-setup-progress",
+      (_event: unknown, message: string) => {
+        const resolvedMessage =
+          typeof message === "string"
+            ? message
+            : typeof _event === "string"
+            ? _event
+            : null;
+
+        if (resolvedMessage) {
+          setSetupMessage(resolvedMessage);
+        }
+      },
+    );
+
+    return () => {
+      if (typeof unsubscribe === "function") {
+        unsubscribe();
+      }
+    };
+  }, []);
 
   const resetModelSetupState = () => {
     setModelSetupResult((current) => (current ? null : current));
@@ -252,6 +281,7 @@ function TuneIFsPage({
 
     setModelSetupRunning(true);
     setModelSetupResult(null);
+    setSetupMessage("Waiting to start.");
 
     try {
       const response = await modelSetup({
@@ -335,14 +365,14 @@ function TuneIFsPage({
   const displayPercent = Math.min(100, Math.max(0, progressPercent));
   const formattedPercent = `${displayPercent.toFixed(1)}%`;
 
-  const progressLabel =
+  const runProgressLabel =
     progressYear != null
       ? `Last reported year: ${progressYear} (${formattedPercent})`
       : running
       ? "Starting IFs run..."
       : metadata
       ? "Run completed."
-      : "Waiting to start.";
+      : null;
 
   const wgdDisplay = metadata
     ? metadata.w_gdp.toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -430,7 +460,10 @@ function TuneIFsPage({
       </div>
 
       <div className="progress-wrapper">
-        <div className="progress-text">{progressLabel}</div>
+        <div className="progress-text">{setupMessage}</div>
+        {runProgressLabel && (
+          <div className="progress-text">{runProgressLabel}</div>
+        )}
         <progress
           className="progress-indicator"
           max={100}

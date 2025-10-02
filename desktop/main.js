@@ -111,13 +111,53 @@ function runPythonScript(scriptName, args = []) {
       windowsHide: true,
     };
 
+    const isModelSetupScript = scriptName === 'model_setup.py';
+    const window = mainWindow;
     let stdout = '';
     let stderr = '';
+    let stdoutBuffer = '';
+
+    const handleProgressLine = (line) => {
+      if (!isModelSetupScript) {
+        return;
+      }
+
+      const trimmed = typeof line === 'string' ? line.trim() : '';
+      if (!trimmed) {
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (
+          parsed &&
+          parsed.status === 'info' &&
+          typeof parsed.message === 'string' &&
+          window
+        ) {
+          window.webContents.send('model-setup-progress', parsed.message);
+        }
+      } catch (error) {
+        // Ignore non-JSON progress lines.
+      }
+    };
 
     const pythonProcess = spawn('python', pythonArgs, processOptions);
 
     pythonProcess.stdout.on('data', (data) => {
-      stdout += data.toString();
+      const text = data.toString();
+      stdout += text;
+
+      if (isModelSetupScript) {
+        stdoutBuffer += text;
+        let newlineIndex = stdoutBuffer.indexOf('\n');
+        while (newlineIndex !== -1) {
+          const line = stdoutBuffer.slice(0, newlineIndex);
+          stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+          handleProgressLine(line);
+          newlineIndex = stdoutBuffer.indexOf('\n');
+        }
+      }
     });
 
     pythonProcess.stderr.on('data', (data) => {
@@ -129,6 +169,11 @@ function runPythonScript(scriptName, args = []) {
     });
 
     pythonProcess.on('close', (code) => {
+      if (isModelSetupScript && stdoutBuffer.trim().length > 0) {
+        handleProgressLine(stdoutBuffer);
+        stdoutBuffer = '';
+      }
+
       if (stderr.trim()) {
         reject(new Error(stderr.trim()));
         return;
