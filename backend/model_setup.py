@@ -260,7 +260,7 @@ def add_from_startingpoint(ifs_root: Path, excel_path: Path) -> int:
         if not isinstance(variable, str) or not variable.strip():
             continue
 
-        dimension_raw = row.get("DIMENSION1")
+        dimension_raw = row.get("Dimension1")
         try:
             dimension_value = int(dimension_raw)
         except (TypeError, ValueError):

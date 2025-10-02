@@ -1,3 +1,5 @@
 pydantic
 pydantic-settings
 pytest
+pandas
+openpyxl

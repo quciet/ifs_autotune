@@ -5,3 +5,5 @@ Requires-Python: >=3.11
 Requires-Dist: pydantic
 Requires-Dist: pydantic-settings
 Requires-Dist: pytest
+Requires-Dist: pandas
+Requires-Dist: openpyxl
