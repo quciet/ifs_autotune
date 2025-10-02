@@ -112,34 +112,23 @@ function runPythonScript(scriptName, args = []) {
       shell: false,
     };
 
-    const isModelSetupScript = scriptName === 'model_setup.py';
     const isRunIFsScript = scriptName === 'run_ifs.py';
     const window = mainWindow;
     let stdout = '';
     let stderr = '';
     let stdoutBuffer = '';
 
-    const forwardPythonOutputToFrontend = (line) => {
+    const sendModelSetupProgress = (message) => {
       if (!window || window.isDestroyed()) {
         return;
       }
 
-      const trimmed = typeof line === 'string' ? line.trim() : '';
-      if (!trimmed) {
+      const normalized = typeof message === 'string' ? message.trim() : '';
+      if (!normalized) {
         return;
       }
 
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed?.status) {
-          if (parsed.status !== 'success') {
-            window.webContents.send('model-setup-progress', parsed.message || trimmed);
-          }
-          return;
-        }
-      } catch {
-        window.webContents.send('model-setup-progress', trimmed);
-      }
+      window.webContents.send('model-setup-progress', normalized);
     };
 
     const emitRunIFsProgress = (line) => {
@@ -164,13 +153,38 @@ function runPythonScript(scriptName, args = []) {
     };
 
     const handleStdoutLine = (line) => {
-      const trimmed = typeof line === 'string' ? line.trim() : '';
+      if (typeof line !== 'string') {
+        return;
+      }
+
+      const trimmed = line.trim();
       if (!trimmed) {
         return;
       }
 
-      console.log('[PYTHON]', trimmed);
-      forwardPythonOutputToFrontend(trimmed);
+      console.log('[PYTHON]', line);
+
+      let progressMessage = trimmed;
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object') {
+          const parsedMessage =
+            typeof parsed.message === 'string' ? parsed.message.trim() : '';
+          const candidateMessage = parsedMessage.length > 0 ? parsedMessage : trimmed;
+
+          if (parsed.status && parsed.status !== 'success') {
+            progressMessage = candidateMessage;
+          } else if (!parsed.status) {
+            progressMessage = candidateMessage;
+          } else {
+            progressMessage = trimmed;
+          }
+        }
+      } catch {
+        // Non-JSON output: progressMessage remains the trimmed line
+      }
+
+      sendModelSetupProgress(progressMessage);
       emitRunIFsProgress(trimmed);
     };
 
