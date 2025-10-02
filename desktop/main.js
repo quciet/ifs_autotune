@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
-const { spawn } = require('node:child_process');
+const { spawn } = require("child_process");
 const path = require('node:path');
 const fs = require('fs');
 
@@ -109,6 +109,7 @@ function runPythonScript(scriptName, args = []) {
     const processOptions = {
       cwd: path.join(__dirname, '..'),
       windowsHide: true,
+      shell: false,
     };
 
     const isModelSetupScript = scriptName === 'model_setup.py';
@@ -168,6 +169,7 @@ function runPythonScript(scriptName, args = []) {
 
     pythonProcess.stdout.on('data', (data) => {
       const text = data.toString();
+      console.log('[PYTHON]', text.trim());
       stdout += text;
       stdoutBuffer += text;
 
@@ -183,8 +185,8 @@ function runPythonScript(scriptName, args = []) {
 
     pythonProcess.stderr.on('data', (data) => {
       const text = data.toString();
+      console.error('[PYTHON-ERR]', text.trim());
       stderr += text;
-      console.error(`[${scriptName}] stderr: ${text.trim()}`);
     });
 
     pythonProcess.on('error', (error) => {
@@ -198,32 +200,22 @@ function runPythonScript(scriptName, args = []) {
       }
 
       if (code !== 0) {
-        const message = stderr.trim() || stdout.trim();
-        reject(new Error(message || `Python process exited with code ${code}`));
+        reject(new Error(stderr.trim() || `Exited with code ${code}`));
         return;
       }
 
-      if (stderr.trim()) {
-        console.error(`[${scriptName}] exited with stderr output.`);
-      }
-
-      const lines = stdout
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0);
-
-      for (let idx = lines.length - 1; idx >= 0; idx -= 1) {
-        const candidate = lines[idx];
-        try {
-          const parsed = JSON.parse(candidate);
-          resolve(parsed);
-          return;
-        } catch (error) {
-          // Not JSON, continue searching.
+      try {
+        const trimmedStdout = stdout.trim();
+        if (!trimmedStdout) {
+          throw new Error('No stdout to parse');
         }
+        const lines = trimmedStdout.split(/\r?\n/);
+        const lastLine = lines[lines.length - 1];
+        const result = JSON.parse(lastLine);
+        resolve(result);
+      } catch (error) {
+        reject(new Error(`Failed to parse JSON output: ${stdout}`));
       }
-
-      reject(new Error(`Failed to parse JSON output: ${stdout.trim()}`));
     });
   });
 }
