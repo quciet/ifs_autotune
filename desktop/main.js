@@ -153,35 +153,26 @@ function runPythonScript(scriptName, args = []) {
     };
 
     const handleStdoutLine = (line) => {
-      if (typeof line !== 'string') {
-        return;
-      }
-
       const trimmed = line.trim();
-      if (!trimmed) {
-        return;
-      }
+      if (!trimmed) return;
 
-      console.log('[PYTHON]', line);
+      console.log("[PYTHON]", trimmed);
 
       let progressMessage = trimmed;
       try {
         const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed === 'object') {
+        if (parsed && typeof parsed === "object") {
           const parsedMessage =
-            typeof parsed.message === 'string' ? parsed.message.trim() : '';
-          const candidateMessage = parsedMessage.length > 0 ? parsedMessage : trimmed;
-
-          if (parsed.status && parsed.status !== 'success') {
-            progressMessage = candidateMessage;
-          } else if (!parsed.status) {
-            progressMessage = candidateMessage;
-          } else {
-            progressMessage = trimmed;
+            typeof parsed.message === "string" ? parsed.message.trim() : "";
+          if (parsedMessage.length > 0) {
+            // Prefix with status so we see [debug], [warn], [info]
+            progressMessage = `[${parsed.status || "log"}] ${parsedMessage}`;
+          } else if (parsed.status) {
+            progressMessage = `[${parsed.status}] ${trimmed}`;
           }
         }
       } catch {
-        // Non-JSON output: progressMessage remains the trimmed line
+        // Not JSON, keep as raw line
       }
 
       sendModelSetupProgress(progressMessage);
