@@ -349,7 +349,7 @@ function TuneIFsPage({
     setEndYear(clampedEndYear);
     setEndYearInput(String(clampedEndYear));
     setModelSetupResult(null);
-    setSetupMessage("Running IFs…");
+    setSetupMessage("");
     setRunning(true);
 
     try {
@@ -372,7 +372,7 @@ function TuneIFsPage({
           baseYearRef.current = response.base_year;
           setEffectiveBaseYear(response.base_year);
         }
-        setSetupMessage("Run completed.");
+        setSetupMessage("✅ Run completed.");
       } else {
         setError(response.message ?? "IFs run failed.");
         setSetupMessage("❌ Run failed.");
@@ -394,7 +394,7 @@ function TuneIFsPage({
       ? `Running IFs… Last reported year: ${progressYear} (${formattedPercent})`
       : "Running IFs…"
     : metadata
-    ? "Run completed."
+    ? null
     : progressYear != null
     ? `Last reported year: ${progressYear} (${formattedPercent})`
     : null;
