@@ -252,19 +252,19 @@ function TuneIFsPage({
 
     setError(null);
     setMetadata(null);
+    setSetupMessage("Starting model setup...");
     setModelSetupResult(null);
     setProgressYear(null);
     setProgressPercent(0);
-    setSetupMessage("Starting model setup...");
 
     if (!validatedPath || !validatedPath.trim()) {
-      setSetupMessage("❌ Model setup failed.");
+      setSetupMessage("❌ Setup failed.");
       setError("Validated IFs folder path is missing. Please re-run validation.");
       return;
     }
 
     if (!validatedInputPath || !validatedInputPath.trim()) {
-      setSetupMessage("❌ Model setup failed.");
+      setSetupMessage("❌ Setup failed.");
       setError(
         "Validated input file path is missing. Please re-run validation to continue.",
       );
@@ -273,7 +273,7 @@ function TuneIFsPage({
 
     const parsedEndYear = Number(endYearInput);
     if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
-      setSetupMessage("❌ Model setup failed.");
+      setSetupMessage("❌ Setup failed.");
       setError("Please enter a valid end year.");
       return;
     }
@@ -298,17 +298,17 @@ function TuneIFsPage({
 
       if (response.status === "success") {
         setModelSetupResult(response);
-        setSetupMessage("✅ Model setup complete. Ready to run IFs.");
+        setSetupMessage("✅ Model setup complete.");
         setError(null);
       } else {
-        setSetupMessage("❌ Model setup failed.");
+        setSetupMessage("❌ Setup failed.");
         setError(response.message ?? "Model setup failed.");
       }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Unable to complete model setup.";
       setError(message);
-      setSetupMessage("❌ Model setup failed.");
+      setSetupMessage("❌ Setup failed.");
     } finally {
       setModelSetupRunning(false);
     }
@@ -316,19 +316,25 @@ function TuneIFsPage({
 
   const handleRunClick = async () => {
     setError(null);
+    setMetadata(null);
+    setProgressYear(null);
+    setProgressPercent(0);
 
     const parsedEndYear = Number(endYearInput);
     if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
+      setSetupMessage("❌ Run failed.");
       setError("Please enter a valid end year.");
       return;
     }
 
     if (!outputDirectory) {
+      setSetupMessage("❌ Run failed.");
       setError("Please choose an output folder before running IFs.");
       return;
     }
 
     if (!modelSetupResult || modelSetupRunning) {
+      setSetupMessage("❌ Run failed.");
       setError("Please run model setup before starting IFs.");
       return;
     }
@@ -338,11 +344,8 @@ function TuneIFsPage({
     targetEndYearRef.current = clampedEndYear;
     setEndYear(clampedEndYear);
     setEndYearInput(String(clampedEndYear));
-    setSetupMessage("Running IFs model...");
     setModelSetupResult(null);
-    setMetadata(null);
-    setProgressYear(null);
-    setProgressPercent(0);
+    setSetupMessage("Running IFs…");
     setRunning(true);
 
     try {
@@ -368,12 +371,12 @@ function TuneIFsPage({
         setSetupMessage("Waiting to start.");
       } else {
         setError(response.message ?? "IFs run failed.");
-        setSetupMessage("❌ IFs run failed.");
+        setSetupMessage("❌ Run failed.");
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to run IFs.";
       setError(message);
-      setSetupMessage("❌ IFs run failed.");
+      setSetupMessage("❌ Run failed.");
     } finally {
       setRunning(false);
     }
@@ -382,14 +385,15 @@ function TuneIFsPage({
   const displayPercent = Math.min(100, Math.max(0, progressPercent));
   const formattedPercent = `${displayPercent.toFixed(1)}%`;
 
-  const runProgressLabel =
-    progressYear != null
-      ? `Last reported year: ${progressYear} (${formattedPercent})`
-      : running
-      ? "Starting IFs run..."
-      : metadata
-      ? "Run completed."
-      : null;
+  const runProgressLabel = running
+    ? progressYear != null
+      ? `Running IFs… Last reported year: ${progressYear} (${formattedPercent})`
+      : "Running IFs…"
+    : metadata
+    ? "Run completed."
+    : progressYear != null
+    ? `Last reported year: ${progressYear} (${formattedPercent})`
+    : null;
 
   const wgdDisplay = metadata
     ? metadata.w_gdp.toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -477,52 +481,65 @@ function TuneIFsPage({
       </div>
 
       <div className="progress-wrapper">
-        <div className="progress-text">{setupMessage}</div>
-        {runProgressLabel && (
-          <div className="progress-text">{runProgressLabel}</div>
-        )}
+        <div className="progress-messages">
+          {setupMessage && (
+            <div
+              className={`progress-text ${
+                setupMessage.includes("❌")
+                  ? "error"
+                  : setupMessage.includes("✅")
+                  ? "success"
+                  : "info"
+              }`}
+            >
+              {setupMessage}
+            </div>
+          )}
+
+          {error && (
+            <div className="progress-text error">{error}</div>
+          )}
+
+          {runProgressLabel && (
+            <div className="progress-text">{runProgressLabel}</div>
+          )}
+        </div>
+
         <progress
           className="progress-indicator"
           max={100}
           value={displayPercent}
         />
+
+        {metadata ? (
+          <div className="metadata-inline">
+            <div className="run-status success">Run successful</div>
+            <ul>
+              <li>
+                <strong>Model ID:</strong> {metadata.model_id}
+              </li>
+              <li>
+                <strong>Base year:</strong>{" "}
+                {metadata.base_year != null ? metadata.base_year : "Unknown"}
+              </li>
+              <li>
+                <strong>End year:</strong> {metadata.end_year}
+              </li>
+              <li>
+                <strong>World GDP (WGDP):</strong> {wgdDisplay}
+              </li>
+              <li>
+                <strong>Saved file:</strong> {metadata.output_file}
+              </li>
+              <li>
+                <strong>Metadata file:</strong> {metadata.metadata_file}
+              </li>
+            </ul>
+          </div>
+        ) : !running && setupMessage.includes("❌ Run failed") ? (
+          <div className="run-status error">❌ Run failed</div>
+        ) : null}
       </div>
-
-      {!running &&
-        !modelSetupRunning &&
-        setupMessage.toLowerCase().includes("model setup complete") && (
-          <div className="alert alert-info">{setupMessage}</div>
-        )}
-      {!running && !modelSetupRunning && error && (
-        <div className="alert alert-error">{error}</div>
-      )}
-
-      {metadata && (
-        <div className="metadata">
-          <div className="run-status success">Run successful</div>
-          <ul>
-            <li>
-              <strong>Model ID:</strong> {metadata.model_id}
-            </li>
-            <li>
-              <strong>Base year:</strong>{" "}
-              {metadata.base_year != null ? metadata.base_year : "Unknown"}
-            </li>
-            <li>
-              <strong>End year:</strong> {metadata.end_year}
-            </li>
-            <li>
-              <strong>World GDP (WGDP):</strong> {wgdDisplay}
-            </li>
-            <li>
-              <strong>Saved file:</strong> {metadata.output_file}
-            </li>
-            <li>
-              <strong>Metadata file:</strong> {metadata.metadata_file}
-            </li>
-          </ul>
-        </div>
-      )}
 
       <div className="tune-footer">
         <button
