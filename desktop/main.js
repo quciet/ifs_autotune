@@ -13,11 +13,18 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    minWidth: 960,
+    minHeight: 700,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+
+  mainWindow.setResizable(true);
+  mainWindow.on('resize', () => {
+    mainWindow.webContents.send('window-resized');
   });
 
   mainWindow.on('closed', () => {
