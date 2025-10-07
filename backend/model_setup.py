@@ -494,7 +494,41 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         sheets.append(frame)
 
+    total_rows_collected = sum(int(frame.shape[0]) for frame in sheets if not frame.empty)
+    collected_rows = list(_collect_rows(sheets))
+
+    valid_rows = []
+    example_rows: List[Dict[str, Any]] = []
+    for row in collected_rows:
+        func_name = str(row.get("Function Name") or "").strip()
+        x_var = str(row.get("XVariable") or "").strip()
+        y_var = str(row.get("YVariable") or "").strip()
+        if not (func_name and x_var and y_var):
+            continue
+        valid_rows.append(row)
+        if len(example_rows) < 5:
+            example: Dict[str, Any] = {
+                "func": func_name,
+                "xvar": x_var,
+                "yvar": y_var,
+            }
+            for coef_name in COEFFICIENT_COLUMNS:
+                example[coef_name] = _normalize_number(row.get(coef_name))
+            example_rows.append(example)
+
+    log(
+        "info",
+        "Regression row summary",
+        total_rows=total_rows_collected,
+        rows_with_switch=len(collected_rows),
+        valid_rows=len(valid_rows),
+        examples=example_rows,
+    )
+
     updates: List[Dict[str, Any]] = []
+    rows_considered = 0
+    rows_matched = 0
+    coefs_updated = 0
 
     try:
         log(
@@ -530,7 +564,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         log("info", "Updating coefficients in Working.run.db")
 
-        for row in _collect_rows(sheets):
+        for row in collected_rows:
             func_name = str(row.get("Function Name") or "").strip()
             x_var = str(row.get("XVariable") or "").strip()
             y_var = str(row.get("YVariable") or "").strip()
@@ -539,18 +573,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                 log(
                     "warn",
                     "Skipping row with missing identifiers",
-                    function=func_name,
-                    x_variable=x_var,
-                    y_variable=y_var,
+                    func=func_name,
+                    xvar=x_var,
+                    yvar=y_var,
                 )
                 continue
+
+            rows_considered += 1
 
             log(
                 "debug",
                 "Processing regression row",
-                function=func_name,
-                x_variable=x_var,
-                y_variable=y_var,
+                func=func_name,
+                xvar=x_var,
+                yvar=y_var,
             )
 
             cursor.execute(
@@ -562,22 +598,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             if not seq_row:
                 log(
                     "warn",
-                    "No matching regression found in ifs_reg",
-                    function=func_name,
-                    x_variable=x_var,
-                    y_variable=y_var,
+                    "No match in ifs_reg",
+                    func=func_name,
+                    xvar=x_var,
+                    yvar=y_var,
                 )
                 continue
 
             seq = seq_row[0]
             log(
                 "debug",
-                "Found regression sequence",
-                function=func_name,
-                x_variable=x_var,
-                y_variable=y_var,
+                "Found Seq",
+                func=func_name,
+                xvar=x_var,
+                yvar=y_var,
                 seq=seq,
             )
+            rows_matched += 1
 
             for coef_name in COEFFICIENT_COLUMNS:
                 raw_value = _normalize_number(row.get(coef_name))
@@ -592,10 +629,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 if existing is None:
                     log(
                         "warn",
-                        "Coefficient row missing",
-                        function=func_name,
+                        "Missing coefficient row",
+                        func=func_name,
                         seq=seq,
-                        coefficient=coef_name,
+                        coef=coef_name,
                     )
                     continue
 
@@ -607,10 +644,19 @@ def main(argv: Optional[list[str]] = None) -> int:
                         continue
                     new_value = randomized
 
+                log(
+                    "debug",
+                    "Updating coefficient",
+                    func=func_name,
+                    seq=seq,
+                    coef=coef_name,
+                    new_value=float(new_value),
+                )
                 cursor.execute(
                     "UPDATE ifs_reg_coeff SET Value=? WHERE RegressionName=? AND RegressionSeq=? AND Name=?",
                     (float(new_value), func_name, seq, coef_name),
                 )
+                coefs_updated += 1
                 log(
                     "debug",
                     "Updated regression coefficient",
@@ -639,6 +685,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             "info",
             "Committed coefficient updates",
             total_updates=len(updates),
+        )
+        log(
+            "info",
+            "Summary",
+            rows_considered=rows_considered,
+            rows_matched=rows_matched,
+            coefs_updated=coefs_updated,
         )
     finally:
         try:
