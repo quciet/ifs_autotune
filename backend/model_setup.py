@@ -34,6 +34,14 @@ COEFFICIENT_COLUMNS: List[str] = [
 ]
 
 
+def log(status: str, message: str, **kwargs: Any) -> None:
+    payload: Dict[str, Any] = {"status": status, "message": message}
+    if kwargs:
+        payload.update(kwargs)
+    print(json.dumps(payload))
+    sys.stdout.flush()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Randomize coefficients for Model Setup",
@@ -64,9 +72,29 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _load_sheet(path: Path, sheet_name: str) -> pd.DataFrame:
+    log(
+        "debug",
+        "Reading sheet",
+        file=str(path.resolve()),
+        sheet=sheet_name,
+    )
     try:
-        return pd.read_excel(path, sheet_name=sheet_name)
-    except Exception:
+        frame = pd.read_excel(path, sheet_name=sheet_name)
+        log(
+            "debug",
+            "Sheet loaded",
+            sheet=sheet_name,
+            rows=int(frame.shape[0]),
+            columns=int(frame.shape[1]),
+        )
+        return frame
+    except Exception as exc:
+        log(
+            "warn",
+            "Failed to read sheet",
+            sheet=sheet_name,
+            error=str(exc),
+        )
         return pd.DataFrame()
 
 
@@ -142,8 +170,18 @@ def _extract_years_from_sce(path: Path) -> Optional[Tuple[int, int]]:
 
 def _infer_base_year_from_db(db_path: Path) -> Optional[int]:
     try:
+        log(
+            "debug",
+            "Attempting to connect to database for base year inference",
+            database=str(db_path.resolve()),
+        )
         conn = sqlite3.connect(str(db_path))
     except Exception:
+        log(
+            "warn",
+            "Unable to connect to database for base year inference",
+            database=str(db_path.resolve()),
+        )
         return None
 
     try:
@@ -155,7 +193,17 @@ def _infer_base_year_from_db(db_path: Path) -> Optional[int]:
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )
             ]
+            log(
+                "debug",
+                "Tables found during base year inference",
+                tables=tables,
+            )
         except sqlite3.Error:
+            log(
+                "warn",
+                "Failed to enumerate tables for base year inference",
+                database=str(db_path.resolve()),
+            )
             return None
 
         candidate_column_names = {"baseyear", "base_year", "yrbase", "yr_base"}
@@ -164,11 +212,24 @@ def _infer_base_year_from_db(db_path: Path) -> Optional[int]:
             try:
                 cursor.execute(f"PRAGMA table_info(\"{table}\")")
             except sqlite3.Error:
+                log(
+                    "warn",
+                    "Failed PRAGMA table_info during base year inference",
+                    table=table,
+                )
                 continue
 
             columns = cursor.fetchall()
             if not columns:
                 continue
+
+            column_names = [column[1] for column in columns if column and column[1]]
+            log(
+                "debug",
+                "Columns inspected for base year inference",
+                table=table,
+                columns=column_names,
+            )
 
             match: Optional[str] = None
             for column in columns:
@@ -186,6 +247,12 @@ def _infer_base_year_from_db(db_path: Path) -> Optional[int]:
             try:
                 cursor.execute(f"SELECT \"{match}\" FROM \"{table}\" LIMIT 1")
             except sqlite3.Error:
+                log(
+                    "warn",
+                    "Failed to read potential base year column",
+                    table=table,
+                    column=match,
+                )
                 continue
 
             row = cursor.fetchone()
@@ -197,6 +264,13 @@ def _infer_base_year_from_db(db_path: Path) -> Optional[int]:
                 continue
 
             try:
+                log(
+                    "debug",
+                    "Base year inferred",
+                    table=table,
+                    column=match,
+                    value=float(value),
+                )
                 return int(float(value))
             except (TypeError, ValueError):
                 continue
@@ -331,30 +405,50 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    log("info", "=== MODEL SETUP STARTED ===")
+
     ifs_root = Path(args.ifs_root)
     db_path = ifs_root / "RUNFILES" / "Working.run.db"
     if not db_path.exists():
-        print(
-            json.dumps(
-                {
-                    "status": "error",
-                    "message": f"Missing Working.run.db at {db_path}",
-                }
-            )
+        log(
+            "error",
+            "Missing Working.run.db",
+            database=str(db_path.resolve()),
         )
         return 1
 
     input_path = Path(args.input_file)
     if not input_path.exists():
-        print(
-            json.dumps(
-                {
-                    "status": "error",
-                    "message": f"Missing StartingPointTable.xlsx at {input_path}",
-                }
-            )
+        log(
+            "error",
+            "Missing StartingPointTable.xlsx",
+            file=str(input_path.resolve()),
         )
         return 1
+
+    log(
+        "info",
+        "Reading StartingPointTable.xlsx",
+        file=str(input_path.resolve()),
+    )
+    try:
+        excel_file = pd.ExcelFile(input_path)
+    except Exception as exc:
+        excel_file = None
+        log(
+            "warn",
+            "Unable to list Excel sheets",
+            file=str(input_path.resolve()),
+            error=str(exc),
+        )
+    else:
+        log(
+            "debug",
+            "Excel sheets available",
+            file=str(input_path.resolve()),
+            sheets=excel_file.sheet_names,
+        )
+        excel_file.close()
 
     existing_sce_path = ifs_root / "Scenario" / "Working.sce"
     existing_years = _extract_years_from_sce(existing_sce_path)
@@ -372,13 +466,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         base_year = _infer_base_year_from_db(db_path)
 
     if forecast_year is None:
-        print(
-            json.dumps(
-                {
-                    "status": "error",
-                    "message": "Unable to determine forecast year for Working.sce.",
-                }
-            )
+        log(
+            "error",
+            "Unable to determine forecast year for Working.sce.",
         )
         return 1
 
@@ -388,37 +478,57 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         _LAST_KNOWN_YEARS = None
 
-    print(
-        json.dumps(
-            {
-                "status": "info",
-                "message": "Creating Working.sce for parameters",
-            }
-        )
-    )
-    sys.stdout.flush()
+    log("info", "Creating Working.sce for parameters")
     sce_path = create_working_sce(ifs_root)
 
-    sheets = [
-        _load_sheet(input_path, "TablFunc"),
-        _load_sheet(input_path, "AnalFunc"),
-    ]
+    sheet_order = ["TablFunc", "AnalFunc"]
+    log("debug", "Listing Excel sheets to process", sheets=sheet_order)
+    sheets = []
+    for sheet_name in sheet_order:
+        frame = _load_sheet(input_path, sheet_name)
+        log(
+            "debug",
+            "Collecting rows from sheet",
+            sheet=sheet_name,
+            rows=int(frame.shape[0]),
+        )
+        sheets.append(frame)
 
     updates: List[Dict[str, Any]] = []
 
     try:
+        log(
+            "info",
+            "Connecting to Working.run.db",
+            database=str(db_path.resolve()),
+        )
         conn = sqlite3.connect(str(db_path))
         cursor = conn.cursor()
 
-        print(
-            json.dumps(
-                {
-                    "status": "info",
-                    "message": "Updating coefficients in Working.run.db",
-                }
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [row[0] for row in cursor.fetchall()]
+        log("debug", "Tables found in database", tables=tables)
+
+        for table in tables:
+            try:
+                cursor.execute(f"PRAGMA table_info(\"{table}\")")
+            except sqlite3.Error as exc:
+                log(
+                    "warn",
+                    "Failed to inspect table columns",
+                    table=table,
+                    error=str(exc),
+                )
+                continue
+            columns = [column_row[1] for column_row in cursor.fetchall()]
+            log(
+                "debug",
+                "Columns found in table",
+                table=table,
+                columns=columns,
             )
-        )
-        sys.stdout.flush()
+
+        log("info", "Updating coefficients in Working.run.db")
 
         for row in _collect_rows(sheets):
             func_name = str(row.get("Function Name") or "").strip()
@@ -426,31 +536,22 @@ def main(argv: Optional[list[str]] = None) -> int:
             y_var = str(row.get("YVariable") or "").strip()
 
             if not (func_name and x_var and y_var):
-                print(
-                    json.dumps(
-                        {
-                            "status": "warn",
-                            "message": (
-                                "Skipping row with missing identifiers: "
-                                f"Function={func_name}, X={x_var}, Y={y_var}"
-                            ),
-                        }
-                    )
+                log(
+                    "warn",
+                    "Skipping row with missing identifiers",
+                    function=func_name,
+                    x_variable=x_var,
+                    y_variable=y_var,
                 )
-                sys.stdout.flush()
                 continue
 
-            print(
-                json.dumps(
-                    {
-                        "status": "debug",
-                        "message": (
-                            f"Looking up Seq for Function={func_name}, X={x_var}, Y={y_var}"
-                        ),
-                    }
-                )
+            log(
+                "debug",
+                "Processing regression row",
+                function=func_name,
+                x_variable=x_var,
+                y_variable=y_var,
             )
-            sys.stdout.flush()
 
             cursor.execute(
                 "SELECT Seq FROM ifs_reg WHERE UPPER(Name)=UPPER(?) AND UPPER(InputName)=UPPER(?) AND UPPER(OutputName)=UPPER(?)",
@@ -459,32 +560,24 @@ def main(argv: Optional[list[str]] = None) -> int:
             seq_row = cursor.fetchone()
 
             if not seq_row:
-                print(
-                    json.dumps(
-                        {
-                            "status": "warn",
-                            "message": (
-                                "No match found in ifs_reg for "
-                                f"Function={func_name}, X={x_var}, Y={y_var}"
-                            ),
-                        }
-                    )
+                log(
+                    "warn",
+                    "No matching regression found in ifs_reg",
+                    function=func_name,
+                    x_variable=x_var,
+                    y_variable=y_var,
                 )
-                sys.stdout.flush()
                 continue
 
             seq = seq_row[0]
-            print(
-                json.dumps(
-                    {
-                        "status": "debug",
-                        "message": (
-                            f"Found Seq={seq} for Function={func_name}, X={x_var}, Y={y_var}"
-                        ),
-                    }
-                )
+            log(
+                "debug",
+                "Found regression sequence",
+                function=func_name,
+                x_variable=x_var,
+                y_variable=y_var,
+                seq=seq,
             )
-            sys.stdout.flush()
 
             for coef_name in COEFFICIENT_COLUMNS:
                 raw_value = _normalize_number(row.get(coef_name))
@@ -497,6 +590,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
                 existing = cursor.fetchone()
                 if existing is None:
+                    log(
+                        "warn",
+                        "Coefficient row missing",
+                        function=func_name,
+                        seq=seq,
+                        coefficient=coef_name,
+                    )
                     continue
 
                 if coef_name == "a":
@@ -511,20 +611,17 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "UPDATE ifs_reg_coeff SET Value=? WHERE RegressionName=? AND RegressionSeq=? AND Name=?",
                     (float(new_value), func_name, seq, coef_name),
                 )
-                print(
-                    json.dumps(
-                        {
-                            "status": "debug",
-                            "message": (
-                                f"Updated coef {coef_name} for {func_name} "
-                                f"(Seq={seq}, X={x_var}, Y={y_var})"
-                            ),
-                            "old": float(existing[0]),
-                            "new": float(new_value),
-                        }
-                    )
+                log(
+                    "debug",
+                    "Updated regression coefficient",
+                    function=func_name,
+                    seq=seq,
+                    coefficient=coef_name,
+                    x_variable=x_var,
+                    y_variable=y_var,
+                    old=float(existing[0]),
+                    new=float(new_value),
                 )
-                sys.stdout.flush()
                 updates.append(
                     {
                         "Function": func_name,
@@ -538,6 +635,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
 
         conn.commit()
+        log(
+            "info",
+            "Committed coefficient updates",
+            total_updates=len(updates),
+        )
     finally:
         try:
             conn.close()
@@ -545,25 +647,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             pass
 
     appended_variables = add_from_startingpoint(ifs_root, input_path)
-    print(
-        json.dumps(
-            {
-                "status": "info",
-                "message": "Model Setup successful, waiting to start",
-            }
-        )
+    log("info", "Model Setup successful, waiting to start")
+    log(
+        "success",
+        "Model Setup completed",
+        updates=updates,
+        sce_variables_appended=appended_variables,
+        sce_file=str(sce_path.resolve()),
     )
-    sys.stdout.flush()
-    print(
-        json.dumps(
-            {
-                "status": "success",
-                "updates": updates,
-                "sce_variables_appended": appended_variables,
-                "sce_file": str(sce_path.resolve()),
-            }
-        )
-    )
+    log("info", "=== MODEL SETUP COMPLETED ===")
     return 0
 
 
