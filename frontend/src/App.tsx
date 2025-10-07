@@ -251,13 +251,20 @@ function TuneIFsPage({
     }
 
     setError(null);
+    setMetadata(null);
+    setModelSetupResult(null);
+    setProgressYear(null);
+    setProgressPercent(0);
+    setSetupMessage("Starting model setup...");
 
     if (!validatedPath || !validatedPath.trim()) {
+      setSetupMessage("❌ Model setup failed.");
       setError("Validated IFs folder path is missing. Please re-run validation.");
       return;
     }
 
     if (!validatedInputPath || !validatedInputPath.trim()) {
+      setSetupMessage("❌ Model setup failed.");
       setError(
         "Validated input file path is missing. Please re-run validation to continue.",
       );
@@ -266,6 +273,7 @@ function TuneIFsPage({
 
     const parsedEndYear = Number(endYearInput);
     if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
+      setSetupMessage("❌ Model setup failed.");
       setError("Please enter a valid end year.");
       return;
     }
@@ -276,8 +284,6 @@ function TuneIFsPage({
     targetEndYearRef.current = clampedEndYear;
 
     setModelSetupRunning(true);
-    setModelSetupResult(null);
-    setSetupMessage("Waiting to start.");
 
     try {
       const response = await modelSetup({
@@ -295,12 +301,14 @@ function TuneIFsPage({
         setSetupMessage("✅ Model setup complete. Ready to run IFs.");
         setError(null);
       } else {
+        setSetupMessage("❌ Model setup failed.");
         setError(response.message ?? "Model setup failed.");
       }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Unable to complete model setup.";
       setError(message);
+      setSetupMessage("❌ Model setup failed.");
     } finally {
       setModelSetupRunning(false);
     }
@@ -325,39 +333,50 @@ function TuneIFsPage({
       return;
     }
 
+    const setupResult = modelSetupResult;
     const clampedEndYear = clampEndYear(parsedEndYear);
     targetEndYearRef.current = clampedEndYear;
     setEndYear(clampedEndYear);
     setEndYearInput(String(clampedEndYear));
-    setRunning(true);
+    setSetupMessage("Running IFs model...");
+    setModelSetupResult(null);
     setMetadata(null);
     setProgressYear(null);
     setProgressPercent(0);
+    setRunning(true);
 
-    const response = await runIFs({
-      validatedPath,
-      endYear: clampedEndYear,
-      baseYear: baseYearRef.current,
-      outputDirectory,
-      sceId: modelSetupResult.sce_id,
-      sceFile: modelSetupResult.sce_file,
-    });
+    try {
+      const response = await runIFs({
+        validatedPath,
+        endYear: clampedEndYear,
+        baseYear: baseYearRef.current,
+        outputDirectory,
+        sceId: setupResult.sce_id,
+        sceFile: setupResult.sce_file,
+      });
 
-    if (response.status === "success") {
-      setMetadata(response);
-      setProgressYear(response.end_year);
-      setProgressPercent(100);
-      targetEndYearRef.current = response.end_year;
-      if (typeof response.base_year === "number") {
-        baseYearRef.current = response.base_year;
-        setEffectiveBaseYear(response.base_year);
+      if (response.status === "success") {
+        setError(null);
+        setMetadata(response);
+        setProgressYear(response.end_year);
+        setProgressPercent(100);
+        targetEndYearRef.current = response.end_year;
+        if (typeof response.base_year === "number") {
+          baseYearRef.current = response.base_year;
+          setEffectiveBaseYear(response.base_year);
+        }
+        setSetupMessage("Waiting to start.");
+      } else {
+        setError(response.message ?? "IFs run failed.");
+        setSetupMessage("❌ IFs run failed.");
       }
-      setModelSetupResult(null);
-    } else {
-      setError(response.message);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to run IFs.";
+      setError(message);
+      setSetupMessage("❌ IFs run failed.");
+    } finally {
+      setRunning(false);
     }
-
-    setRunning(false);
   };
 
   const displayPercent = Math.min(100, Math.max(0, progressPercent));
@@ -469,13 +488,14 @@ function TuneIFsPage({
         />
       </div>
 
-      {setupMessage.toLowerCase().includes("model setup complete") && (
-        <div className="alert alert-info">{setupMessage}</div>
-      )}
-      {error &&
-        !error.toLowerCase().includes("model setup complete") && (
-          <div className="alert alert-error">{error}</div>
+      {!running &&
+        !modelSetupRunning &&
+        setupMessage.toLowerCase().includes("model setup complete") && (
+          <div className="alert alert-info">{setupMessage}</div>
         )}
+      {!running && !modelSetupRunning && error && (
+        <div className="alert alert-error">{error}</div>
+      )}
 
       {metadata && (
         <div className="metadata">
