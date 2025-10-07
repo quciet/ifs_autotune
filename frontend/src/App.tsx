@@ -157,10 +157,6 @@ function TuneIFsPage({
   }, [metadata]);
 
   useEffect(() => {
-    setModelSetupResult((current) => (current ? null : current));
-  }, [effectiveBaseYear]);
-
-  useEffect(() => {
     if (!window.electron?.on) {
       return;
     }
@@ -296,6 +292,8 @@ function TuneIFsPage({
 
       if (response.status === "success") {
         setModelSetupResult(response);
+        setError(null);
+        setSetupMessage("Model setup complete. Ready to run IFs.");
       } else {
         setError(response.message ?? "Model setup failed.");
       }
@@ -354,12 +352,12 @@ function TuneIFsPage({
         baseYearRef.current = response.base_year;
         setEffectiveBaseYear(response.base_year);
       }
+      setModelSetupResult(null);
     } else {
       setError(response.message);
     }
 
     setRunning(false);
-    setModelSetupResult(null);
   };
 
   const displayPercent = Math.min(100, Math.max(0, progressPercent));

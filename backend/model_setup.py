@@ -486,6 +486,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     sheets = []
     for sheet_name in sheet_order:
         frame = _load_sheet(input_path, sheet_name)
+        frame["SourceSheet"] = sheet_name
         log(
             "debug",
             "Collecting rows from sheet",
@@ -564,6 +565,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
         log("info", "Updating coefficients in Working.run.db")
 
+        intercept_cache: Dict[Tuple[str, str], float] = {}
+
         for row in collected_rows:
             func_name = str(row.get("Function Name") or "").strip()
             x_var = str(row.get("XVariable") or "").strip()
@@ -637,7 +640,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                     continue
 
                 if coef_name == "a":
-                    new_value = _randomize_intercept(raw_value)
+                    is_anal_func = str(row.get("SourceSheet", "")).lower() == "analfunc"
+                    key = (func_name, y_var)
+                    if is_anal_func:
+                        if key in intercept_cache:
+                            new_value = intercept_cache[key]
+                        else:
+                            new_value = _randomize_intercept(raw_value)
+                            intercept_cache[key] = new_value
+                    else:
+                        new_value = _randomize_intercept(raw_value)
                 else:
                     randomized = _randomize_slope(raw_value)
                     if randomized is None:
