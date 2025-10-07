@@ -16,9 +16,21 @@ body {
 }
 
 .container {
-  max-width: 720px;
+  max-width: 90%;
   margin: 0 auto;
-  padding: 3rem 1.5rem 4rem;
+  padding: 2rem 1rem;
+}
+
+@media (min-width: 1200px) {
+  .container {
+    max-width: 900px;
+  }
+}
+
+@media (max-width: 800px) {
+  .container {
+    padding: 1.5rem 1rem;
+  }
 }
 
 .header {
@@ -496,6 +508,24 @@ body {
 .progress-indicator::-moz-progress-bar {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border-radius: 9999px;
+}
+
+.metadata-inline {
+  margin-top: 1rem;
+  background: #f8fafc;
+  border-radius: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid rgba(203, 213, 224, 0.7);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.metadata-inline li {
+  margin-bottom: 0.5rem;
+  line-height: 1.4;
+  word-break: break-all;
 }
 
 .metadata {

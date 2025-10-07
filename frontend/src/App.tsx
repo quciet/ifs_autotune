@@ -80,7 +80,7 @@ function TuneIFsPage({
   const [progressPercent, setProgressPercent] = useState(0);
   const [metadata, setMetadata] = useState<RunIFsSuccess | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [setupMessage, setSetupMessage] = useState("Waiting to start.");
+  const [setupMessage, setSetupMessage] = useState("");
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
   );
@@ -104,6 +104,10 @@ function TuneIFsPage({
     baseYearRef.current = normalized;
     setEffectiveBaseYear(normalized);
   }, [baseYear]);
+
+  useEffect(() => {
+    setSetupMessage("Waiting to start.");
+  }, [validatedPath, validatedInputPath, outputDirectory]);
 
   useEffect(() => {
     setEndYear((current) => {
@@ -368,7 +372,7 @@ function TuneIFsPage({
           baseYearRef.current = response.base_year;
           setEffectiveBaseYear(response.base_year);
         }
-        setSetupMessage("Waiting to start.");
+        setSetupMessage("Run completed.");
       } else {
         setError(response.message ?? "IFs run failed.");
         setSetupMessage("❌ Run failed.");
