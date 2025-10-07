@@ -292,8 +292,8 @@ function TuneIFsPage({
 
       if (response.status === "success") {
         setModelSetupResult(response);
+        setSetupMessage("✅ Model setup complete. Ready to run IFs.");
         setError(null);
-        setSetupMessage("Model setup complete. Ready to run IFs.");
       } else {
         setError(response.message ?? "Model setup failed.");
       }
@@ -469,7 +469,13 @@ function TuneIFsPage({
         />
       </div>
 
-      {error && <div className="alert alert-error">{error}</div>}
+      {setupMessage.toLowerCase().includes("model setup complete") && (
+        <div className="alert alert-info">{setupMessage}</div>
+      )}
+      {error &&
+        !error.toLowerCase().includes("model setup complete") && (
+          <div className="alert alert-error">{error}</div>
+        )}
 
       {metadata && (
         <div className="metadata">

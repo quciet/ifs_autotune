@@ -712,15 +712,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             pass
 
     appended_variables = add_from_startingpoint(ifs_root, input_path)
-    log("info", "Model Setup successful, waiting to start")
     log(
         "success",
-        "Model Setup completed",
+        "Model Setup completed successfully",
         updates=updates,
         sce_variables_appended=appended_variables,
         sce_file=str(sce_path.resolve()),
     )
-    log("info", "=== MODEL SETUP COMPLETED ===")
     return 0
 
 
