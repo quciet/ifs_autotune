@@ -8,7 +8,6 @@ dependencies = [
   "pytest",
   "pandas",
   "openpyxl",
-  "pyarrow",
 ]
 
 [tool.pytest.ini_options]
