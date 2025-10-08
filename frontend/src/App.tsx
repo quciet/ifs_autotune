@@ -18,7 +18,6 @@ import {
 } from "./api";
 
 const REQUIRED_INPUT_SHEETS = ["AnalFunc", "TablFunc", "IFsVar", "DataDict"];
-const DEFAULT_INPUT_FILE = "./input/StartingPointTable.xlsx";
 
 type View = "validate" | "tune";
 
@@ -579,7 +578,7 @@ function App() {
   const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
   const [lastValidatedOutputDirectory, setLastValidatedOutputDirectory] =
     useState<string | null>(null);
-  const [inputFilePath, setInputFilePath] = useState<string>(DEFAULT_INPUT_FILE);
+  const [inputFilePath, setInputFilePath] = useState<string>("");
   const [lastValidatedInputFile, setLastValidatedInputFile] =
     useState<string | null>(null);
   const [result, setResult] = useState<CheckResponse | null>(null);
@@ -648,28 +647,18 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
+    if (typeof window === "undefined") return;
 
     let isMounted = true;
 
     const updateIfUninitialized = (nextValue: string) => {
-      if (!isMounted) {
-        return;
-      }
+      if (!isMounted) return;
 
       setInputFilePath((current) => {
-        if (defaultInputLoadedRef.current) {
-          return current;
-        }
+        if (defaultInputLoadedRef.current) return current;
 
         const trimmedCurrent = current?.trim() ?? "";
-        if (
-          trimmedCurrent.length > 0 &&
-          trimmedCurrent !== DEFAULT_INPUT_FILE &&
-          trimmedCurrent !== nextValue
-        ) {
+        if (trimmedCurrent.length > 0 && trimmedCurrent !== nextValue) {
           defaultInputLoadedRef.current = true;
           return current;
         }
@@ -679,35 +668,64 @@ function App() {
       });
     };
 
-    const applyFallback = () => {
-      const normalizedDefault = DEFAULT_INPUT_FILE.startsWith("./")
-        ? DEFAULT_INPUT_FILE.slice(2)
-        : DEFAULT_INPUT_FILE;
-      updateIfUninitialized(normalizedDefault);
-    };
-
     const loadDefaultInputFile = async () => {
-      if (!window.electron?.getDefaultInputFile) {
-        applyFallback();
-        return;
-      }
-
       try {
-        const defaultFile = await window.electron.getDefaultInputFile();
-        if (!isMounted) {
+        // ✅ First try to get the default input file from Electron
+        if (window.electron?.getDefaultInputFile) {
+          const defaultFile = await window.electron.getDefaultInputFile();
+          if (!isMounted) return;
+
+          if (typeof defaultFile === "string" && defaultFile.trim().length > 0) {
+            updateIfUninitialized(defaultFile.trim());
+            return;
+          }
+        }
+
+        // ✅ If that fails, derive input path using the same logic as output folder
+        if (window.electron?.getDefaultOutputDir) {
+          const outputRoot = await window.electron.getDefaultOutputDir();
+          const converted = outputRoot.replace(
+            /([\\/])output$/,
+            "$1input$1StartingPointTable.xlsx",
+          );
+          if (converted !== outputRoot) {
+            updateIfUninitialized(converted);
+            return;
+          }
+
+          const separator = outputRoot.includes("\\") ? "\\" : "/";
+          const normalizedRoot = outputRoot.endsWith(separator)
+            ? outputRoot.slice(0, -1)
+            : outputRoot;
+          updateIfUninitialized(
+            `${normalizedRoot}${separator}input${separator}StartingPointTable.xlsx`,
+          );
           return;
         }
 
-        if (typeof defaultFile === "string" && defaultFile.trim().length > 0) {
-          const normalizedPath = defaultFile.startsWith("./")
-            ? defaultFile.slice(2)
-            : defaultFile;
-          updateIfUninitialized(normalizedPath);
-        } else {
-          applyFallback();
-        }
-      } catch {
-        applyFallback();
+        // ✅ Final fallback: current working directory
+        const cwdFallback = (() => {
+          try {
+            const withProcess = window as unknown as {
+              process?: { cwd?: () => string | undefined };
+            };
+            const cwd = withProcess.process?.cwd?.();
+            if (typeof cwd === "string" && cwd.trim().length > 0) {
+              const trimmedCwd = cwd.trim();
+              const separator = trimmedCwd.includes("\\") ? "\\" : "/";
+              const normalizedBase = trimmedCwd.endsWith(separator)
+                ? trimmedCwd.slice(0, -1)
+                : trimmedCwd;
+              return `${normalizedBase}${separator}input${separator}StartingPointTable.xlsx`;
+            }
+          } catch (error) {
+            console.error("Unable to resolve cwd fallback", error);
+          }
+          return "input/StartingPointTable.xlsx";
+        })();
+        updateIfUninitialized(cwdFallback);
+      } catch (err) {
+        console.error("Failed to load default input file", err);
       }
     };
 
@@ -850,9 +868,7 @@ function App() {
     try {
       setInfo(null);
       const selected = await window.electron.selectFile(
-        inputFilePath && inputFilePath.length > 0
-          ? inputFilePath
-          : DEFAULT_INPUT_FILE,
+        inputFilePath && inputFilePath.length > 0 ? inputFilePath : undefined,
       );
       if (selected) {
         setInputFilePath(selected);
