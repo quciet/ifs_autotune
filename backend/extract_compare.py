@@ -30,6 +30,11 @@ def main() -> int:
     model_id = args.model_id
     output_dir = model_db.parent
 
+    model_folder = output_dir / f"model_{model_id}"
+    if output_dir.name == f"model_{model_id}":
+        model_folder = output_dir
+    model_folder.mkdir(parents=True, exist_ok=True)
+
     log("info", "Reading DataDict sheet")
     df = pd.read_excel(input_file, sheet_name="DataDict")
     df = df[df["Switch"] == 1]
@@ -64,14 +69,14 @@ def main() -> int:
                 log("warn", f"No data found for {variable}")
                 continue
 
-            parquet_path = output_dir / f"{variable}_{model_id}.parquet"
+            parquet_path = model_folder / f"{variable}_{model_id}.parquet"
             with open(parquet_path, "wb") as f:
                 f.write(raw_blob)
             log("info", f"Saved Parquet for {variable}", file=str(parquet_path))
 
             try:
                 hist_df = pd.read_sql_query(f"SELECT * FROM [{table_name}]", conn_hist)
-                csv_path = output_dir / f"{table_name}_{model_id}.csv"
+                csv_path = model_folder / f"{table_name}_{model_id}.csv"
                 hist_df.to_csv(csv_path, index=False)
                 log("info", f"Saved historical data for {table_name}", file=str(csv_path))
             except Exception as exc:  # noqa: BLE001
