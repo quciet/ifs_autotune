@@ -655,11 +655,7 @@ function App() {
       if (!isMounted) return;
 
       setInputFilePath((current) => {
-        if (defaultInputLoadedRef.current) return current;
-
-        const trimmedCurrent = current?.trim() ?? "";
-        if (trimmedCurrent.length > 0 && trimmedCurrent !== nextValue) {
-          defaultInputLoadedRef.current = true;
+        if (defaultInputLoadedRef.current && current?.trim().length > 0) {
           return current;
         }
 
