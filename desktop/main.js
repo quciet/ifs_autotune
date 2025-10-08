@@ -146,17 +146,19 @@ ipcMain.handle('get-default-output-dir', async () => {
 
 ipcMain.handle('get-default-input-file', async () => {
   const inputDir = DEFAULT_INPUT_DIR();
-  ensureDirectoryExists(inputDir);
 
-  const defaultInputFile = path.join(inputDir, DEFAULT_INPUT_FILE_NAME);
-  const resolvedPath = path.resolve(defaultInputFile);
-
-  if (!fs.existsSync(defaultInputFile)) {
-    console.warn('⚠️ Default input file not found at:', resolvedPath);
-    return resolvedPath;
+  if (!fs.existsSync(inputDir)) {
+    fs.mkdirSync(inputDir, { recursive: true });
+    console.log('Created input folder:', inputDir);
   }
 
-  return resolvedPath;
+  const defaultInputFile = path.join(inputDir, DEFAULT_INPUT_FILE_NAME);
+
+  if (!fs.existsSync(defaultInputFile)) {
+    console.warn('⚠️ Default input file not found at:', defaultInputFile);
+  }
+
+  return defaultInputFile;
 });
 
 const REQUIRED_INPUT_SHEETS = ['AnalFunc', 'TablFunc', 'IFsVar', 'DataDict'];
