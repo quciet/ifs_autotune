@@ -680,7 +680,8 @@ function App() {
     };
 
     const applyFallback = () => {
-      updateIfUninitialized(DEFAULT_INPUT_FILE);
+      const normalizedDefault = DEFAULT_INPUT_FILE.replace(/^\.//, "");
+      updateIfUninitialized(normalizedDefault);
     };
 
     const loadDefaultInputFile = async () => {
@@ -696,7 +697,8 @@ function App() {
         }
 
         if (typeof defaultFile === "string" && defaultFile.trim().length > 0) {
-          updateIfUninitialized(defaultFile);
+          const normalizedPath = defaultFile.replace(/^\.//, "");
+          updateIfUninitialized(normalizedPath);
         } else {
           applyFallback();
         }
