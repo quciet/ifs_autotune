@@ -44,7 +44,12 @@ Runs fully offline: React/Electron frontend + Python backend, with Electron acti
      cd ..
      ```
 
-5. **Launch the desktop app (dev mode)**
+5. **Place the default input workbook (optional but recommended)**
+   - Create an `input` folder inside `desktop/` if it does not already exist.
+   - Copy your `StartingPointTable.xlsx` into `desktop/input/StartingPointTable.xlsx`.
+   - The desktop app will automatically point the file picker at this location when it launches.
+
+6. **Launch the desktop app (dev mode)**
    - From the `desktop/` folder:
      ```bash
      npm run electron-dev

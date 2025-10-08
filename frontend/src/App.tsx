@@ -595,6 +595,7 @@ function App() {
     useState<boolean>(() =>
       typeof window !== "undefined" && Boolean(window.electron?.selectFile),
     );
+  const defaultInputLoadedRef = useRef(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -640,6 +641,71 @@ function App() {
     };
 
     loadDefaultOutputDir();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    let isMounted = true;
+
+    const updateIfUninitialized = (nextValue: string) => {
+      if (!isMounted) {
+        return;
+      }
+
+      setInputFilePath((current) => {
+        if (defaultInputLoadedRef.current) {
+          return current;
+        }
+
+        const trimmedCurrent = current?.trim() ?? "";
+        if (
+          trimmedCurrent.length > 0 &&
+          trimmedCurrent !== DEFAULT_INPUT_FILE &&
+          trimmedCurrent !== nextValue
+        ) {
+          defaultInputLoadedRef.current = true;
+          return current;
+        }
+
+        defaultInputLoadedRef.current = true;
+        return nextValue;
+      });
+    };
+
+    const applyFallback = () => {
+      updateIfUninitialized(DEFAULT_INPUT_FILE);
+    };
+
+    const loadDefaultInputFile = async () => {
+      if (!window.electron?.getDefaultInputFile) {
+        applyFallback();
+        return;
+      }
+
+      try {
+        const defaultFile = await window.electron.getDefaultInputFile();
+        if (!isMounted) {
+          return;
+        }
+
+        if (typeof defaultFile === "string" && defaultFile.trim().length > 0) {
+          updateIfUninitialized(defaultFile);
+        } else {
+          applyFallback();
+        }
+      } catch {
+        applyFallback();
+      }
+    };
+
+    loadDefaultInputFile();
 
     return () => {
       isMounted = false;

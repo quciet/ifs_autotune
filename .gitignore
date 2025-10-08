@@ -44,3 +44,7 @@ yarn-error.log*
 
 # Output files
 output/
+
+# Desktop input workbook placeholder
+desktop/input/
+!desktop/input/.gitkeep

@@ -9,6 +9,7 @@ declare global {
       ) => Promise<string | null>;
       selectFile: (defaultPath?: string | null) => Promise<string | null>;
       getDefaultOutputDir: () => Promise<string>;
+      getDefaultInputFile: () => Promise<string>;
       invoke: <T = unknown, R = unknown>(channel: string, data?: T) => Promise<R>;
       on: (
         channel: string,

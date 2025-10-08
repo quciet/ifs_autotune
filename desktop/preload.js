@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('electron', {
   selectFile: (defaultPath) =>
     ipcRenderer.invoke('select-input-file', { defaultPath }),
   getDefaultOutputDir: () => ipcRenderer.invoke('get-default-output-dir'),
+  getDefaultInputFile: () => ipcRenderer.invoke('get-default-input-file'),
   invoke: (channel, data) => ipcRenderer.invoke(channel, data),
   on: (channel, callback) => {
     const subscription = (_event, ...args) => {
