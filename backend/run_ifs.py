@@ -200,10 +200,15 @@ def _prepare_run_artifacts(
     os.makedirs(output_dir, exist_ok=True)
 
     model_id = uuid.uuid4().hex
-    destination_db = os.path.join(output_dir, f"model_{model_id}.db")
+
+    # === Create per-model folder ===
+    model_folder = os.path.join(output_dir, f"model_{model_id}")
+    os.makedirs(model_folder, exist_ok=True)
+
+    destination_db = os.path.join(model_folder, f"model_{model_id}.db")
     shutil.copy2(source_db, destination_db)
 
-    metadata_path = os.path.join(output_dir, f"model_{model_id}.json")
+    metadata_path = os.path.join(model_folder, f"model_{model_id}.json")
     metadata_contents = {
         "model_id": model_id,
         "base_year": base_year,
@@ -215,6 +220,35 @@ def _prepare_run_artifacts(
     with open(metadata_path, "w", encoding="utf-8") as metadata_file:
         json.dump(metadata_contents, metadata_file, indent=2)
 
+    # === Convert Parquet → CSV using BIGPOPA's ParquetReaderlite ===
+    try:
+        import subprocess
+        from pathlib import Path
+
+        backend_tools = Path(__file__).resolve().parent / "tools"
+        parquet_reader = backend_tools / "ParquetReaderlite.exe"
+
+        if parquet_reader.exists():
+            subprocess.run([str(parquet_reader), str(model_folder)], check=True)
+        else:
+            print(
+                json.dumps(
+                    {
+                        "status": "warn",
+                        "message": f"ParquetReaderlite.exe not found at {parquet_reader}",
+                    }
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            json.dumps(
+                {
+                    "status": "warn",
+                    "message": f"Failed to convert parquet files: {exc}",
+                }
+            )
+        )
+
     return {
         "status": "success",
         "model_id": model_id,
@@ -223,6 +257,7 @@ def _prepare_run_artifacts(
         "w_gdp": w_gdp,
         "output_file": destination_db,
         "metadata_file": metadata_path,
+        "model_folder": model_folder,
     }
 
 
