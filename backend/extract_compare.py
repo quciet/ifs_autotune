@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import sqlite3
 from pathlib import Path
 
 import pandas as pd
-import pyarrow.parquet as pq
 
 
 def log(status: str, message: str, **kwargs) -> None:
@@ -57,15 +55,19 @@ def main() -> int:
 
             query = "SELECT Data FROM ifs_var_blob WHERE VariableName = ?"
             blob = conn_model.execute(query, (variable,)).fetchone()
-            if blob and blob[0]:
-                parquet_bytes = io.BytesIO(blob[0])
-                parquet_table = pq.read_table(parquet_bytes)
-                parquet_path = output_dir / f"{variable}_{model_id}.parquet"
-                pq.write_table(parquet_table, parquet_path)
-                log("info", f"Saved parquet for {variable}", file=str(parquet_path))
-            else:
+            if not blob:
                 log("warn", f"No Data found for {variable} in ifs_var_blob")
                 continue
+
+            raw_blob = blob[0]
+            if not raw_blob:
+                log("warn", f"No data found for {variable}")
+                continue
+
+            parquet_path = output_dir / f"{variable}_{model_id}.parquet"
+            with open(parquet_path, "wb") as f:
+                f.write(raw_blob)
+            log("info", f"Saved Parquet for {variable}", file=str(parquet_path))
 
             try:
                 hist_df = pd.read_sql_query(f"SELECT * FROM [{table_name}]", conn_hist)
