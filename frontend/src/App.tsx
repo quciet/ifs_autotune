@@ -670,62 +670,22 @@ function App() {
 
     const loadDefaultInputFile = async () => {
       try {
-        // ✅ First try to get the default input file from Electron
-        if (window.electron?.getDefaultInputFile) {
-          const defaultFile = await window.electron.getDefaultInputFile();
-          if (!isMounted) return;
-
-          if (typeof defaultFile === "string" && defaultFile.trim().length > 0) {
-            updateIfUninitialized(defaultFile.trim());
-            return;
-          }
-        }
-
-        // ✅ If that fails, derive input path using the same logic as output folder
-        if (window.electron?.getDefaultOutputDir) {
-          const outputRoot = await window.electron.getDefaultOutputDir();
-          const converted = outputRoot.replace(
-            /([\\/])output$/,
-            "$1input$1StartingPointTable.xlsx",
-          );
-          if (converted !== outputRoot) {
-            updateIfUninitialized(converted);
-            return;
-          }
-
-          const separator = outputRoot.includes("\\") ? "\\" : "/";
-          const normalizedRoot = outputRoot.endsWith(separator)
-            ? outputRoot.slice(0, -1)
-            : outputRoot;
-          updateIfUninitialized(
-            `${normalizedRoot}${separator}input${separator}StartingPointTable.xlsx`,
-          );
+        if (!window.electron?.getDefaultInputFile) {
           return;
         }
 
-        // ✅ Final fallback: current working directory
-        const cwdFallback = (() => {
-          try {
-            const withProcess = window as unknown as {
-              process?: { cwd?: () => string | undefined };
-            };
-            const cwd = withProcess.process?.cwd?.();
-            if (typeof cwd === "string" && cwd.trim().length > 0) {
-              const trimmedCwd = cwd.trim();
-              const separator = trimmedCwd.includes("\\") ? "\\" : "/";
-              const normalizedBase = trimmedCwd.endsWith(separator)
-                ? trimmedCwd.slice(0, -1)
-                : trimmedCwd;
-              return `${normalizedBase}${separator}input${separator}StartingPointTable.xlsx`;
-            }
-          } catch (error) {
-            console.error("Unable to resolve cwd fallback", error);
-          }
-          return "input/StartingPointTable.xlsx";
-        })();
-        updateIfUninitialized(cwdFallback);
+        const defaultFile = await window.electron.getDefaultInputFile();
+        if (!isMounted) {
+          return;
+        }
+
+        if (typeof defaultFile === "string" && defaultFile.trim().length > 0) {
+          updateIfUninitialized(defaultFile.trim());
+        } else {
+          console.warn("Default input path was empty — check Electron handler.");
+        }
       } catch (err) {
-        console.error("Failed to load default input file", err);
+        console.error("Failed to load default input file:", err);
       }
     };
 
