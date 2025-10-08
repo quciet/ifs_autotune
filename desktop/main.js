@@ -5,6 +5,28 @@ const fs = require('fs');
 
 const isDev = !app.isPackaged;
 const STATIC_IFS_ARGS = ['-1', 'true', 'true', '1', 'false'];
+const DEFAULT_INPUT_DIR = () => path.join(app.getAppPath(), 'input');
+const DEFAULT_OUTPUT_DIR = () => path.join(app.getAppPath(), 'output');
+const DEFAULT_INPUT_FILE_NAME = 'StartingPointTable.xlsx';
+
+const ensureDirectoryExists = (dirPath) => {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+};
+
+const getDefaultInputFilePath = () => {
+  const inputDir = DEFAULT_INPUT_DIR();
+  ensureDirectoryExists(inputDir);
+  return path.join(inputDir, DEFAULT_INPUT_FILE_NAME);
+};
+
+const getDefaultOutputDirectory = () => {
+  const outputDir = DEFAULT_OUTPUT_DIR();
+  ensureDirectoryExists(outputDir);
+  return outputDir;
+};
+
 let mainWindow = null;
 let lastValidatedPath = null;
 let lastBaseYear = null;
@@ -61,10 +83,11 @@ ipcMain.handle('select-folder', async (_event, payload = {}) => {
 
   let startPath = defaultPath;
   if (!startPath && type === 'output') {
-    startPath = path.join(app.getAppPath(), 'output');
-    if (!fs.existsSync(startPath)) {
-      fs.mkdirSync(startPath, { recursive: true });
-    }
+    startPath = getDefaultOutputDirectory();
+  }
+
+  if (startPath && type === 'output') {
+    ensureDirectoryExists(startPath);
   }
 
   const { canceled, filePaths } = await dialog.showOpenDialog({
@@ -83,7 +106,12 @@ ipcMain.handle('select-input-file', async (_event, payload = {}) => {
   const defaultPath =
     typeof payload?.defaultPath === 'string' && payload.defaultPath.trim().length > 0
       ? payload.defaultPath
-      : path.join(app.getAppPath(), 'input');
+      : getDefaultInputFilePath();
+
+  const defaultDir = path.extname(defaultPath)
+    ? path.dirname(defaultPath)
+    : defaultPath;
+  ensureDirectoryExists(defaultDir);
 
   const { canceled, filePaths } = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -99,11 +127,11 @@ ipcMain.handle('select-input-file', async (_event, payload = {}) => {
 });
 
 ipcMain.handle('get-default-output-dir', async () => {
-  const outputPath = path.join(app.getAppPath(), 'output');
-  if (!fs.existsSync(outputPath)) {
-    fs.mkdirSync(outputPath, { recursive: true });
-  }
-  return outputPath;
+  return getDefaultOutputDirectory();
+});
+
+ipcMain.handle('get-default-input-file', async () => {
+  return getDefaultInputFilePath();
 });
 
 const REQUIRED_INPUT_SHEETS = ['AnalFunc', 'TablFunc', 'IFsVar', 'DataDict'];
