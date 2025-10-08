@@ -680,7 +680,9 @@ function App() {
     };
 
     const applyFallback = () => {
-      const normalizedDefault = DEFAULT_INPUT_FILE.replace(/^\.//, "");
+      const normalizedDefault = DEFAULT_INPUT_FILE.startsWith("./")
+        ? DEFAULT_INPUT_FILE.slice(2)
+        : DEFAULT_INPUT_FILE;
       updateIfUninitialized(normalizedDefault);
     };
 
@@ -697,7 +699,9 @@ function App() {
         }
 
         if (typeof defaultFile === "string" && defaultFile.trim().length > 0) {
-          const normalizedPath = defaultFile.replace(/^\.//, "");
+          const normalizedPath = defaultFile.startsWith("./")
+            ? defaultFile.slice(2)
+            : defaultFile;
           updateIfUninitialized(normalizedPath);
         } else {
           applyFallback();
