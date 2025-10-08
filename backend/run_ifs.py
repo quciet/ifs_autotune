@@ -220,35 +220,6 @@ def _prepare_run_artifacts(
     with open(metadata_path, "w", encoding="utf-8") as metadata_file:
         json.dump(metadata_contents, metadata_file, indent=2)
 
-    # === Convert Parquet → CSV using BIGPOPA's ParquetReaderlite ===
-    try:
-        import subprocess
-        from pathlib import Path
-
-        backend_tools = Path(__file__).resolve().parent / "tools"
-        parquet_reader = backend_tools / "ParquetReaderlite.exe"
-
-        if parquet_reader.exists():
-            subprocess.run([str(parquet_reader), str(model_folder)], check=True)
-        else:
-            print(
-                json.dumps(
-                    {
-                        "status": "warn",
-                        "message": f"ParquetReaderlite.exe not found at {parquet_reader}",
-                    }
-                )
-            )
-    except Exception as exc:  # noqa: BLE001
-        print(
-            json.dumps(
-                {
-                    "status": "warn",
-                    "message": f"Failed to convert parquet files: {exc}",
-                }
-            )
-        )
-
     return {
         "status": "success",
         "model_id": model_id,

@@ -89,6 +89,23 @@ def main() -> int:
 
     log("success", "Extraction complete", count=len(extracted))
     print(json.dumps({"status": "success", "extracted": extracted}), flush=True)
+
+    # === Convert Parquet → CSV using BIGPOPA's ParquetReaderlite ===
+    try:
+        from pathlib import Path
+        import subprocess
+
+        backend_tools = Path(__file__).resolve().parent / "tools"
+        parquet_reader = backend_tools / "ParquetReaderlite.exe"
+
+        if parquet_reader.exists():
+            subprocess.run([str(parquet_reader), str(model_folder)], check=True)
+            log("info", f"Converted Parquet files in {model_folder} to CSV")
+        else:
+            log("warn", f"ParquetReaderlite.exe not found at {parquet_reader}")
+    except Exception as exc:
+        log("warn", f"Failed to convert Parquet files: {exc}")
+
     return 0
 
 
