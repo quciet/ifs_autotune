@@ -498,8 +498,13 @@ function TuneIFsPage({
       </div>
 
       <div className="progress-wrapper">
-        <div className="progress-messages">
-          {setupMessage && (
+        {/* Show only one progress message depending on state */}
+        {running ? (
+          runProgressLabel && (
+            <div className="progress-text">{runProgressLabel}</div>
+          )
+        ) : (
+          setupMessage && (
             <div
               className={`progress-text ${
                 setupMessage.includes("❌")
@@ -511,16 +516,10 @@ function TuneIFsPage({
             >
               {setupMessage}
             </div>
-          )}
+          )
+        )}
 
-          {error && (
-            <div className="progress-text error">{error}</div>
-          )}
-
-          {runProgressLabel && (
-            <div className="progress-text">{runProgressLabel}</div>
-          )}
-        </div>
+        {error && <div className="progress-text error">{error}</div>}
 
         <progress
           className="progress-indicator"
