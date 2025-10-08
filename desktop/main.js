@@ -642,6 +642,31 @@ ipcMain.handle('run_ifs', async (_event, payload) => {
   return runPythonScript('run_ifs.py', args);
 });
 
+ipcMain.handle('extract_compare', async (_event, payload) => {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Invalid payload for extract_compare');
+  }
+
+  const { ifsRoot, modelDb, inputFilePath, modelId } = payload;
+
+  if (!ifsRoot || !modelDb || !inputFilePath || !modelId) {
+    throw new Error(
+      'extract_compare requires ifsRoot, modelDb, inputFilePath, and modelId',
+    );
+  }
+
+  return runPythonScript('extract_compare.py', [
+    '--ifs-root',
+    ifsRoot,
+    '--model-db',
+    modelDb,
+    '--input-file',
+    inputFilePath,
+    '--model-id',
+    modelId,
+  ]);
+});
+
 ipcMain.handle('model_setup', async (_event, payload) => {
   if (!payload || typeof payload !== 'object') {
     throw new Error('Invalid payload for model_setup');

@@ -167,12 +167,13 @@ function TuneIFsPage({
 
     const unsubscribe = window.electron.on(
       "model-setup-progress",
-      (_event: unknown, message: string) => {
+      (...args: unknown[]) => {
+        const [first, second] = args;
         const resolvedMessage =
-          typeof message === "string"
-            ? message
-            : typeof _event === "string"
-            ? _event
+          typeof second === "string"
+            ? second
+            : typeof first === "string"
+            ? first
             : null;
 
         if (resolvedMessage) {
@@ -373,6 +374,18 @@ function TuneIFsPage({
           setEffectiveBaseYear(response.base_year);
         }
         setSetupMessage("✅ Run completed.");
+        if (window.electron?.invoke && validatedInputPath) {
+          try {
+            await window.electron.invoke("extract_compare", {
+              ifsRoot: validatedPath,
+              modelDb: response.output_file,
+              inputFilePath: validatedInputPath,
+              modelId: response.model_id,
+            });
+          } catch (extractError) {
+            console.error("extract_compare failed", extractError);
+          }
+        }
       } else {
         setError(response.message ?? "IFs run failed.");
         setSetupMessage("❌ Run failed.");
