@@ -15,6 +15,19 @@ const ensureDirectoryExists = (dirPath) => {
   }
 };
 
+const ensureAppFolders = () => {
+  const inputDir = DEFAULT_INPUT_DIR();
+  ensureDirectoryExists(inputDir);
+
+  const outputDir = DEFAULT_OUTPUT_DIR();
+  ensureDirectoryExists(outputDir);
+
+  const defaultInputFile = path.join(inputDir, DEFAULT_INPUT_FILE_NAME);
+  if (!fs.existsSync(defaultInputFile)) {
+    console.warn('⚠️ No default input file found at:', defaultInputFile);
+  }
+};
+
 const getDefaultInputFilePath = () => {
   const inputDir = DEFAULT_INPUT_DIR();
   ensureDirectoryExists(inputDir);
@@ -63,6 +76,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  ensureAppFolders();
   createWindow();
 
   app.on('activate', () => {
@@ -131,7 +145,14 @@ ipcMain.handle('get-default-output-dir', async () => {
 });
 
 ipcMain.handle('get-default-input-file', async () => {
-  return getDefaultInputFilePath();
+  const defaultInputFile = getDefaultInputFilePath();
+
+  if (!fs.existsSync(defaultInputFile)) {
+    console.warn('⚠️ Default input file not found at:', defaultInputFile);
+    return '';
+  }
+
+  return defaultInputFile;
 });
 
 const REQUIRED_INPUT_SHEETS = ['AnalFunc', 'TablFunc', 'IFsVar', 'DataDict'];
