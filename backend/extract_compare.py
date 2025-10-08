@@ -4,7 +4,7 @@ import argparse
 import json
 import sqlite3
 from pathlib import Path
-
+import subprocess
 import pandas as pd
 
 
@@ -92,8 +92,6 @@ def main() -> int:
 
     # === Convert Parquet → CSV using BIGPOPA's ParquetReaderlite ===
     try:
-        from pathlib import Path
-        import subprocess
 
         backend_tools = Path(__file__).resolve().parent / "tools"
         parquet_reader = backend_tools / "ParquetReaderlite.exe"
