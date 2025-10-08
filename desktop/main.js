@@ -411,6 +411,31 @@ ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
 
   try {
     const response = await runPythonScript('validate_ifs.py', args);
+    // === BIGPOPA internal tool check ===
+    try {
+      const parquetReaderPath = path.join(__dirname, '..', 'backend', 'tools', 'ParquetReaderlite.exe');
+      const parquetReaderExists = fs.existsSync(parquetReaderPath);
+
+      // Add to requirements list
+      if (!response.requirements) response.requirements = [];
+      response.requirements.push({
+        file: 'backend/tools/ParquetReaderlite.exe',
+        exists: parquetReaderExists,
+      });
+
+      // If missing, mark as invalid and add to missingFiles list
+      if (!parquetReaderExists) {
+        if (!response.missingFiles) response.missingFiles = [];
+        response.missingFiles.push('backend/tools/ParquetReaderlite.exe (missing from BIGPOPA app)');
+        response.valid = false;
+      }
+
+      console.log(
+        `[BIGPOPA] Checked internal tool at: ${parquetReaderPath} — exists=${parquetReaderExists}`
+      );
+    } catch (err) {
+      console.warn('[BIGPOPA] Failed to verify ParquetReaderlite.exe:', err);
+    }
     const result = ensurePathChecks(response, normalized);
     if (
       result &&
