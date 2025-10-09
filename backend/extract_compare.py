@@ -122,7 +122,7 @@ def main() -> int:
 
         output_csv = model_folder / f"Combined_{var_name}_{model_id}.csv"
         try:
-            combine_var_hist(model_db, var_csv, hist_csv, output_csv)
+            combine_var_hist(model_db, var_name, var_csv, hist_csv, output_csv)
             log(
                 "info",
                 f"Combined {var_name} with {table_name}",
