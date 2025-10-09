@@ -105,6 +105,10 @@ def main() -> int:
     except Exception as exc:
         log("warn", f"Failed to convert Parquet files: {exc}")
 
+    fit_metrics: list[dict[str, object]] = []
+    total_sq_error = 0.0
+    total_count = 0
+
     for item in extracted:
         var_name = item["Variable"]
         table_name = item["Table"]
@@ -122,7 +126,7 @@ def main() -> int:
 
         output_csv = model_folder / f"Combined_{var_name}_{model_id}.csv"
         try:
-            combine_var_hist(model_db, var_name, var_csv, hist_csv, output_csv)
+            combined_df = combine_var_hist(model_db, var_name, var_csv, hist_csv, output_csv)
             log(
                 "info",
                 f"Combined {var_name} with {table_name}",
@@ -133,6 +137,63 @@ def main() -> int:
                 "warn",
                 f"Failed to combine {var_name} with {table_name}: {exc}",
             )
+            fit_metrics.append({"Variable": var_name, "Table": table_name, "MSE": None})
+            continue
+
+        if not {"v", "v_h"}.issubset(combined_df.columns):
+            log(
+                "warn",
+                f"Combined data for {var_name} missing required columns",
+                has_v="v" in combined_df.columns,
+                has_v_h="v_h" in combined_df.columns,
+            )
+            fit_metrics.append({"Variable": var_name, "Table": table_name, "MSE": None})
+            continue
+
+        valid = combined_df.dropna(subset=["v", "v_h"])
+        if valid.empty:
+            log(
+                "warn",
+                f"No overlapping data to compute MSE for {var_name}",
+            )
+            fit_metrics.append({"Variable": var_name, "Table": table_name, "MSE": None})
+            continue
+
+        squared_errors = (valid["v"] - valid["v_h"]) ** 2
+        mse_v = squared_errors.mean()
+        total_sq_error += squared_errors.sum()
+        total_count += len(squared_errors)
+
+        fit_metrics.append({"Variable": var_name, "Table": table_name, "MSE": mse_v})
+
+    pooled_mse = total_sq_error / total_count if total_count > 0 else None
+
+    metrics_path = model_folder / f"model_fit_{model_id}.csv"
+    metrics_df = pd.DataFrame(fit_metrics)
+    if not metrics_df.empty:
+        metrics_df["PooledMSE"] = pooled_mse
+    else:
+        metrics_df = pd.DataFrame(
+            [{"Variable": None, "Table": None, "MSE": None, "PooledMSE": pooled_mse}]
+        )
+    metrics_df.to_csv(metrics_path, index=False)
+
+    if pooled_mse is not None:
+        log("success", f"Pooled MSE across variables: {pooled_mse:.6f}", file=str(metrics_path))
+    else:
+        log("success", "Pooled MSE across variables: None", file=str(metrics_path))
+
+    print(
+        json.dumps(
+            {
+                "status": "success",
+                "metrics_file": str(metrics_path),
+                "pooled_mse": pooled_mse,
+                "fit_metrics": fit_metrics,
+            }
+        ),
+        flush=True,
+    )
 
     return 0
 
