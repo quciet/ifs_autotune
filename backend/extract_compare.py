@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import pandas as pd
 
+from combine_var_hist import combine_var_hist
+
 
 def log(status: str, message: str, **kwargs) -> None:
     payload = {"status": status, "message": message}
@@ -92,7 +94,6 @@ def main() -> int:
 
     # === Convert Parquet → CSV using BIGPOPA's ParquetReaderlite ===
     try:
-
         backend_tools = Path(__file__).resolve().parent / "tools"
         parquet_reader = backend_tools / "ParquetReaderlite.exe"
 
@@ -103,6 +104,35 @@ def main() -> int:
             log("warn", f"ParquetReaderlite.exe not found at {parquet_reader}")
     except Exception as exc:
         log("warn", f"Failed to convert Parquet files: {exc}")
+
+    for item in extracted:
+        var_name = item["Variable"]
+        table_name = item["Table"]
+        var_csv = model_folder / f"{var_name}_{model_id}.csv"
+        hist_csv = model_folder / f"{table_name}_{model_id}.csv"
+        if not var_csv.exists() or not hist_csv.exists():
+            log(
+                "warn",
+                f"Skipping combination for {var_name}",
+                reason="missing CSV",
+                var_exists=var_csv.exists(),
+                hist_exists=hist_csv.exists(),
+            )
+            continue
+
+        output_csv = model_folder / f"Combined_{var_name}_{model_id}.csv"
+        try:
+            combine_var_hist(model_db, var_csv, hist_csv, output_csv)
+            log(
+                "info",
+                f"Combined {var_name} with {table_name}",
+                file=str(output_csv),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(
+                "warn",
+                f"Failed to combine {var_name} with {table_name}: {exc}",
+            )
 
     return 0
 
