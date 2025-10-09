@@ -62,44 +62,13 @@ Runs fully offline: React/Electron frontend + Python backend, with Electron acti
      - ✅ or ❌ for required files/folders (`IFsInit.db`, `DATA/...`, `net8/ifs.exe`, `RUNFILES`, `Scenario`).
      - Extracted base year from `IFsInit.db`.
 
----
-
-## Build the desktop app (production)
-
-From the `desktop/` folder, run:
-
-```bash
-npm run electron-build
-```
-
-This produces an installer (`.exe`) that bundles:
-- Electron runtime
-- React UI (compiled build)
-- Python backend scripts
-
-Users can install and run BIGPOPA locally with no extra setup.
-
----
-
-## Tests
-
-```bash
-cd backend
-pytest -q
-```
-
----
-
 ## Current status
 
-As of now, the BIGPOPA desktop app can:
+Even in its early stage the project already wires the Electron shell, React renderer, and FastAPI backend together so the desktop app can exercise real backend logic:
 
-- Run as a true **desktop application** (no local server needed).
-- Validate an IFs installation folder:
-  - Checks for `IFsInit.db`, `DATA/SAMBase.db`, `DATA/DataDict.db`, `DATA/IFsHistSeries.db`, `net8/ifs.exe`, `RUNFILES/`, and `Scenario/`.
-  - Extracts the model base year from `IFsInit.db`.
-- Display validation results in the Electron window (green ✅ / red ❌).
-- Provide a foundation for later stages:
-  - Running IFs.exe in subprocess
-  - Logging runs to SQLite
-  - Optimization loop with ML
+- **Installation validation API.** `/ifs/check` walks an IFs install folder, confirming every required database, executable, and directory, reporting why anything is missing, and extracting the latest historical/forecast base year directly from `IFsInit.db`.
+- **Workbook inspection.** The validator also opens the provided Excel workbook and checks that the `AnalFunc`, `TablFunc`, `IFsVar`, and `DataDict` sheets exist so tuning inputs are guaranteed to be usable before a run is attempted.
+- **Output-path readiness checks.** Output folders are inspected for readability and writability so automated runs can safely write scenario files.
+- **Automation loop scaffolding.** `/ifs/run` already captures end-to-end orchestration: it applies the submitted configuration stub, simulates an IFs run, scores the result with a placeholder metric, and records the full config/output/metric/status bundle into the local SQLite `runs` table for later review.
+- **Database bootstrapping.** The backend initializes the SQLite store on startup (and when imported) so history tracking works even in test harnesses.
+- **Health endpoint.** `/health` exposes a simple readiness probe that keeps the desktop shell informed that the backend is reachable.
