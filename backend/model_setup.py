@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from log_ifs_version import log_version_metadata
+
 import pandas as pd
 
 
@@ -55,6 +57,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--input-file",
         required=True,
         help="Path to StartingPointTable.xlsx",
+    )
+    parser.add_argument(
+        "--output-folder",
+        required=False,
+        help="Path to BIGPOPA output folder (contains bigpopa.db)",
     )
     parser.add_argument(
         "--base-year",
@@ -477,6 +484,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         _LAST_KNOWN_YEARS = (base_year, forecast_year)
     else:
         _LAST_KNOWN_YEARS = None
+
+    if args.output_folder and base_year is not None:
+        try:
+            version_payload = log_version_metadata(
+                ifs_root=ifs_root,
+                output_folder=Path(args.output_folder),
+                base_year=base_year,
+                end_year=forecast_year,
+            )
+        except Exception as exc:
+            log(
+                "warn",
+                "Failed to record IFs version metadata",
+                error=str(exc),
+            )
+        else:
+            log("info", "IFs version metadata recorded", **version_payload)
 
     log("info", "Creating Working.sce for parameters")
     sce_path = create_working_sce(ifs_root)
