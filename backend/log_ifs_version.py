@@ -59,18 +59,54 @@ def _ensure_database(path: Path) -> None:
 
 
 def _fetch_existing_version(
-    cursor: sqlite3.Cursor, version_number: str, base_year: int, end_year: int
+    cursor: sqlite3.Cursor,
+    version_number: str,
+    base_year: int,
+    end_year: int,
+    fit_metric: str,
+    ml_method: str,
 ) -> Optional[int]:
     cursor.execute(
         """
         SELECT ifs_id
         FROM ifs_version
-        WHERE version_number = ? AND base_year = ? AND end_year = ?
+        WHERE
+            version_number = ?
+            AND base_year = ?
+            AND end_year = ?
+            AND fit_metric = ?
+            AND ml_method = ?
         """,
-        (version_number, base_year, end_year),
+        (version_number, base_year, end_year, fit_metric, ml_method),
     )
     row = cursor.fetchone()
     return int(row[0]) if row else None
+
+
+def _find_latest_matching_version(
+    cursor: sqlite3.Cursor, version_number: str
+) -> Optional[Dict[str, Any]]:
+    cursor.execute(
+        """
+        SELECT ifs_id, version_number, base_year, end_year, fit_metric, ml_method
+        FROM ifs_version
+        WHERE version_number = ?
+        ORDER BY ifs_id DESC
+        LIMIT 1
+        """,
+        (version_number,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return {
+        "ifs_id": int(row[0]),
+        "version_number": str(row[1]),
+        "base_year": int(row[2]),
+        "end_year": int(row[3]),
+        "fit_metric": str(row[4]) if row[4] is not None else None,
+        "ml_method": str(row[5]) if row[5] is not None else None,
+    }
 
 
 def _insert_new_version(
@@ -78,13 +114,15 @@ def _insert_new_version(
     version_number: str,
     base_year: int,
     end_year: int,
+    fit_metric: str,
+    ml_method: str,
 ) -> int:
     cursor.execute(
         """
         INSERT INTO ifs_version (version_number, base_year, end_year, fit_metric, ml_method)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (version_number, base_year, end_year, "mse", "neural network"),
+        (version_number, base_year, end_year, fit_metric, ml_method),
     )
     return int(cursor.lastrowid)
 
@@ -126,13 +164,22 @@ def log_version_metadata(
 ) -> Dict[str, Any]:
     version_raw = _read_version_string(ifs_root)
     version_number = _normalize_version(version_raw)
+    fit_metric = "mse"
+    ml_method = "neural network"
 
     db_path = output_folder / "bigpopa.db"
     _ensure_database(db_path)
 
     with sqlite3.connect(str(db_path)) as conn:
         cursor = conn.cursor()
-        existing_id = _fetch_existing_version(cursor, version_number, base_year, end_year)
+        existing_id = _fetch_existing_version(
+            cursor,
+            version_number,
+            base_year,
+            end_year,
+            fit_metric,
+            ml_method,
+        )
         if existing_id is not None:
             conn.commit()
             return {
@@ -141,8 +188,25 @@ def log_version_metadata(
                 "ifs_id": existing_id,
             }
 
-        ifs_id = _insert_new_version(cursor, version_number, base_year, end_year)
-        _insert_placeholders(cursor, ifs_id)
+        latest_match = _find_latest_matching_version(cursor, version_number)
+
+        # Insert a new IFs version row because at least one of the tracked fields changed.
+        ifs_id = _insert_new_version(
+            cursor, version_number, base_year, end_year, fit_metric, ml_method
+        )
+
+        # Coefficient/parameter data only needs to be refreshed when the version identity
+        # changes (new version number or updated base year). For end_year / metric changes we
+        # reuse the existing rows by skipping new inserts.
+        should_register_support_tables = True
+        if latest_match is not None:
+            should_register_support_tables = (
+                latest_match["version_number"] != version_number
+                or latest_match["base_year"] != base_year
+            )
+
+        if should_register_support_tables:
+            _insert_placeholders(cursor, ifs_id)
         conn.commit()
         return {
             "status": "success",
