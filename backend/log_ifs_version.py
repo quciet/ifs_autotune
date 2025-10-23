@@ -317,6 +317,37 @@ def log_version_metadata(
 
         cursor.execute(
             """
+            SELECT ifs_id FROM ifs_version
+            WHERE version_number = ?
+              AND base_year = ?
+              AND end_year = ?
+              AND fit_metric = ?
+              AND ml_method = ?
+            LIMIT 1
+            """,
+            (version_number, base_year, end_year, fit_metric, ml_method),
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            ifs_id = int(existing[0])
+            conn.commit()
+            return {
+                "status": "success",
+                "message": "Existing IFs version found — skipping new record.",
+                "ifs_id": ifs_id,
+                "ifs_static_id": ifs_static_id,
+                "version_number": version_number,
+                "base_year": base_year,
+                "end_year": end_year,
+                "fit_metric": fit_metric,
+                "ml_method": ml_method,
+                "num_parameters": num_parameters,
+                "num_coefficients": num_coefficients,
+            }
+
+        cursor.execute(
+            """
             INSERT INTO ifs_version (
                 ifs_static_id, version_number, base_year, end_year, fit_metric, ml_method
             ) VALUES (?, ?, ?, ?, ?, ?)
