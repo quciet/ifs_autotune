@@ -252,11 +252,16 @@ def _prepare_coefficient_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[An
 
 def _populate_real_data(cursor: sqlite3.Cursor, ifs_id: int, ifs_root: Path) -> Tuple[int, int]:
     ifs_db, ifsvar_db = _resolve_ifs_databases(ifs_root)
+    run_db = ifs_root / "RUNFILES" / "IFsBase.run.db"
+    if not run_db.exists():
+        raise FileNotFoundError(f"Could not find IFsBase.run.db at {run_db}")
 
     with sqlite3.connect(str(ifs_db)) as conn:
         parameter_values = pd.read_sql_query(
             "SELECT ParameterName, Value FROM GlobalParameters", conn
         )
+
+    with sqlite3.connect(str(run_db)) as conn:
         coefficient_values = pd.read_sql_query(
             """
             SELECT
