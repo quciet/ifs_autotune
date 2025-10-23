@@ -298,6 +298,7 @@ function TuneIFsPage({
         paramDim: paramDimensionRef.current,
         validatedPath,
         inputFilePath: validatedInputPath,
+        outputFolder: outputDirectory ?? null,
       });
 
       if (response.status === "success") {
