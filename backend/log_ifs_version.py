@@ -8,7 +8,9 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+import pandas as pd
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -129,37 +131,196 @@ def _insert_new_version(
     return int(cursor.lastrowid)
 
 
-def _insert_placeholders(cursor: sqlite3.Cursor, ifs_id: int) -> None:
-    # Insert a single placeholder coefficient row using EXISTING columns
-    cursor.execute(
-        """
-        INSERT INTO coefficient (
-            ifs_id,
-            function_name,
-            y_name,
-            x_name,
-            reg_seq,
-            x_default,
-            x_std
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (ifs_id, 'ExampleFunc', 'GDP', 'Capital', 1, 0.0, 1.0),
+def _resolve_ifs_databases(ifs_root: Path) -> Tuple[Path, Path]:
+    runfiles = ifs_root / "RUNFILES"
+    ifs_db = runfiles / "IFs.db"
+    ifsvar_db = runfiles / "IFsVar.db"
+
+    missing: list[str] = []
+    if not ifs_db.exists():
+        missing.append(str(ifs_db))
+    if not ifsvar_db.exists():
+        missing.append(str(ifsvar_db))
+
+    if missing:
+        if len(missing) == 1:
+            raise FileNotFoundError(f"Required IFs database not found at {missing[0]}")
+        raise FileNotFoundError(
+            "Required IFs databases not found: " + ", ".join(missing)
+        )
+
+    return ifs_db, ifsvar_db
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        # Some SQLite numeric fields may come back as floats or strings.
+        return int(float(str(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_null(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except TypeError:
+        return False
+
+
+def _normalize_text(value: Any) -> Optional[str]:
+    if _is_null(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _prepare_parameter_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[Any, ...]]:
+    rows: list[tuple[Any, ...]] = []
+    for _, record in frame.iterrows():
+        name_text = _normalize_text(record.get("ParameterName"))
+        if name_text is None:
+            continue
+
+        param_type = _normalize_text(record.get("DIMENSION1"))
+
+        default_value = _coerce_float(record.get("Value"))
+        min_value = _coerce_float(record.get("MINIMUM"))
+        max_value = _coerce_float(record.get("MAXIMUM"))
+
+        rows.append(
+            (
+                ifs_id,
+                name_text,
+                param_type,
+                default_value,
+                min_value,
+                max_value,
+            )
+        )
+    return rows
+
+
+def _prepare_coefficient_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[Any, ...]]:
+    rows: list[tuple[Any, ...]] = []
+    for _, record in frame.iterrows():
+        function_name = _normalize_text(record.get("function_name"))
+        if function_name is None:
+            continue
+
+        y_name = _normalize_text(record.get("y_name"))
+
+        x_name = _normalize_text(record.get("coef_name"))
+        if x_name is None:
+            x_name = _normalize_text(record.get("x_name"))
+
+        reg_seq = _coerce_int(record.get("reg_seq"))
+        coef_value = _coerce_float(record.get("coef_value"))
+
+        rows.append(
+            (
+                ifs_id,
+                function_name,
+                y_name,
+                x_name,
+                reg_seq,
+                coef_value,
+                None,
+            )
+        )
+    return rows
+
+
+def _populate_real_data(cursor: sqlite3.Cursor, ifs_id: int, ifs_root: Path) -> Tuple[int, int]:
+    ifs_db, ifsvar_db = _resolve_ifs_databases(ifs_root)
+
+    with sqlite3.connect(str(ifs_db)) as conn:
+        parameter_values = pd.read_sql_query(
+            "SELECT ParameterName, Value FROM GlobalParameters", conn
+        )
+        coefficient_values = pd.read_sql_query(
+            """
+            SELECT
+                r.Name AS function_name,
+                r.OutputName AS y_name,
+                r.InputName AS x_name,
+                c.RegressionSeq AS reg_seq,
+                c.Name AS coef_name,
+                c.Value AS coef_value
+            FROM ifs_reg AS r
+            JOIN ifs_reg_coeff AS c
+                ON r.Name = c.RegressionName
+                AND r.Seq = c.RegressionSeq
+            """,
+            conn,
+        )
+
+    with sqlite3.connect(str(ifsvar_db)) as conn:
+        parameter_metadata = pd.read_sql_query(
+            "SELECT NAME, DIMENSION1, MINIMUM, MAXIMUM FROM IFSVAR", conn
+        )
+
+    merged_parameters = pd.merge(
+        parameter_values,
+        parameter_metadata,
+        how="left",
+        left_on="ParameterName",
+        right_on="NAME",
     )
 
-    # Insert a single placeholder parameter row using EXISTING columns
-    cursor.execute(
-        """
-        INSERT INTO parameter (
-            ifs_id,
-            param_name,
-            param_type,
-            param_default,
-            param_min,
-            param_max
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (ifs_id, 'tfrmin', 'parameter', 1.2, 0.8, 1.5),
-    )
+    parameter_rows = _prepare_parameter_rows(ifs_id, merged_parameters)
+    if parameter_rows:
+        cursor.executemany(
+            """
+            INSERT INTO parameter (
+                ifs_id,
+                param_name,
+                param_type,
+                param_default,
+                param_min,
+                param_max
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            parameter_rows,
+        )
+
+    coefficient_rows = _prepare_coefficient_rows(ifs_id, coefficient_values)
+    if coefficient_rows:
+        cursor.executemany(
+            """
+            INSERT INTO coefficient (
+                ifs_id,
+                function_name,
+                y_name,
+                x_name,
+                reg_seq,
+                x_default,
+                x_std
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            coefficient_rows,
+        )
+
+    return len(parameter_rows), len(coefficient_rows)
 
 
 def log_version_metadata(
@@ -206,6 +367,8 @@ def log_version_metadata(
                 "status": "success",
                 "message": "IFs version already exists, skipping.",
                 "ifs_id": existing_id,
+                "num_parameters": 0,
+                "num_coefficients": 0,
             }
 
         # Insert a new IFs version row because at least one tracked field differs from the
@@ -224,8 +387,13 @@ def log_version_metadata(
         )
         should_register_support_tables = version_number_changed or base_year_changed
 
+        num_parameters = 0
+        num_coefficients = 0
+
         if should_register_support_tables:
-            _insert_placeholders(cursor, ifs_id)
+            num_parameters, num_coefficients = _populate_real_data(
+                cursor, ifs_id, ifs_root
+            )
         conn.commit()
         return {
             "status": "success",
@@ -234,6 +402,8 @@ def log_version_metadata(
             "version_number": version_number,
             "base_year": base_year,
             "end_year": end_year,
+            "num_parameters": num_parameters,
+            "num_coefficients": num_coefficients,
         }
 
 
