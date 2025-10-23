@@ -76,6 +76,8 @@ def _fetch_existing_version(
             AND end_year = ?
             AND fit_metric = ?
             AND ml_method = ?
+        ORDER BY ifs_id DESC
+        LIMIT 1
         """,
         (version_number, base_year, end_year, fit_metric, ml_method),
     )
@@ -172,15 +174,32 @@ def log_version_metadata(
 
     with sqlite3.connect(str(db_path)) as conn:
         cursor = conn.cursor()
-        existing_id = _fetch_existing_version(
-            cursor,
-            version_number,
-            base_year,
-            end_year,
-            fit_metric,
-            ml_method,
-        )
-        if existing_id is not None:
+        latest_match = _find_latest_matching_version(cursor, version_number)
+
+        # Determine if the metadata matches the most recent entry for this version number.
+        matches_latest_version = False
+        if latest_match is not None:
+            latest_fit_metric = latest_match.get("fit_metric") or ""
+            latest_ml_method = latest_match.get("ml_method") or ""
+            matches_latest_version = (
+                latest_match["base_year"] == base_year
+                and latest_match["end_year"] == end_year
+                and latest_fit_metric == (fit_metric or "")
+                and latest_ml_method == (ml_method or "")
+            )
+
+        if matches_latest_version:
+            # An identical row already exists for this version number; reuse it.
+            existing_id = _fetch_existing_version(
+                cursor,
+                version_number,
+                base_year,
+                end_year,
+                fit_metric,
+                ml_method,
+            )
+            if existing_id is None:
+                existing_id = latest_match["ifs_id"]
             conn.commit()
             return {
                 "status": "success",
@@ -188,22 +207,21 @@ def log_version_metadata(
                 "ifs_id": existing_id,
             }
 
-        latest_match = _find_latest_matching_version(cursor, version_number)
-
-        # Insert a new IFs version row because at least one of the tracked fields changed.
+        # Insert a new IFs version row because at least one tracked field differs from the
+        # most recent record for this version number (or there is no prior record).
         ifs_id = _insert_new_version(
             cursor, version_number, base_year, end_year, fit_metric, ml_method
         )
 
-        # Coefficient/parameter data only needs to be refreshed when the version identity
-        # changes (new version number or updated base year). For end_year / metric changes we
-        # reuse the existing rows by skipping new inserts.
-        should_register_support_tables = True
-        if latest_match is not None:
-            should_register_support_tables = (
-                latest_match["version_number"] != version_number
-                or latest_match["base_year"] != base_year
-            )
+        # Coefficient/parameter data is only refreshed when the version identity changes.
+        # That happens when we introduce a brand-new version number or when the base year
+        # shifts for an existing version. Updates to end_year, fit_metric, or ml_method reuse
+        # the existing support table rows.
+        version_number_changed = latest_match is None
+        base_year_changed = (
+            latest_match is not None and latest_match["base_year"] != base_year
+        )
+        should_register_support_tables = version_number_changed or base_year_changed
 
         if should_register_support_tables:
             _insert_placeholders(cursor, ifs_id)
