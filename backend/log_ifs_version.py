@@ -60,77 +60,6 @@ def _ensure_database(path: Path) -> None:
         raise FileNotFoundError(f"bigpopa.db not found at {path}")
 
 
-def _fetch_existing_version(
-    cursor: sqlite3.Cursor,
-    version_number: str,
-    base_year: int,
-    end_year: int,
-    fit_metric: str,
-    ml_method: str,
-) -> Optional[int]:
-    cursor.execute(
-        """
-        SELECT ifs_id
-        FROM ifs_version
-        WHERE
-            version_number = ?
-            AND base_year = ?
-            AND end_year = ?
-            AND fit_metric = ?
-            AND ml_method = ?
-        ORDER BY ifs_id DESC
-        LIMIT 1
-        """,
-        (version_number, base_year, end_year, fit_metric, ml_method),
-    )
-    row = cursor.fetchone()
-    return int(row[0]) if row else None
-
-
-def _find_latest_matching_version(
-    cursor: sqlite3.Cursor, version_number: str
-) -> Optional[Dict[str, Any]]:
-    cursor.execute(
-        """
-        SELECT ifs_id, version_number, base_year, end_year, fit_metric, ml_method
-        FROM ifs_version
-        WHERE version_number = ?
-        ORDER BY ifs_id DESC
-        LIMIT 1
-        """,
-        (version_number,),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        return None
-    return {
-        "ifs_id": int(row[0]),
-        "version_number": str(row[1]),
-        "base_year": int(row[2]),
-        "end_year": int(row[3]),
-        "fit_metric": str(row[4]) if row[4] is not None else None,
-        "ml_method": str(row[5]) if row[5] is not None else None,
-    }
-
-
-def _insert_new_version(
-    cursor: sqlite3.Cursor,
-    version_number: str,
-    base_year: int,
-    end_year: int,
-    fit_metric: str,
-    ml_method: str,
-) -> int:
-    cursor.execute(
-        """
-        INSERT INTO ifs_version (version_number, base_year, end_year, fit_metric, ml_method)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (version_number, base_year, end_year, fit_metric, ml_method),
-    )
-    return int(cursor.lastrowid)
-
-
 def _resolve_ifs_databases(ifs_root: Path) -> Tuple[Path, Path]:
     runfiles = ifs_root / "RUNFILES"
     ifs_db = runfiles / "IFs.db"
@@ -194,7 +123,7 @@ def _normalize_text(value: Any) -> Optional[str]:
     return text or None
 
 
-def _prepare_parameter_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[Any, ...]]:
+def _prepare_parameter_rows(ifs_static_id: int, frame: pd.DataFrame) -> list[tuple[Any, ...]]:
     rows: list[tuple[Any, ...]] = []
     for _, record in frame.iterrows():
         name_text = _normalize_text(record.get("ParameterName"))
@@ -209,7 +138,7 @@ def _prepare_parameter_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[Any,
 
         rows.append(
             (
-                ifs_id,
+                ifs_static_id,
                 name_text,
                 param_type,
                 default_value,
@@ -220,7 +149,7 @@ def _prepare_parameter_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[Any,
     return rows
 
 
-def _prepare_coefficient_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[Any, ...]]:
+def _prepare_coefficient_rows(ifs_static_id: int, frame: pd.DataFrame) -> list[tuple[Any, ...]]:
     rows: list[tuple[Any, ...]] = []
     for _, record in frame.iterrows():
         function_name = _normalize_text(record.get("function_name"))
@@ -235,7 +164,7 @@ def _prepare_coefficient_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[An
 
         rows.append(
             (
-                ifs_id,
+                ifs_static_id,
                 function_name,
                 y_name,
                 x_name,
@@ -248,7 +177,9 @@ def _prepare_coefficient_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[An
     return rows
 
 
-def _populate_real_data(cursor: sqlite3.Cursor, ifs_id: int, ifs_root: Path) -> Tuple[int, int]:
+def _populate_real_data(
+    cursor: sqlite3.Cursor, ifs_static_id: int, ifs_root: Path
+) -> Tuple[int, int]:
     ifs_db, ifsvar_db = _resolve_ifs_databases(ifs_root)
     run_db = ifs_root / "RUNFILES" / "IFsBase.run.db"
     if not run_db.exists():
@@ -290,12 +221,12 @@ def _populate_real_data(cursor: sqlite3.Cursor, ifs_id: int, ifs_root: Path) -> 
         right_on="NAME",
     )
 
-    parameter_rows = _prepare_parameter_rows(ifs_id, merged_parameters)
+    parameter_rows = _prepare_parameter_rows(ifs_static_id, merged_parameters)
     if parameter_rows:
         cursor.executemany(
             """
             INSERT INTO parameter (
-                ifs_id,
+                ifs_static_id,
                 param_name,
                 param_type,
                 param_default,
@@ -306,12 +237,12 @@ def _populate_real_data(cursor: sqlite3.Cursor, ifs_id: int, ifs_root: Path) -> 
             parameter_rows,
         )
 
-    coefficient_rows = _prepare_coefficient_rows(ifs_id, coefficient_values)
+    coefficient_rows = _prepare_coefficient_rows(ifs_static_id, coefficient_values)
     if coefficient_rows:
         cursor.executemany(
             """
             INSERT INTO coefficient (
-                ifs_id,
+                ifs_static_id,
                 function_name,
                 y_name,
                 x_name,
@@ -340,72 +271,77 @@ def log_version_metadata(
 
     with sqlite3.connect(str(db_path)) as conn:
         cursor = conn.cursor()
-        latest_match = _find_latest_matching_version(cursor, version_number)
+        cursor.execute(
+            """
+            SELECT ifs_static_id
+            FROM ifs_static
+            WHERE version_number = ? AND base_year = ?
+            LIMIT 1
+            """,
+            (version_number, base_year),
+        )
+        row = cursor.fetchone()
 
-        # Determine if the metadata matches the most recent entry for this version number.
-        matches_latest_version = False
-        if latest_match is not None:
-            latest_fit_metric = latest_match.get("fit_metric") or ""
-            latest_ml_method = latest_match.get("ml_method") or ""
-            matches_latest_version = (
-                latest_match["base_year"] == base_year
-                and latest_match["end_year"] == end_year
-                and latest_fit_metric == (fit_metric or "")
-                and latest_ml_method == (ml_method or "")
+        num_parameters = 0
+        num_coefficients = 0
+
+        if row:
+            ifs_static_id = int(row[0])
+            cursor.execute(
+                "SELECT COUNT(*) FROM parameter WHERE ifs_static_id = ?",
+                (ifs_static_id,),
+            )
+            param_row = cursor.fetchone()
+            if param_row and param_row[0] is not None:
+                num_parameters = int(param_row[0])
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM coefficient WHERE ifs_static_id = ?",
+                (ifs_static_id,),
+            )
+            coeff_row = cursor.fetchone()
+            if coeff_row and coeff_row[0] is not None:
+                num_coefficients = int(coeff_row[0])
+        else:
+            cursor.execute(
+                """
+                INSERT INTO ifs_static (version_number, base_year)
+                VALUES (?, ?)
+                """,
+                (version_number, base_year),
+            )
+            ifs_static_id = int(cursor.lastrowid)
+            num_parameters, num_coefficients = _populate_real_data(
+                cursor, ifs_static_id, ifs_root
             )
 
-        if matches_latest_version:
-            # An identical row already exists for this version number; reuse it.
-            existing_id = _fetch_existing_version(
-                cursor,
+        cursor.execute(
+            """
+            INSERT INTO ifs_version (
+                ifs_static_id, version_number, base_year, end_year, fit_metric, ml_method
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ifs_static_id,
                 version_number,
                 base_year,
                 end_year,
                 fit_metric,
                 ml_method,
-            )
-            if existing_id is None:
-                existing_id = latest_match["ifs_id"]
-            conn.commit()
-            return {
-                "status": "success",
-                "message": "IFs version already exists, skipping.",
-                "ifs_id": existing_id,
-                "num_parameters": 0,
-                "num_coefficients": 0,
-            }
-
-        # Insert a new IFs version row because at least one tracked field differs from the
-        # most recent record for this version number (or there is no prior record).
-        ifs_id = _insert_new_version(
-            cursor, version_number, base_year, end_year, fit_metric, ml_method
+            ),
         )
-
-        # Coefficient/parameter data is only refreshed when the version identity changes.
-        # That happens when we introduce a brand-new version number or when the base year
-        # shifts for an existing version. Updates to end_year, fit_metric, or ml_method reuse
-        # the existing support table rows.
-        version_number_changed = latest_match is None
-        base_year_changed = (
-            latest_match is not None and latest_match["base_year"] != base_year
-        )
-        should_register_support_tables = version_number_changed or base_year_changed
-
-        num_parameters = 0
-        num_coefficients = 0
-
-        if should_register_support_tables:
-            num_parameters, num_coefficients = _populate_real_data(
-                cursor, ifs_id, ifs_root
-            )
+        ifs_id = int(cursor.lastrowid)
         conn.commit()
         return {
             "status": "success",
-            "message": "Inserted new IFs version metadata.",
+            "message": "Logged IFs version and linked to static layer.",
             "ifs_id": ifs_id,
+            "ifs_static_id": ifs_static_id,
             "version_number": version_number,
             "base_year": base_year,
             "end_year": end_year,
+            "fit_metric": fit_metric,
+            "ml_method": ml_method,
             "num_parameters": num_parameters,
             "num_coefficients": num_coefficients,
         }

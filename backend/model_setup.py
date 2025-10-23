@@ -507,6 +507,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 error=str(exc),
             )
         else:
+            log(
+                "info",
+                "Static layer linked",
+                ifs_static_id=version_payload.get("ifs_static_id"),
+            )
             # Clean up version_payload to avoid duplicate keys
             version_payload.pop("status", None)
             version_payload.pop("message", None)
