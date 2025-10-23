@@ -507,6 +507,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 error=str(exc),
             )
         else:
+            # Clean up version_payload to avoid duplicate keys
+            version_payload.pop("status", None)
+            version_payload.pop("message", None)
             log("info", "IFs version metadata recorded", **version_payload)
     else:
         log(
