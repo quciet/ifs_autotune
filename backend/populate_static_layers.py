@@ -7,7 +7,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 
@@ -89,26 +89,24 @@ def _coerce_float(value: Any) -> Optional[float]:
         return None
 
 
-def _prepare_parameter_rows(ifs_id: int, frame: pd.DataFrame) -> List[Tuple[Any, ...]]:
-    rows: List[Tuple[Any, ...]] = []
+def _prepare_parameter_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple]:
+    rows = []
     for _, record in frame.iterrows():
-        name = record.get("ParameterName")
+        name = record.get('ParameterName')
         if name is None:
             continue
-        parameter_type = record.get("DIMENSION1")
-        default_value = _coerce_float(record.get("Value"))
-        min_value = _coerce_float(record.get("MINIMUM"))
-        max_value = _coerce_float(record.get("MAXIMUM"))
-        rows.append(
-            (
-                ifs_id,
-                str(name),
-                parameter_type if pd.notna(parameter_type) else None,
-                default_value,
-                min_value,
-                max_value,
-            )
-        )
+        param_type = record.get('DIMENSION1')
+        default_value = _coerce_float(record.get('Value'))
+        min_value = _coerce_float(record.get('MINIMUM'))
+        max_value = _coerce_float(record.get('MAXIMUM'))
+        rows.append((
+            ifs_id,
+            str(name),
+            param_type if pd.notna(param_type) else None,
+            default_value,
+            min_value,
+            max_value,
+        ))
     return rows
 
 
@@ -154,25 +152,23 @@ def _insert_ifs_version(
     return int(cursor.lastrowid)
 
 
-def _insert_parameters(cursor: sqlite3.Cursor, rows: Iterable[Tuple[Any, ...]]) -> int:
-    rows_list = list(rows)
-    if not rows_list:
+def _insert_parameters(cursor: sqlite3.Cursor, rows: list[tuple]) -> int:
+    if not rows:
         return 0
     cursor.executemany(
         """
         INSERT INTO parameter (
             ifs_id,
-            name,
-            parameter_type,
-            default_value,
-            min_value,
-            max_value
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
+            param_name,
+            param_type,
+            param_default,
+            param_min,
+            param_max
+        ) VALUES (?, ?, ?, ?, ?, ?)
         """,
-        rows_list,
+        rows,
     )
-    return len(rows_list)
+    return len(rows)
 
 
 def _insert_placeholder_coefficients(cursor: sqlite3.Cursor, ifs_id: int) -> int:
@@ -181,15 +177,14 @@ def _insert_placeholder_coefficients(cursor: sqlite3.Cursor, ifs_id: int) -> int
         INSERT INTO coefficient (
             ifs_id,
             function_name,
-            dependent_variable,
-            independent_variable,
-            region_id,
-            coefficient_value,
-            coefficient_std
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            y_name,
+            x_name,
+            reg_seq,
+            x_default,
+            x_std
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (ifs_id, "ExampleFunc", "GDP", "Capital", 1, 0.0, 1.0),
+        (ifs_id, 'ExampleFunc', 'GDP', 'Capital', 1, 0.0, 1.0),
     )
     return 1
 

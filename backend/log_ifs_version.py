@@ -130,34 +130,35 @@ def _insert_new_version(
 
 
 def _insert_placeholders(cursor: sqlite3.Cursor, ifs_id: int) -> None:
+    # Insert a single placeholder coefficient row using EXISTING columns
     cursor.execute(
         """
         INSERT INTO coefficient (
             ifs_id,
             function_name,
-            dependent_variable,
-            independent_variable,
-            region_id,
-            coefficient_value,
-            coefficient_std
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            y_name,
+            x_name,
+            reg_seq,
+            x_default,
+            x_std
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (ifs_id, "ExampleFunc", "GDP", "Capital", 1, 0.0, 1.0),
+        (ifs_id, 'ExampleFunc', 'GDP', 'Capital', 1, 0.0, 1.0),
     )
+
+    # Insert a single placeholder parameter row using EXISTING columns
     cursor.execute(
         """
         INSERT INTO parameter (
             ifs_id,
-            name,
-            parameter_type,
-            default_value,
-            min_value,
-            max_value
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
+            param_name,
+            param_type,
+            param_default,
+            param_min,
+            param_max
+        ) VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (ifs_id, "tfrmin", "parameter", 1.2, 0.8, 1.5),
+        (ifs_id, 'tfrmin', 'parameter', 1.2, 0.8, 1.5),
     )
 
 
