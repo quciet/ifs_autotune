@@ -119,6 +119,7 @@ export async function modelSetup({
   paramDim,
   validatedPath,
   inputFilePath,
+  outputFolder,
 }: {
   baseYear: number | null | undefined;
   endYear: number;
@@ -127,6 +128,7 @@ export async function modelSetup({
   paramDim?: Record<string, unknown>;
   validatedPath: string;
   inputFilePath: string;
+  outputFolder?: string | null;
 }): Promise<ModelSetupResponse> {
   if (!window.electron?.invoke) {
     return {
@@ -144,6 +146,7 @@ export async function modelSetup({
       param_dim_dict: paramDim ?? {},
       validatedPath,
       inputFilePath,
+      outputFolder: outputFolder ?? null,
     };
     const result = await window.electron.invoke("model_setup", payload);
     if (result && typeof result === "object" && "status" in result) {

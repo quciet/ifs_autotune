@@ -767,6 +767,8 @@ ipcMain.handle('model_setup', async (_event, payload) => {
 
   const baseYear = payload.baseYear ?? null;
   const endYear = payload.endYear;
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
 
   const args = [
     '--ifs-root',
@@ -778,6 +780,10 @@ ipcMain.handle('model_setup', async (_event, payload) => {
     '--end-year',
     String(endYear),
   ];
+
+  if (outputFolder) {
+    args.push('--output-folder', outputFolder);
+  }
   return runPythonScript('model_setup.py', args);
 });
 
