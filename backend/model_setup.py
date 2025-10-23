@@ -485,6 +485,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         _LAST_KNOWN_YEARS = None
 
+    log(
+        "debug",
+        "Version metadata condition check",
+        output_folder=args.output_folder,
+        base_year=base_year,
+        forecast_year=forecast_year,
+    )
     if args.output_folder and base_year is not None:
         try:
             version_payload = log_version_metadata(
@@ -501,6 +508,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
         else:
             log("info", "IFs version metadata recorded", **version_payload)
+    else:
+        log(
+            "warn",
+            "Skipping bigpopa.db registration because output_folder or base_year is missing",
+            output_folder=args.output_folder,
+            base_year=base_year,
+        )
 
     log("info", "Creating Working.sce for parameters")
     sce_path = create_working_sce(ifs_root)
