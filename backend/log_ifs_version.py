@@ -228,13 +228,10 @@ def _prepare_coefficient_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[An
             continue
 
         y_name = _normalize_text(record.get("y_name"))
-
-        x_name = _normalize_text(record.get("coef_name"))
-        if x_name is None:
-            x_name = _normalize_text(record.get("x_name"))
-
+        x_name = _normalize_text(record.get("x_name"))
         reg_seq = _coerce_int(record.get("reg_seq"))
-        coef_value = _coerce_float(record.get("coef_value"))
+        beta_name = _normalize_text(record.get("beta_name"))
+        beta_default = _coerce_float(record.get("beta_default"))
 
         rows.append(
             (
@@ -243,7 +240,8 @@ def _prepare_coefficient_rows(ifs_id: int, frame: pd.DataFrame) -> list[tuple[An
                 y_name,
                 x_name,
                 reg_seq,
-                coef_value,
+                beta_name,
+                beta_default,
                 None,
             )
         )
@@ -268,9 +266,9 @@ def _populate_real_data(cursor: sqlite3.Cursor, ifs_id: int, ifs_root: Path) -> 
                 r.Name AS function_name,
                 r.OutputName AS y_name,
                 r.InputName AS x_name,
-                c.RegressionSeq AS reg_seq,
-                c.Name AS coef_name,
-                c.Value AS coef_value
+                r.Seq AS reg_seq,
+                c.Name AS beta_name,
+                c.Value AS beta_default
             FROM ifs_reg AS r
             JOIN ifs_reg_coeff AS c
                 ON r.Name = c.RegressionName
@@ -318,9 +316,10 @@ def _populate_real_data(cursor: sqlite3.Cursor, ifs_id: int, ifs_root: Path) -> 
                 y_name,
                 x_name,
                 reg_seq,
-                x_default,
-                x_std
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                beta_name,
+                beta_default,
+                beta_std
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             coefficient_rows,
         )
