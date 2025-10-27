@@ -59,7 +59,7 @@ Runs fully offline: React/Electron frontend + Python backend, with Electron acti
      - Start Electron and open a desktop window.
    - Use the **Browse** button (native folder picker) or paste a path to select your IFs installation folder, then click **Validate**.
    - Validation results display:
-     - ✅ or ❌ for required files/folders (`IFsInit.db`, `DATA/...`, `net8/ifs.exe`, `RUNFILES`, `Scenario`).
+     - ✅ or ❌ for required files/folders (`IFsInit.db`, `DATA/SAMBase.db`, `RUNFILES/DataDict.db`, `RUNFILES/IFsHistSeries.db`, `net8/ifs.exe`, `RUNFILES/`, `Scenario/`).
      - Extracted base year from `IFsInit.db`.
 
 ---
@@ -96,7 +96,7 @@ As of now, the BIGPOPA desktop app can:
 
 - Run as a true **desktop application** (no local server needed).
 - Validate an IFs installation folder:
-  - Checks for `IFsInit.db`, `DATA/SAMBase.db`, `DATA/DataDict.db`, `DATA/IFsHistSeries.db`, `net8/ifs.exe`, `RUNFILES/`, and `Scenario/`.
+  - Checks for `IFsInit.db`, `DATA/SAMBase.db`, `RUNFILES/DataDict.db`, `RUNFILES/IFsHistSeries.db`, `net8/ifs.exe`, `RUNFILES/`, and `Scenario/`.
   - Extracts the model base year from `IFsInit.db`.
 - Display validation results in the Electron window (green ✅ / red ❌).
 - Provide a foundation for later stages:

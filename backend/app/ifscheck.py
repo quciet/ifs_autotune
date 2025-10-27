@@ -9,8 +9,8 @@ from fastapi import APIRouter
 REQUIRED_PATHS = [
     "IFsInit.db",
     "DATA/SAMBase.db",
-    "DATA/DataDict.db",
-    "DATA/IFsHistSeries.db",
+    "RUNFILES/DataDict.db",
+    "RUNFILES/IFsHistSeries.db",
     "net8/ifs.exe",
     "RUNFILES/",
     "Scenario/",
