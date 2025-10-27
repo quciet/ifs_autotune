@@ -44,7 +44,7 @@ def main() -> int:
         log("warn", "No enabled rows found in DataDict sheet")
         return 0
 
-    hist_db_path = ifs_root / "DATA" / "IFsHistSeries.db"
+    hist_db_path = ifs_root / "RUNFILES" / "IFsHistSeries.db"
     if not hist_db_path.exists():
         log("error", f"Historical database not found: {hist_db_path}")
         return 1
