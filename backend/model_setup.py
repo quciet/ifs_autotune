@@ -9,9 +9,13 @@ and ``AnalFunc`` sheets) and updates the corresponding entries in
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
 import math
+import os
 import random
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -34,6 +38,119 @@ COEFFICIENT_COLUMNS: List[str] = [
     "b8",
     "b9",
 ]
+
+
+def _round_numbers(obj: Any, places: int = 6) -> Any:
+    if isinstance(obj, float):
+        return round(obj, places)
+    if isinstance(obj, list):
+        return [_round_numbers(x, places) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _round_numbers(v, places) for k, v in obj.items()}
+    return obj
+
+
+def canonical_config(
+    ifs_id: int, input_param: Dict[str, Any], input_coef: Dict[str, Any], output_set: Dict[str, Any]
+) -> Dict[str, Any]:
+    return {
+        "ifs_id": int(ifs_id),
+        "input_param": _round_numbers(copy.deepcopy(input_param)),
+        "input_coef": _round_numbers(copy.deepcopy(input_coef)),
+        "output_set": copy.deepcopy(output_set),
+    }
+
+
+def hash_model_id(config_obj: Dict[str, Any]) -> str:
+    canonical_json = json.dumps(config_obj, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
+def ensure_dir(path: str | os.PathLike[str]) -> None:
+    os.makedirs(path, exist_ok=True)
+
+
+def _row_enabled(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "on", "yes"}
+
+
+def build_input_param_from_startingpoint(ifsv_df: pd.DataFrame) -> Dict[str, Any]:
+    mp: Dict[str, Any] = {}
+    if ifsv_df.empty:
+        return mp
+    for _, row in ifsv_df.iterrows():
+        if not _row_enabled(row.get("Switch", "0")):
+            continue
+        name = None
+        for candidate in ("Name/Variable", "Name", "Variable"):
+            raw = row.get(candidate)
+            if isinstance(raw, str) and raw.strip():
+                name = raw.strip()
+                break
+        if not name:
+            continue
+        value = None
+        for candidate in ("Minimum", "Value", "Default", "Min"):
+            if candidate in row and row[candidate] is not None:
+                value = row[candidate]
+                break
+        if value is None:
+            continue
+        if isinstance(value, (int, float)):
+            mp[name] = float(value)
+        else:
+            try:
+                mp[name] = float(str(value))
+            except (TypeError, ValueError):
+                mp[name] = value
+    return mp
+
+
+def build_input_coef_from_working_db(working_run_db_path: str) -> Dict[str, Dict[str, Dict[str, float]]]:
+    out: Dict[str, Dict[str, Dict[str, float]]] = {}
+    if not os.path.exists(working_run_db_path):
+        return out
+    conn = sqlite3.connect(working_run_db_path)
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT function_name, x_name, beta_name, beta_value
+            FROM coefficients
+            """
+        )
+        for func_name, x_name, beta_name, beta_value in cur.fetchall():
+            try:
+                value = float(beta_value)
+            except (TypeError, ValueError):
+                continue
+            out.setdefault(func_name, {}).setdefault(x_name, {})[beta_name] = value
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+    return out
+
+
+def build_output_set_from_ifsvartab(ifsv_df: pd.DataFrame) -> Dict[str, Any]:
+    mp: Dict[str, Any] = {}
+    if ifsv_df.empty:
+        return mp
+    for _, row in ifsv_df.iterrows():
+        if not _row_enabled(row.get("Switch", "0")):
+            continue
+        name = None
+        for candidate in ("Name/Variable", "Name", "Variable"):
+            raw = row.get(candidate)
+            if isinstance(raw, str) and raw.strip():
+                name = raw.strip()
+                break
+        if not name:
+            continue
+        hist_table = row.get("HistTable") or row.get("Table")
+        if isinstance(hist_table, str) and hist_table.strip():
+            mp[name] = hist_table.strip()
+    return mp
 
 
 def log(status: str, message: str, **kwargs: Any) -> None:
@@ -305,7 +422,9 @@ def create_working_sce(ifs_root: Path) -> Path:
     return sce_path
 
 
-def add_from_startingpoint(ifs_root: Path, excel_path: Path) -> int:
+def add_from_startingpoint(
+    ifs_root: Path, excel_path: Path, ifsv_df: pd.DataFrame | None = None
+) -> int:
     sce_path = ifs_root / "Scenario" / "Working.sce"
     if not sce_path.exists():
         return 0
@@ -317,10 +436,14 @@ def add_from_startingpoint(ifs_root: Path, excel_path: Path) -> int:
     if forecast_year < base_year:
         return 0
 
-    try:
-        df = pd.read_excel(excel_path, sheet_name="IFsVar", engine="openpyxl")
-    except Exception:
-        return 0
+    df: pd.DataFrame
+    if ifsv_df is None:
+        try:
+            df = pd.read_excel(excel_path, sheet_name="IFsVar", engine="openpyxl")
+        except Exception:
+            return 0
+    else:
+        df = ifsv_df.copy()
 
     if df.empty:
         return 0
@@ -415,12 +538,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     log("info", "=== MODEL SETUP STARTED ===")
 
     ifs_root = Path(args.ifs_root)
-    db_path = ifs_root / "RUNFILES" / "Working.run.db"
-    if not db_path.exists():
+    output_root: Optional[Path] = Path(args.output_folder).resolve() if args.output_folder else None
+    working_run_db_path = ifs_root / "RUNFILES" / "Working.run.db"
+    if not working_run_db_path.exists():
         log(
             "error",
             "Missing Working.run.db",
-            database=str(db_path.resolve()),
+            database=str(working_run_db_path.resolve()),
         )
         return 1
 
@@ -457,6 +581,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         excel_file.close()
 
+    ifsv_df = pd.DataFrame()
+    for sheet_name in ("IFsVar", "IFsVarTab"):
+        try:
+            ifsv_df = pd.read_excel(input_path, sheet_name=sheet_name, engine="openpyxl")
+        except Exception:
+            continue
+        if not ifsv_df.empty:
+            break
+
     existing_sce_path = ifs_root / "Scenario" / "Working.sce"
     existing_years = _extract_years_from_sce(existing_sce_path)
 
@@ -470,7 +603,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         base_year = existing_years[0]
 
     if base_year is None:
-        base_year = _infer_base_year_from_db(db_path)
+        base_year = _infer_base_year_from_db(working_run_db_path)
 
     if forecast_year is None:
         log(
@@ -484,6 +617,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         _LAST_KNOWN_YEARS = (base_year, forecast_year)
     else:
         _LAST_KNOWN_YEARS = None
+
+    version_payload: Optional[Dict[str, Any]] = None
+    ifs_id: Optional[int] = None
 
     log(
         "debug",
@@ -516,6 +652,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             version_payload.pop("status", None)
             version_payload.pop("message", None)
             log("info", "IFs version metadata recorded", **version_payload)
+            ifs_id_value = version_payload.get("ifs_id")
+            if ifs_id_value is not None:
+                try:
+                    ifs_id = int(ifs_id_value)
+                except (TypeError, ValueError):
+                    ifs_id = None
     else:
         log(
             "warn",
@@ -525,7 +667,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
 
     log("info", "Creating Working.sce for parameters")
-    sce_path = create_working_sce(ifs_root)
+    working_sce_path = create_working_sce(ifs_root)
 
     sheet_order = ["TablFunc", "AnalFunc"]
     log("debug", "Listing Excel sheets to process", sheets=sheet_order)
@@ -581,9 +723,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         log(
             "info",
             "Connecting to Working.run.db",
-            database=str(db_path.resolve()),
+            database=str(working_run_db_path.resolve()),
         )
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(str(working_run_db_path))
         cursor = conn.cursor()
 
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -757,13 +899,141 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception:
             pass
 
-    appended_variables = add_from_startingpoint(ifs_root, input_path)
+    appended_variables = add_from_startingpoint(ifs_root, input_path, ifsv_df)
+
+    if output_root is not None and ifs_id is not None:
+        input_param = build_input_param_from_startingpoint(ifsv_df)
+        input_coef = build_input_coef_from_working_db(str(working_run_db_path))
+        output_set = build_output_set_from_ifsvartab(ifsv_df)
+
+        config_obj = canonical_config(ifs_id, input_param, input_coef, output_set)
+        model_id = hash_model_id(config_obj)
+
+        bigpopa_db_path = output_root / "bigpopa.db"
+        conn_bp = sqlite3.connect(str(bigpopa_db_path))
+        cur_bp = conn_bp.cursor()
+        cur_bp.execute(
+            """
+            CREATE TABLE IF NOT EXISTS model_input (
+                model_id TEXT PRIMARY KEY,
+                ifs_id INTEGER NOT NULL,
+                input_param TEXT,
+                input_coef TEXT,
+                output_set TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cur_bp.execute(
+            """
+            CREATE TABLE IF NOT EXISTS model_output (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ifs_id INTEGER,
+                model_id TEXT NOT NULL,
+                model_status TEXT NOT NULL,
+                fit_var TEXT,
+                fit_pooled REAL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        try:
+            cur_bp.execute(
+                """
+                INSERT OR IGNORE INTO model_input (
+                    ifs_id, model_id, input_param, input_coef, output_set
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    ifs_id,
+                    model_id,
+                    json.dumps(input_param),
+                    json.dumps(input_coef),
+                    json.dumps(output_set),
+                ),
+            )
+            conn_bp.commit()
+
+            cur_bp.execute(
+                """
+                SELECT model_status, fit_var, fit_pooled
+                FROM model_output
+                WHERE model_id = ?
+                ORDER BY rowid DESC LIMIT 1
+                """,
+                (model_id,),
+            )
+            cached = cur_bp.fetchone()
+        finally:
+            conn_bp.close()
+
+        model_dir = output_root / model_id
+        ensure_dir(model_dir)
+
+        working_db_out = model_dir / f"Working.{model_id}.run.db"
+        working_sce_out = model_dir / f"Working.{model_id}.sce"
+        meta_json_out = model_dir / f"model_{model_id}.json"
+
+        if working_run_db_path.exists() and working_run_db_path != working_db_out:
+            shutil.copy2(working_run_db_path, working_db_out)
+        if working_sce_path.exists() and working_sce_path != working_sce_out:
+            shutil.copy2(working_sce_path, working_sce_out)
+
+        metadata_contents = {
+            "model_id": model_id,
+            "ifs_id": ifs_id,
+            "working_run_db": str(working_db_out),
+            "working_sce": str(working_sce_out),
+            "config": config_obj,
+            "sce_variables_appended": appended_variables,
+            "coefficients_updated": len(updates),
+        }
+        with meta_json_out.open("w", encoding="utf-8") as meta_handle:
+            json.dump(metadata_contents, meta_handle, indent=2)
+
+        if cached:
+            status, fit_var_json, fit_pooled = cached
+            print(
+                json.dumps(
+                    {
+                        "stage": "model_setup",
+                        "is_duplicate": True,
+                        "message": "Reusing cached results",
+                        "model_id": model_id,
+                        "ifs_id": ifs_id,
+                        "model_dir": str(model_dir),
+                        "output": {
+                            "model_status": status,
+                            "fit_var": json.loads(fit_var_json) if fit_var_json else None,
+                            "fit_pooled": fit_pooled,
+                        },
+                    }
+                )
+            )
+            return 0
+
+        print(
+            json.dumps(
+                {
+                    "stage": "model_setup",
+                    "is_duplicate": False,
+                    "message": "Model setup completed; ready to run IFs",
+                    "model_id": model_id,
+                    "ifs_id": ifs_id,
+                    "model_dir": str(model_dir),
+                    "working_run_db": str(working_db_out),
+                    "working_sce": str(working_sce_out),
+                }
+            )
+        )
+        return 0
+
     log(
         "success",
         "Model Setup completed successfully",
         updates=updates,
         sce_variables_appended=appended_variables,
-        sce_file=str(sce_path.resolve()),
+        sce_file=str(working_sce_path.resolve()),
     )
     return 0
 
