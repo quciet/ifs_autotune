@@ -169,6 +169,8 @@ export type RunIFsParams = {
   endYear: number;
   baseYear: number | null | undefined;
   outputDirectory: string;
+  modelId?: string | null;
+  ifsId?: number | null;
 };
 
 export type IFsProgressEvent = {
@@ -235,6 +237,8 @@ export async function runIFs({
   endYear,
   baseYear,
   outputDirectory,
+  modelId,
+  ifsId,
 }: RunIFsParams): Promise<StageSuccess<"run_ifs", RunIFsData>> {
   if (!window.electron?.invoke) {
     throw new StageError("run_ifs", "Electron bridge is unavailable.");
@@ -249,6 +253,8 @@ export async function runIFs({
       end_year: endYear,
       base_year: baseYear ?? null,
       output_dir: outputDirectory,
+      modelId: typeof modelId === "string" ? modelId : null,
+      ifsId: typeof ifsId === "number" ? ifsId : null,
     });
     return normalizeStageResponse<"run_ifs", RunIFsData>(payload, "run_ifs");
   } catch (error) {

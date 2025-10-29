@@ -459,6 +459,8 @@ function TuneIFsPage({
         endYear: clampedEndYear,
         baseYear: baseYearRef.current,
         outputDirectory,
+        modelId: modelSetupResult.model_id,
+        ifsId: modelSetupResult.ifs_id,
       });
 
       setError(null);
@@ -731,27 +733,6 @@ function TuneIFsPage({
           </div>
         ) : null}
 
-        {logEntries.length > 0 && (
-          <div className="log-panel">
-            <div className="log-title">Activity Log</div>
-            <div className="log-entries">
-              {logEntries.map((entry) => (
-                <div
-                  key={entry.id}
-                  className={`progress-text ${
-                    entry.status === "error"
-                      ? "error"
-                      : entry.status === "success"
-                      ? "success"
-                      : "info"
-                  }`}
-                >
-                  [{entry.stage}] {entry.message}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="tune-footer">
