@@ -201,14 +201,13 @@ def _prepare_run_artifacts(
 
     model_id = uuid.uuid4().hex
 
-    # === Create per-model folder ===
-    model_folder = os.path.join(output_dir, f"model_{model_id}")
-    os.makedirs(model_folder, exist_ok=True)
+    model_dir = os.path.join(output_dir, model_id)
+    os.makedirs(model_dir, exist_ok=True)
 
-    destination_db = os.path.join(model_folder, f"model_{model_id}.db")
+    destination_db = os.path.join(model_dir, f"model_{model_id}.run.db")
     shutil.copy2(source_db, destination_db)
 
-    metadata_path = os.path.join(model_folder, f"model_{model_id}.json")
+    metadata_path = os.path.join(model_dir, f"model_{model_id}.json")
     metadata_contents = {
         "model_id": model_id,
         "base_year": base_year,
@@ -228,7 +227,7 @@ def _prepare_run_artifacts(
         "w_gdp": w_gdp,
         "output_file": destination_db,
         "metadata_file": metadata_path,
-        "model_folder": model_folder,
+        "model_folder": model_dir,
     }
 
 
