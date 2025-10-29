@@ -181,37 +181,54 @@ def main() -> int:
         return 1
 
     try:
-        log("info", "Reading DataDict sheet")
-        df = pd.read_excel(input_file, sheet_name="DataDict")
-        df = df[df["Switch"] == 1]
-        if df.empty:
-            log("warn", "No enabled rows found in DataDict sheet")
-            with bp:
-                cursor = bp.cursor()
-                cursor.execute(
-                    """
-                    UPDATE model_output
-                    SET model_status='error', fit_var=NULL, fit_pooled=NULL
-                    WHERE model_id=?
-                    """,
-                    (model_id,),
-                )
-                if cursor.rowcount == 0:
-                    cursor.execute(
-                        """
-                        INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                        VALUES (?, ?, 'error', NULL, NULL)
-                        """,
-                        (ifs_id, model_id),
-                    )
+        log("info", "Reading output_set from BIGPOPA database")
+        cursor = bp.cursor()
+        cursor.execute("SELECT output_set FROM model_input WHERE model_id = ?", (model_id,))
+        row = cursor.fetchone()
+
+        if not row or not row[0]:
+            log("error", "No output_set found in model_input for this model_id", model_id=model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",
-                "No enabled rows found in DataDict sheet.",
+                "No output_set found in model_input for this model.",
                 {"model_id": model_id},
             )
             return 1
 
+        try:
+            output_set = json.loads(row[0])
+        except Exception as exc:
+            log("error", f"Failed to parse output_set JSON: {exc}", model_id=model_id)
+            emit_stage_response(
+                "error",
+                "extract_compare",
+                "Failed to parse output_set JSON.",
+                {"model_id": model_id, "error": str(exc)},
+            )
+            return 1
+
+        if not output_set:
+            log("warn", "Output_set is empty; nothing to extract", model_id=model_id)
+            emit_stage_response(
+                "error",
+                "extract_compare",
+                "No output_set data available for this model.",
+                {"model_id": model_id},
+            )
+            return 1
+
+    except Exception as exc:
+        bp.close()
+        emit_stage_response(
+            "error",
+            "extract_compare",
+            "Failed to read output_set from BIGPOPA database.",
+            {"model_id": model_id, "error": str(exc)},
+        )
+        return 1
+
+    try:
         hist_db_path = ifs_root / "RUNFILES" / "IFsHistSeries.db"
         if not hist_db_path.exists():
             log("error", f"Historical database not found: {hist_db_path}")
@@ -243,9 +260,9 @@ def main() -> int:
 
         extracted: List[Dict[str, str]] = []
         with sqlite3.connect(model_db) as conn_model, sqlite3.connect(hist_db_path) as conn_hist:
-            for _, row in df.iterrows():
-                variable = str(row.get("Variable", "")).strip()
-                table_name = str(row.get("Table", "")).strip()
+            for variable, table_name in output_set.items():
+                variable = str(variable).strip()
+                table_name = str(table_name).strip()
                 if not variable or not table_name:
                     continue
 

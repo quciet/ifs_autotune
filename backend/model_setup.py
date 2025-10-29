@@ -513,17 +513,18 @@ def add_from_startingpoint(
         if minimum is None or maximum is None:
             continue
 
-        midpoint = (minimum + maximum) / 2.0
-        if math.isnan(midpoint):
+        random_value = random.uniform(minimum, maximum)
+        if math.isnan(random_value):
             continue
 
-        input_param_used[variable.strip()] = midpoint
-
-        value_str = f"{midpoint:.6f}".rstrip("0").rstrip(".")
+        value_str = f"{random_value:.6f}".rstrip("0").rstrip(".")
         if not value_str:
             value_str = "0"
 
         repeated_values = [value_str] * value_count
+
+        # record the actual randomized value for logging later
+        input_param_used[variable.strip()] = random_value
 
         if dimension_value == 1:
             parts = ["CUSTOM", variable.strip(), "World", *repeated_values]
@@ -991,7 +992,20 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     input_param = input_param_used
     input_coef = input_coef_used
-    output_set = build_output_set_from_ifsvartab(ifsv_df)
+
+    # Extract output_set mapping (Variable → Table) from DataDict sheet
+    try:
+        data_dict_df = pd.read_excel(input_path, sheet_name="DataDict", engine="openpyxl")
+        enabled_dd = data_dict_df[data_dict_df["Switch"] == 1]
+        output_set_used = {
+            str(row["Variable"]).strip(): str(row["Table"]).strip()
+            for _, row in enabled_dd.iterrows()
+            if pd.notna(row.get("Variable")) and pd.notna(row.get("Table"))
+        }
+    except Exception:
+        output_set_used = {}
+
+    output_set = output_set_used
 
     config_obj = canonical_config(ifs_id, input_param, input_coef, output_set)
     model_id = hash_model_id(config_obj)
