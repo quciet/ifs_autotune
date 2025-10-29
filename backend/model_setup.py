@@ -460,33 +460,35 @@ def create_working_sce(ifs_root: Path) -> Path:
 
 def add_from_startingpoint(
     ifs_root: Path, excel_path: Path, ifsv_df: pd.DataFrame | None = None
-) -> int:
+) -> Tuple[int, Dict[str, float]]:
     sce_path = ifs_root / "Scenario" / "Working.sce"
+    input_param_used: Dict[str, float] = {}
+
     if not sce_path.exists():
-        return 0
+        return 0, input_param_used
 
     years = _extract_years_from_sce(sce_path)
     if not years:
-        return 0
+        return 0, input_param_used
     base_year, forecast_year = years
     if forecast_year < base_year:
-        return 0
+        return 0, input_param_used
 
     df: pd.DataFrame
     if ifsv_df is None:
         try:
             df = pd.read_excel(excel_path, sheet_name="IFsVar", engine="openpyxl")
         except Exception:
-            return 0
+            return 0, input_param_used
     else:
         df = ifsv_df.copy()
 
     if df.empty:
-        return 0
+        return 0, input_param_used
 
     value_count = forecast_year - base_year + 1
     if value_count <= 0:
-        return 0
+        return 0, input_param_used
 
     lines_to_append: List[str] = []
     appended = 0
@@ -515,6 +517,8 @@ def add_from_startingpoint(
         if math.isnan(midpoint):
             continue
 
+        input_param_used[variable.strip()] = midpoint
+
         value_str = f"{midpoint:.6f}".rstrip("0").rstrip(".")
         if not value_str:
             value_str = "0"
@@ -530,13 +534,13 @@ def add_from_startingpoint(
         appended += 1
 
     if not lines_to_append:
-        return 0
+        return 0, input_param_used
 
     with sce_path.open("a", encoding="utf-8") as handle:
         for line in lines_to_append:
             handle.write(line + "\n")
 
-    return appended
+    return appended, input_param_used
 
 
 def _randomize_intercept(value: float) -> float:
@@ -773,6 +777,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     rows_matched = 0
     coefs_updated = 0
 
+    input_coef_used: Dict[str, Dict[str, Dict[str, float]]] = {}
+
     try:
         log(
             "info",
@@ -910,6 +916,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                     "UPDATE ifs_reg_coeff SET Value=? WHERE RegressionName=? AND RegressionSeq=? AND Name=?",
                     (float(new_value), func_name, seq, coef_name),
                 )
+                input_coef_used.setdefault(func_name, {}).setdefault(x_var, {})[coef_name] = float(new_value)
                 coefs_updated += 1
                 log(
                     "debug",
@@ -953,7 +960,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         except Exception:
             pass
 
-    appended_variables = add_from_startingpoint(ifs_root, input_path, ifsv_df)
+    input_param_used: Dict[str, float] = {}
+    appended_variables, input_param_used = add_from_startingpoint(ifs_root, input_path, ifsv_df)
 
     if output_root is None:
         log(
@@ -981,8 +989,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 1
 
-    input_param = build_input_param_from_startingpoint(ifsv_df)
-    input_coef = build_input_coef_from_working_db(str(working_run_db_path))
+    input_param = input_param_used
+    input_coef = input_coef_used
     output_set = build_output_set_from_ifsvartab(ifsv_df)
 
     config_obj = canonical_config(ifs_id, input_param, input_coef, output_set)
