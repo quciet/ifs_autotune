@@ -28,35 +28,102 @@ export type ValidationInputFileCheck = ValidationPathCheck & {
   missingSheets?: string[];
 };
 
-export type RunIFsSuccess = {
+export type ApiStage = "model_setup" | "run_ifs" | "extract_compare";
+
+export type ApiStatus = "success" | "error";
+
+export type StageSuccess<TStage extends ApiStage, TData> = {
   status: "success";
+  stage: TStage;
+  message: string;
+  data: TData;
+};
+
+export class StageError extends Error {
+  stage: ApiStage;
+
+  constructor(stage: ApiStage, message: string) {
+    super(message);
+    this.name = "StageError";
+    this.stage = stage;
+  }
+}
+
+export type ModelSetupData = {
+  ifs_id: number;
   model_id: string;
-  base_year: number | null;
-  end_year: number;
-  w_gdp: number;
-  output_file: string;
-  metadata_file: string;
 };
 
-export type RunIFsError = {
-  status: "error";
-  message: string;
+export type RunIFsData = {
+  ifs_id: number;
+  model_id: string;
+  run_folder: string;
+  base_year?: number | null;
+  end_year?: number | null;
+  w_gdp?: number | null;
+  output_file?: string;
+  metadata_file?: string;
 };
 
-export type RunIFsResponse = RunIFsSuccess | RunIFsError;
-
-export type ModelSetupSuccess = {
-  status: "success";
-  sce_id: string;
-  sce_file: string;
+export type ExtractCompareData = {
+  model_id: string;
+  fit_pooled: number | null;
+  fit_var?: Record<string, unknown> | null;
 };
 
-export type ModelSetupError = {
-  status: "error";
-  message: string;
+type RawStageResponse = {
+  status?: unknown;
+  stage?: unknown;
+  message?: unknown;
+  data?: unknown;
 };
 
-export type ModelSetupResponse = ModelSetupSuccess | ModelSetupError;
+function normalizeStageResponse<TStage extends ApiStage, TData>(
+  raw: unknown,
+  expectedStage: TStage,
+): StageSuccess<TStage, TData> {
+  if (!raw || typeof raw !== "object") {
+    throw new StageError(
+      expectedStage,
+      "Unexpected response structure received from backend.",
+    );
+  }
+
+  const typed = raw as RawStageResponse;
+  const stageName =
+    typeof typed.stage === "string" && typed.stage.length > 0
+      ? (typed.stage as ApiStage)
+      : expectedStage;
+  const message =
+    typeof typed.message === "string" && typed.message.trim().length > 0
+      ? typed.message
+      : "Operation failed.";
+
+  if (typed.status !== "success") {
+    throw new StageError(stageName, message);
+  }
+
+  if (stageName !== expectedStage) {
+    throw new StageError(
+      expectedStage,
+      `Unexpected stage "${stageName}" returned from backend.`,
+    );
+  }
+
+  if (!typed.data || typeof typed.data !== "object") {
+    throw new StageError(
+      expectedStage,
+      "Response payload is missing required data.",
+    );
+  }
+
+  return {
+    status: "success",
+    stage: expectedStage,
+    message,
+    data: typed.data as TData,
+  };
+}
 
 const FALLBACK_RESPONSE: CheckResponse = {
   valid: false,
@@ -102,13 +169,19 @@ export type RunIFsParams = {
   endYear: number;
   baseYear: number | null | undefined;
   outputDirectory: string;
-  sceId?: string | null;
-  sceFile?: string | null;
 };
 
 export type IFsProgressEvent = {
   year: number;
   percent?: number;
+};
+
+export type ExtractCompareParams = {
+  ifsRoot: string;
+  modelDb: string;
+  inputFilePath: string;
+  modelId: string;
+  ifsId: number;
 };
 
 export async function modelSetup({
@@ -129,12 +202,9 @@ export async function modelSetup({
   validatedPath: string;
   inputFilePath: string;
   outputFolder?: string | null;
-}): Promise<ModelSetupResponse> {
+}): Promise<StageSuccess<"model_setup", ModelSetupData>> {
   if (!window.electron?.invoke) {
-    return {
-      status: "error",
-      message: "Electron bridge is unavailable.",
-    };
+    throw new StageError("model_setup", "Electron bridge is unavailable.");
   }
 
   try {
@@ -149,18 +219,14 @@ export async function modelSetup({
       outputFolder: outputFolder ?? null,
     };
     const result = await window.electron.invoke("model_setup", payload);
-    if (result && typeof result === "object" && "status" in result) {
-      return result as ModelSetupResponse;
-    }
-
-    return {
-      status: "error",
-      message: "Unexpected response from model setup.",
-    };
+    return normalizeStageResponse<"model_setup", ModelSetupData>(
+      result,
+      "model_setup",
+    );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to complete model setup.";
-    return { status: "error", message };
+    throw new StageError("model_setup", message);
   }
 }
 
@@ -169,14 +235,9 @@ export async function runIFs({
   endYear,
   baseYear,
   outputDirectory,
-  sceId,
-  sceFile,
-}: RunIFsParams): Promise<RunIFsResponse> {
+}: RunIFsParams): Promise<StageSuccess<"run_ifs", RunIFsData>> {
   if (!window.electron?.invoke) {
-    return {
-      status: "error",
-      message: "Electron bridge is unavailable.",
-    };
+    throw new StageError("run_ifs", "Electron bridge is unavailable.");
   }
 
   try {
@@ -188,28 +249,46 @@ export async function runIFs({
       end_year: endYear,
       base_year: baseYear ?? null,
       output_dir: outputDirectory,
-      sce_id: sceId ?? null,
-      sce_file: sceFile ?? null,
     });
-    if (payload && typeof payload === "object" && "status" in payload) {
-      const typed = payload as RunIFsResponse;
-      if (typed.status === "success") {
-        return typed;
-      }
-
-      if (typed.status === "error") {
-        return typed;
-      }
-    }
-
-    return {
-      status: "error",
-      message: "Unexpected response from IFs runner.",
-    };
+    return normalizeStageResponse<"run_ifs", RunIFsData>(payload, "run_ifs");
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to start the IFs run.";
-    return { status: "error", message };
+    throw new StageError("run_ifs", message);
+  }
+}
+
+export async function extractCompare({
+  ifsRoot,
+  modelDb,
+  inputFilePath,
+  modelId,
+  ifsId,
+}: ExtractCompareParams): Promise<
+  StageSuccess<"extract_compare", ExtractCompareData>
+> {
+  if (!window.electron?.invoke) {
+    throw new StageError("extract_compare", "Electron bridge is unavailable.");
+  }
+
+  try {
+    const response = await window.electron.invoke("extract_compare", {
+      ifsRoot,
+      modelDb,
+      inputFilePath,
+      modelId,
+      ifsId,
+    });
+    return normalizeStageResponse<"extract_compare", ExtractCompareData>(
+      response,
+      "extract_compare",
+    );
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unable to complete extract & compare.";
+    throw new StageError("extract_compare", message);
   }
 }
 
