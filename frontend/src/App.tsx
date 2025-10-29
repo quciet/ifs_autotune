@@ -7,19 +7,35 @@ import {
   useState,
 } from "react";
 import {
+  extractCompare,
   modelSetup,
   runIFs,
   subscribeToIFsProgress,
   validateIFsFolder,
+  StageError,
+  type ApiStage,
+  type ApiStatus,
   type CheckResponse,
+  type ExtractCompareData,
   type IFsProgressEvent,
-  type ModelSetupSuccess,
-  type RunIFsSuccess,
+  type ModelSetupData,
+  type RunIFsData,
 } from "./api";
 
 const REQUIRED_INPUT_SHEETS = ["AnalFunc", "TablFunc", "IFsVar", "DataDict"];
 
 type View = "validate" | "tune";
+
+type StatusLevel = "info" | "success" | "error";
+
+type LogStatus = ApiStatus | "info";
+
+type LogEntry = {
+  id: number;
+  stage: ApiStage;
+  message: string;
+  status: LogStatus;
+};
 
 type TuneIFsPageProps = {
   onBack: () => void;
@@ -72,14 +88,19 @@ function TuneIFsPage({
   const [endYear, setEndYear] = useState<number>(DEFAULT_END_YEAR);
   const [running, setRunning] = useState(false);
   const [modelSetupRunning, setModelSetupRunning] = useState(false);
-  const [modelSetupResult, setModelSetupResult] = useState<ModelSetupSuccess | null>(
-    null,
-  );
+  const [extracting, setExtracting] = useState(false);
+  const [modelSetupResult, setModelSetupResult] =
+    useState<ModelSetupData | null>(null);
   const [progressYear, setProgressYear] = useState<number | null>(null);
   const [progressPercent, setProgressPercent] = useState(0);
-  const [metadata, setMetadata] = useState<RunIFsSuccess | null>(null);
+  const [runResult, setRunResult] = useState<RunIFsData | null>(null);
+  const [extractResult, setExtractResult] = useState<ExtractCompareData | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
-  const [setupMessage, setSetupMessage] = useState("");
+  const [statusMessage, setStatusMessage] = useState("Waiting to start.");
+  const [statusLevel, setStatusLevel] = useState<StatusLevel>("info");
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
   );
@@ -88,6 +109,67 @@ function TuneIFsPage({
   const parameterRef = useRef<Record<string, unknown>>({});
   const coefficientRef = useRef<Record<string, unknown>>({});
   const paramDimensionRef = useRef<Record<string, unknown>>({});
+  const logIdRef = useRef(0);
+
+  const appendLog = (stage: ApiStage, status: LogStatus, message: string) => {
+    const normalized = typeof message === "string" ? message.trim() : "";
+    const content = normalized.length > 0 ? normalized : message;
+    setLogEntries((entries) => {
+      const nextId = logIdRef.current + 1;
+      logIdRef.current = nextId;
+      return [...entries, { id: nextId, stage, status, message: content }];
+    });
+  };
+
+  const updateStageStatus = (
+    stage: ApiStage,
+    level: StatusLevel,
+    message: string,
+    shouldLog = true,
+  ) => {
+    const normalized = typeof message === "string" ? message.trim() : "";
+    const content = normalized.length > 0 ? normalized : message;
+    setStatusMessage(`[${stage}] ${content}`);
+    setStatusLevel(level);
+    if (shouldLog) {
+      const logStatus: LogStatus =
+        level === "info" ? "info" : (level as LogStatus);
+      appendLog(stage, logStatus, content);
+    }
+  };
+
+  const resolveStageError = (
+    err: unknown,
+    fallbackStage: ApiStage,
+  ): { stage: ApiStage; message: string } => {
+    if (err instanceof StageError) {
+      return { stage: err.stage, message: err.message };
+    }
+
+    return {
+      stage: fallbackStage,
+      message:
+        err instanceof Error ? err.message : "An unexpected error occurred.",
+    };
+  };
+
+  const resolveModelDbPath = (data: RunIFsData): string => {
+    if (
+      typeof data.output_file === "string" &&
+      data.output_file.trim().length > 0
+    ) {
+      return data.output_file.trim();
+    }
+
+    const folder = typeof data.run_folder === "string" ? data.run_folder.trim() : "";
+    if (!folder) {
+      return "";
+    }
+
+    const needsSeparator = !/[\\/]$/.test(folder);
+    const separator = needsSeparator ? (folder.includes("\\") ? "\\" : "/") : "";
+    return `${folder}${separator}Working.${data.model_id}.run.db`;
+  };
 
   const minEndYear =
     typeof effectiveBaseYear === "number" && Number.isFinite(effectiveBaseYear)
@@ -105,7 +187,16 @@ function TuneIFsPage({
   }, [baseYear]);
 
   useEffect(() => {
-    setSetupMessage("Waiting to start.");
+    setStatusMessage("Waiting to start.");
+    setStatusLevel("info");
+    setModelSetupResult(null);
+    setRunResult(null);
+    setExtractResult(null);
+    setLogEntries([]);
+    logIdRef.current = 0;
+    setProgressYear(null);
+    setProgressPercent(0);
+    setError(null);
   }, [validatedPath, validatedInputPath, outputDirectory]);
 
   useEffect(() => {
@@ -153,11 +244,11 @@ function TuneIFsPage({
   }, []);
 
   useEffect(() => {
-    if (metadata && typeof metadata.base_year === "number") {
-      baseYearRef.current = metadata.base_year;
-      setEffectiveBaseYear(metadata.base_year);
+    if (runResult && typeof runResult.base_year === "number") {
+      baseYearRef.current = runResult.base_year;
+      setEffectiveBaseYear(runResult.base_year);
     }
-  }, [metadata]);
+  }, [runResult]);
 
   useEffect(() => {
     if (!window.electron?.on) {
@@ -176,7 +267,8 @@ function TuneIFsPage({
             : null;
 
         if (resolvedMessage) {
-          setSetupMessage(resolvedMessage);
+          setStatusMessage(`[model_setup] ${resolvedMessage}`);
+          setStatusLevel("info");
         }
       },
     );
@@ -189,7 +281,9 @@ function TuneIFsPage({
   }, []);
 
   const resetModelSetupState = () => {
-    setModelSetupResult((current) => (current ? null : current));
+    setModelSetupResult(null);
+    setRunResult(null);
+    setExtractResult(null);
   };
 
   const handleEndYearInputChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -232,7 +326,7 @@ function TuneIFsPage({
   };
 
   const handleChangeOutputDirectory = async () => {
-    if (running || modelSetupRunning) {
+    if (running || modelSetupRunning || extracting) {
       return;
     }
 
@@ -250,35 +344,39 @@ function TuneIFsPage({
   };
 
   const handleModelSetup = async () => {
-    if (running || modelSetupRunning) {
+    if (running || modelSetupRunning || extracting) {
       return;
     }
 
     setError(null);
-    setMetadata(null);
-    setSetupMessage("Starting model setup...");
+    setRunResult(null);
+    setExtractResult(null);
+    updateStageStatus("model_setup", "info", "Starting model setup...");
     setModelSetupResult(null);
     setProgressYear(null);
     setProgressPercent(0);
 
     if (!validatedPath || !validatedPath.trim()) {
-      setSetupMessage("❌ Setup failed.");
-      setError("Validated IFs folder path is missing. Please re-run validation.");
+      const message =
+        "Validated IFs folder path is missing. Please re-run validation.";
+      updateStageStatus("model_setup", "error", message);
+      setError(message);
       return;
     }
 
     if (!validatedInputPath || !validatedInputPath.trim()) {
-      setSetupMessage("❌ Setup failed.");
-      setError(
-        "Validated input file path is missing. Please re-run validation to continue.",
-      );
+      const message =
+        "Validated input file path is missing. Please re-run validation to continue.";
+      updateStageStatus("model_setup", "error", message);
+      setError(message);
       return;
     }
 
     const parsedEndYear = Number(endYearInput);
     if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
-      setSetupMessage("❌ Setup failed.");
-      setError("Please enter a valid end year.");
+      const message = "Please enter a valid end year.";
+      updateStageStatus("model_setup", "error", message);
+      setError(message);
       return;
     }
 
@@ -290,6 +388,8 @@ function TuneIFsPage({
     setModelSetupRunning(true);
 
     try {
+      appendLog("model_setup", "info", "Submitting model setup request.");
+
       const response = await modelSetup({
         endYear: clampedEndYear,
         baseYear: baseYearRef.current,
@@ -301,19 +401,14 @@ function TuneIFsPage({
         outputFolder: outputDirectory ?? null,
       });
 
-      if (response.status === "success") {
-        setModelSetupResult(response);
-        setSetupMessage("✅ Model setup complete.");
-        setError(null);
-      } else {
-        setSetupMessage("❌ Setup failed.");
-        setError(response.message ?? "Model setup failed.");
-      }
+      setModelSetupResult(response.data);
+      updateStageStatus(response.stage, "success", response.message);
+      setError(null);
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Unable to complete model setup.";
+      const { stage, message } = resolveStageError(err, "model_setup");
+      setModelSetupResult(null);
+      updateStageStatus(stage, "error", message);
       setError(message);
-      setSetupMessage("❌ Setup failed.");
     } finally {
       setModelSetupRunning(false);
     }
@@ -321,81 +416,134 @@ function TuneIFsPage({
 
   const handleRunClick = async () => {
     setError(null);
-    setMetadata(null);
+    setRunResult(null);
+    setExtractResult(null);
     setProgressYear(null);
     setProgressPercent(0);
 
     const parsedEndYear = Number(endYearInput);
     if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
-      setSetupMessage("❌ Run failed.");
-      setError("Please enter a valid end year.");
+      const message = "Please enter a valid end year.";
+      updateStageStatus("run_ifs", "error", message);
+      setError(message);
       return;
     }
 
     if (!outputDirectory) {
-      setSetupMessage("❌ Run failed.");
-      setError("Please choose an output folder before running IFs.");
+      const message = "Please choose an output folder before running IFs.";
+      updateStageStatus("run_ifs", "error", message);
+      setError(message);
       return;
     }
 
     if (!modelSetupResult || modelSetupRunning) {
-      setSetupMessage("❌ Run failed.");
-      setError("Please run model setup before starting IFs.");
+      const message = "Please run model setup before starting IFs.";
+      updateStageStatus("run_ifs", "error", message);
+      setError(message);
       return;
     }
 
-    const setupResult = modelSetupResult;
     const clampedEndYear = clampEndYear(parsedEndYear);
     targetEndYearRef.current = clampedEndYear;
     setEndYear(clampedEndYear);
     setEndYearInput(String(clampedEndYear));
     setModelSetupResult(null);
-    setSetupMessage("");
+    updateStageStatus("run_ifs", "info", "Starting IFs run...");
     setRunning(true);
 
     try {
+      appendLog("run_ifs", "info", "Submitting IFs run request.");
+
       const response = await runIFs({
         validatedPath,
         endYear: clampedEndYear,
         baseYear: baseYearRef.current,
         outputDirectory,
-        sceId: setupResult.sce_id,
-        sceFile: setupResult.sce_file,
       });
 
-      if (response.status === "success") {
-        setError(null);
-        setMetadata(response);
-        setProgressYear(response.end_year);
-        setProgressPercent(100);
-        targetEndYearRef.current = response.end_year;
-        if (typeof response.base_year === "number") {
-          baseYearRef.current = response.base_year;
-          setEffectiveBaseYear(response.base_year);
-        }
-        setSetupMessage("✅ Run completed.");
-        if (window.electron?.invoke && validatedInputPath) {
-          try {
-            await window.electron.invoke("extract_compare", {
-              ifsRoot: validatedPath,
-              modelDb: response.output_file,
-              inputFilePath: validatedInputPath,
-              modelId: response.model_id,
-            });
-          } catch (extractError) {
-            console.error("extract_compare failed", extractError);
-          }
-        }
-      } else {
-        setError(response.message ?? "IFs run failed.");
-        setSetupMessage("❌ Run failed.");
+      setError(null);
+      setRunResult(response.data);
+      updateStageStatus(response.stage, "success", response.message);
+
+      const endYearFromResponse =
+        typeof response.data.end_year === "number"
+          ? response.data.end_year
+          : clampedEndYear;
+      setProgressYear(endYearFromResponse);
+      setProgressPercent(100);
+      targetEndYearRef.current = endYearFromResponse;
+
+      if (typeof response.data.base_year === "number") {
+        baseYearRef.current = response.data.base_year;
+        setEffectiveBaseYear(response.data.base_year);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to run IFs.";
+      const { stage, message } = resolveStageError(err, "run_ifs");
       setError(message);
-      setSetupMessage("❌ Run failed.");
+      setRunResult(null);
+      updateStageStatus(stage, "error", message);
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleExtractCompare = async () => {
+    if (running || modelSetupRunning || extracting) {
+      return;
+    }
+
+    if (!runResult) {
+      const message = "Run data is not available. Please run IFs first.";
+      updateStageStatus("extract_compare", "error", message);
+      setError(message);
+      return;
+    }
+
+    if (!validatedInputPath || !validatedInputPath.trim()) {
+      const message =
+        "Validated input file path is missing. Please re-run validation to continue.";
+      updateStageStatus("extract_compare", "error", message);
+      setError(message);
+      return;
+    }
+
+    const modelDbPath = resolveModelDbPath(runResult);
+    if (!modelDbPath) {
+      const message = "Unable to determine model database path for comparison.";
+      updateStageStatus("extract_compare", "error", message);
+      setError(message);
+      return;
+    }
+
+    setError(null);
+    updateStageStatus("extract_compare", "info", "Starting extract & compare...");
+    setExtracting(true);
+
+    try {
+      appendLog(
+        "extract_compare",
+        "info",
+        "Submitting extract & compare request.",
+      );
+
+      const response = await extractCompare({
+        ifsRoot: validatedPath,
+        modelDb: modelDbPath,
+        inputFilePath: validatedInputPath,
+        modelId: runResult.model_id,
+        ifsId: runResult.ifs_id,
+      });
+
+      setExtractResult(response.data);
+      updateStageStatus(response.stage, "success", response.message);
+      setError(null);
+    } catch (err) {
+      const { stage, message } = resolveStageError(err, "extract_compare");
+      setExtractResult(null);
+      updateStageStatus(stage, "error", message);
+      setError(message);
+    } finally {
+      setExtracting(false);
     }
   };
 
@@ -406,15 +554,23 @@ function TuneIFsPage({
     ? progressYear != null
       ? `Running IFs… Last reported year: ${progressYear} (${formattedPercent})`
       : "Running IFs…"
-    : metadata
+    : runResult
     ? null
     : progressYear != null
     ? `Last reported year: ${progressYear} (${formattedPercent})`
     : null;
 
-  const wgdDisplay = metadata
-    ? metadata.w_gdp.toLocaleString(undefined, { maximumFractionDigits: 2 })
-    : "";
+  const wgdDisplay =
+    runResult && typeof runResult.w_gdp === "number"
+      ? runResult.w_gdp.toLocaleString(undefined, { maximumFractionDigits: 2 })
+      : null;
+
+  const fitPooledDisplay =
+    extractResult && typeof extractResult.fit_pooled === "number"
+      ? extractResult.fit_pooled.toFixed(4)
+      : extractResult && extractResult.fit_pooled === null
+      ? "N/A"
+      : null;
 
   return (
     <section className="tune-container">
@@ -470,7 +626,7 @@ function TuneIFsPage({
           type="button"
           className="button"
           onClick={handleModelSetup}
-          disabled={running || modelSetupRunning}
+          disabled={running || modelSetupRunning || extracting}
         >
           {modelSetupRunning ? "Setting up..." : "Model Setup"}
         </button>
@@ -481,6 +637,7 @@ function TuneIFsPage({
           disabled={
             running ||
             modelSetupRunning ||
+            extracting ||
             !outputDirectory ||
             !modelSetupResult
           }
@@ -489,9 +646,22 @@ function TuneIFsPage({
         </button>
         <button
           type="button"
+          className="button"
+          onClick={handleExtractCompare}
+          disabled={
+            running ||
+            modelSetupRunning ||
+            extracting ||
+            !runResult
+          }
+        >
+          {extracting ? "Extracting..." : "Extract & Compare"}
+        </button>
+        <button
+          type="button"
           className="button secondary"
           onClick={handleChangeOutputDirectory}
-          disabled={running || modelSetupRunning}
+          disabled={running || modelSetupRunning || extracting}
         >
           Change output folder
         </button>
@@ -504,17 +674,9 @@ function TuneIFsPage({
             <div className="progress-text">{runProgressLabel}</div>
           )
         ) : (
-          setupMessage && (
-            <div
-              className={`progress-text ${
-                setupMessage.includes("❌")
-                  ? "error"
-                  : setupMessage.includes("✅")
-                  ? "success"
-                  : "info"
-              }`}
-            >
-              {setupMessage}
+          statusMessage && (
+            <div className={`progress-text ${statusLevel}`}>
+              {statusMessage}
             </div>
           )
         )}
@@ -527,34 +689,69 @@ function TuneIFsPage({
           value={displayPercent}
         />
 
-        {metadata ? (
+        {runResult ? (
           <div className="metadata-inline">
-            <div className="run-status success">Run successful</div>
+            <div className="run-status success">Run completed</div>
             <ul>
               <li>
-                <strong>Model ID:</strong> {metadata.model_id}
+                <strong>Model ID:</strong> {runResult.model_id}
               </li>
               <li>
-                <strong>Base year:</strong>{" "}
-                {metadata.base_year != null ? metadata.base_year : "Unknown"}
+                <strong>IFs ID:</strong> {runResult.ifs_id}
               </li>
+              {typeof runResult.base_year === "number" && (
+                <li>
+                  <strong>Base year:</strong> {runResult.base_year}
+                </li>
+              )}
+              {typeof runResult.end_year === "number" && (
+                <li>
+                  <strong>End year:</strong> {runResult.end_year}
+                </li>
+              )}
+              {wgdDisplay && (
+                <li>
+                  <strong>World GDP (WGDP):</strong> {wgdDisplay}
+                </li>
+              )}
               <li>
-                <strong>End year:</strong> {metadata.end_year}
+                <strong>Run folder:</strong> {runResult.run_folder}
               </li>
-              <li>
-                <strong>World GDP (WGDP):</strong> {wgdDisplay}
-              </li>
-              <li>
-                <strong>Saved file:</strong> {metadata.output_file}
-              </li>
-              <li>
-                <strong>Metadata file:</strong> {metadata.metadata_file}
-              </li>
+              {runResult.output_file && (
+                <li>
+                  <strong>Run database:</strong> {runResult.output_file}
+                </li>
+              )}
             </ul>
+            {fitPooledDisplay != null && (
+              <div className="fit-results">
+                <strong>Pooled fit (MSE):</strong> {fitPooledDisplay}
+              </div>
+            )}
           </div>
-        ) : !running && setupMessage.includes("❌ Run failed") ? (
-          <div className="run-status error">❌ Run failed</div>
         ) : null}
+
+        {logEntries.length > 0 && (
+          <div className="log-panel">
+            <div className="log-title">Activity Log</div>
+            <div className="log-entries">
+              {logEntries.map((entry) => (
+                <div
+                  key={entry.id}
+                  className={`progress-text ${
+                    entry.status === "error"
+                      ? "error"
+                      : entry.status === "success"
+                      ? "success"
+                      : "info"
+                  }`}
+                >
+                  [{entry.stage}] {entry.message}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="tune-footer">
