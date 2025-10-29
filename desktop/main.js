@@ -719,6 +719,14 @@ ipcMain.handle('run_ifs', async (_event, payload) => {
     args.push('--base-year', String(payload.baseYear));
   }
 
+  if (payload.modelId) {
+    args.push('--model-id', String(payload.modelId));
+  }
+
+  if (payload.ifsId != null) {
+    args.push('--ifs-id', String(payload.ifsId));
+  }
+
   return runPythonScript('run_ifs.py', args);
 });
 
