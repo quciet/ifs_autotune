@@ -21,33 +21,44 @@ def log(status: str, message: str, **kwargs) -> None:
     print(json.dumps(payload), flush=True)
 
 
-def ensure_model_output_table(cursor: sqlite3.Cursor) -> None:
+# Emit a structured response for Electron consumption.
+def emit_stage_response(status: str, stage: str, message: str, data: Dict[str, object]) -> None:
+    payload = {
+        "status": status,
+        "stage": stage,
+        "message": message,
+        "data": data,
+    }
+    print(json.dumps(payload), flush=True)
+
+
+# Ensure BIGPOPA schema matches the hashed model workflow expectations.
+def ensure_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS model_output (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS model_input (
             ifs_id INTEGER,
-            model_id TEXT NOT NULL,
-            model_status TEXT NOT NULL,
-            fit_var TEXT,
-            fit_pooled REAL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            model_id TEXT PRIMARY KEY,
+            input_param TEXT,
+            input_coef TEXT,
+            output_set TEXT,
+            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id)
         )
         """
     )
-
-
-def fetch_cached(cursor: sqlite3.Cursor, model_id: str) -> tuple[str, str | None, float | None] | None:
     cursor.execute(
         """
-        SELECT model_status, fit_var, fit_pooled
-        FROM model_output
-        WHERE model_id = ?
-        ORDER BY rowid DESC LIMIT 1
-        """,
-        (model_id,),
+        CREATE TABLE IF NOT EXISTS model_output (
+            ifs_id INTEGER,
+            model_id TEXT PRIMARY KEY,
+            model_status TEXT,
+            fit_var TEXT,
+            fit_pooled REAL,
+            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id),
+            FOREIGN KEY (model_id) REFERENCES model_input(model_id)
+        )
+        """
     )
-    return cursor.fetchone()
 
 
 def write_fit_json(model_dir: Path, model_id: str, mse_map: Dict[str, float] | None, pooled_mse: float | None) -> Path:
@@ -76,42 +87,98 @@ def main() -> int:
     model_id = args.model_id
     ifs_id = args.ifs_id
 
-    if model_db.parent.name == model_id:
-        output_root = model_db.parent.parent
-    else:
-        output_root = model_db.parent
-    model_dir = output_root / model_id
-    model_dir.mkdir(parents=True, exist_ok=True)
-
-    bigpopa_db_path = output_root / "bigpopa.db"
-    bp = sqlite3.connect(str(bigpopa_db_path))
-    bc = bp.cursor()
-    ensure_model_output_table(bc)
-
-    cached = fetch_cached(bc, model_id)
-    if cached:
-        status, fit_var_json, fit_pooled = cached
-        fit_map = json.loads(fit_var_json) if fit_var_json else None
-        write_fit_json(model_dir, model_id, fit_map, fit_pooled)
-        print(
-            json.dumps(
-                {
-                    "stage": "extract_compare",
-                    "is_duplicate": True,
-                    "message": "Reusing cached results",
-                    "model_id": model_id,
-                    "ifs_id": ifs_id,
-                    "output": {
-                        "model_status": status,
-                        "fit_var": fit_map,
-                        "fit_pooled": fit_pooled,
-                    },
-                }
-            ),
-            flush=True,
+    if not model_db.exists():
+        log("error", "Model database not found", model_db=str(model_db))
+        emit_stage_response(
+            "error",
+            "extract_compare",
+            "Model database was not found; cannot compute fit metrics.",
+            {"model_db": str(model_db)},
         )
+        return 1
+
+    model_dir = model_db.parent
+    if model_dir.name != model_id:
+        alternate_dir = model_dir / model_id
+        if alternate_dir.exists():
+            model_dir = alternate_dir
+        else:
+            log(
+                "error",
+                "Model directory mismatch",
+                expected=model_id,
+                actual=str(model_dir),
+            )
+            emit_stage_response(
+                "error",
+                "extract_compare",
+                "Model directory does not match the provided model_id.",
+                {"model_id": model_id, "model_dir": str(model_dir)},
+            )
+            return 1
+
+    if not model_dir.exists():
+        log("error", "Model output folder missing", folder=str(model_dir))
+        emit_stage_response(
+            "error",
+            "extract_compare",
+            "Model output folder is missing; run_ifs must complete before comparison.",
+            {"model_id": model_id, "run_folder": str(model_dir)},
+        )
+        return 1
+
+    # Locate the BIGPOPA database adjacent to the output folder.
+    if model_dir.parent.name.lower() == "output":
+        bigpopa_root = model_dir.parent.parent
+    else:
+        bigpopa_root = model_dir.parent
+    bigpopa_db_path = bigpopa_root / "bigpopa.db"
+
+    if not bigpopa_db_path.exists():
+        log("error", "BIGPOPA database missing", database=str(bigpopa_db_path))
+        emit_stage_response(
+            "error",
+            "extract_compare",
+            "BIGPOPA database was not found for metric persistence.",
+            {"bigpopa_db": str(bigpopa_db_path)},
+        )
+        return 1
+
+    try:
+        bp = sqlite3.connect(str(bigpopa_db_path))
+    except sqlite3.Error as exc:
+        emit_stage_response(
+            "error",
+            "extract_compare",
+            "Unable to open BIGPOPA database.",
+            {"bigpopa_db": str(bigpopa_db_path), "error": str(exc)},
+        )
+        return 1
+
+    try:
+        bc = bp.cursor()
+        ensure_bigpopa_schema(bc)
+        bc.execute(
+            "SELECT model_status FROM model_output WHERE model_id = ?",
+            (model_id,),
+        )
+        existing_status_row = bc.fetchone()
+        log(
+            "debug",
+            "Fetched existing model status",
+            model_id=model_id,
+            status=existing_status_row[0] if existing_status_row else None,
+        )
+        bp.commit()
+    except sqlite3.Error as exc:
         bp.close()
-        return 0
+        emit_stage_response(
+            "error",
+            "extract_compare",
+            "Failed to query BIGPOPA database for model status.",
+            {"model_id": model_id, "error": str(exc)},
+        )
+        return 1
 
     try:
         log("info", "Reading DataDict sheet")
@@ -119,27 +186,59 @@ def main() -> int:
         df = df[df["Switch"] == 1]
         if df.empty:
             log("warn", "No enabled rows found in DataDict sheet")
-            bc.execute(
-                """
-                INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                VALUES (?, ?, 'error', NULL, NULL)
-                """,
-                (ifs_id, model_id),
+            with bp:
+                cursor = bp.cursor()
+                cursor.execute(
+                    """
+                    UPDATE model_output
+                    SET model_status='error', fit_var=NULL, fit_pooled=NULL
+                    WHERE model_id=?
+                    """,
+                    (model_id,),
+                )
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        """
+                        INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
+                        VALUES (?, ?, 'error', NULL, NULL)
+                        """,
+                        (ifs_id, model_id),
+                    )
+            emit_stage_response(
+                "error",
+                "extract_compare",
+                "No enabled rows found in DataDict sheet.",
+                {"model_id": model_id},
             )
-            bp.commit()
-            return 0
+            return 1
 
         hist_db_path = ifs_root / "RUNFILES" / "IFsHistSeries.db"
         if not hist_db_path.exists():
             log("error", f"Historical database not found: {hist_db_path}")
-            bc.execute(
-                """
-                INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                VALUES (?, ?, 'error', NULL, NULL)
-                """,
-                (ifs_id, model_id),
+            with bp:
+                cursor = bp.cursor()
+                cursor.execute(
+                    """
+                    UPDATE model_output
+                    SET model_status='error', fit_var=NULL, fit_pooled=NULL
+                    WHERE model_id=?
+                    """,
+                    (model_id,),
+                )
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        """
+                        INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
+                        VALUES (?, ?, 'error', NULL, NULL)
+                        """,
+                        (ifs_id, model_id),
+                    )
+            emit_stage_response(
+                "error",
+                "extract_compare",
+                "Historical database not found for comparison.",
+                {"hist_db": str(hist_db_path)},
             )
-            bp.commit()
             return 1
 
         extracted: List[Dict[str, str]] = []
@@ -178,7 +277,6 @@ def main() -> int:
                 extracted.append({"Variable": variable, "Table": table_name})
 
         log("success", "Extraction complete", count=len(extracted))
-        print(json.dumps({"status": "success", "extracted": extracted}), flush=True)
 
         try:
             backend_tools = Path(__file__).resolve().parent / "tools"
@@ -264,14 +362,24 @@ def main() -> int:
 
         write_fit_json(model_dir, model_id, mse_map, pooled_mse)
 
-        bc.execute(
-            """
-            INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-            VALUES (?, ?, 'completed', ?, ?)
-            """,
-            (ifs_id, model_id, json.dumps(mse_map), pooled_mse),
-        )
-        bp.commit()
+        with bp:
+            cursor = bp.cursor()
+            cursor.execute(
+                """
+                UPDATE model_output
+                SET model_status='evaluated', fit_var=?, fit_pooled=?
+                WHERE model_id=?
+                """,
+                (json.dumps(mse_map), pooled_mse, model_id),
+            )
+            if cursor.rowcount == 0:
+                cursor.execute(
+                    """
+                    INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
+                    VALUES (?, ?, 'evaluated', ?, ?)
+                    """,
+                    (ifs_id, model_id, json.dumps(mse_map), pooled_mse),
+                )
 
         if pooled_mse is not None:
             log(
@@ -282,32 +390,41 @@ def main() -> int:
         else:
             log("success", "Pooled MSE across variables: None", file=str(metrics_path))
 
-        print(
-            json.dumps(
-                {
-                    "status": "success",
-                    "metrics_file": str(metrics_path),
-                    "pooled_mse": pooled_mse,
-                    "fit_metrics": fit_metrics,
-                }
-            ),
-            flush=True,
+        emit_stage_response(
+            "success",
+            "extract_compare",
+            "Model comparison complete.",
+            {"model_id": model_id, "fit_pooled": pooled_mse, "fit_var": mse_map},
         )
-
-    except Exception:
-        bc.execute(
-            """
-            INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-            VALUES (?, ?, 'error', NULL, NULL)
-            """,
-            (ifs_id, model_id),
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        with bp:
+            cursor = bp.cursor()
+            cursor.execute(
+                """
+                UPDATE model_output
+                SET model_status='error', fit_var=NULL, fit_pooled=NULL
+                WHERE model_id=?
+                """,
+                (model_id,),
+            )
+            if cursor.rowcount == 0:
+                cursor.execute(
+                    """
+                    INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
+                    VALUES (?, ?, 'error', NULL, NULL)
+                    """,
+                    (ifs_id, model_id),
+                )
+        emit_stage_response(
+            "error",
+            "extract_compare",
+            "Model comparison failed.",
+            {"model_id": model_id, "error": str(exc)},
         )
-        bp.commit()
-        raise
+        return 1
     finally:
         bp.close()
-
-    return 0
 
 
 if __name__ == "__main__":

@@ -15,7 +15,6 @@ import json
 import math
 import os
 import random
-import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -66,8 +65,33 @@ def hash_model_id(config_obj: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
-def ensure_dir(path: str | os.PathLike[str]) -> None:
-    os.makedirs(path, exist_ok=True)
+# Ensure BIGPOPA schema exists without introducing timestamp fields.
+def ensure_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_input (
+            ifs_id INTEGER,
+            model_id TEXT PRIMARY KEY,
+            input_param TEXT,
+            input_coef TEXT,
+            output_set TEXT,
+            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS model_output (
+            ifs_id INTEGER,
+            model_id TEXT PRIMARY KEY,
+            model_status TEXT,
+            fit_var TEXT,
+            fit_pooled REAL,
+            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id),
+            FOREIGN KEY (model_id) REFERENCES model_input(model_id)
+        )
+        """
+    )
 
 
 def _row_enabled(value: Any) -> bool:
@@ -157,6 +181,18 @@ def log(status: str, message: str, **kwargs: Any) -> None:
     payload: Dict[str, Any] = {"status": status, "message": message}
     if kwargs:
         payload.update(kwargs)
+    print(json.dumps(payload))
+    sys.stdout.flush()
+
+
+# Emit a structured response for Electron to consume after each stage.
+def emit_stage_response(status: str, stage: str, message: str, data: Dict[str, Any]) -> None:
+    payload = {
+        "status": status,
+        "stage": stage,
+        "message": message,
+        "data": data,
+    }
     print(json.dumps(payload))
     sys.stdout.flush()
 
@@ -546,6 +582,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             "Missing Working.run.db",
             database=str(working_run_db_path.resolve()),
         )
+        emit_stage_response(
+            "error",
+            "model_setup",
+            "Working.run.db was not found; cannot randomize parameters.",
+            {"working_run_db": str(working_run_db_path.resolve())},
+        )
         return 1
 
     input_path = Path(args.input_file)
@@ -554,6 +596,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             "error",
             "Missing StartingPointTable.xlsx",
             file=str(input_path.resolve()),
+        )
+        emit_stage_response(
+            "error",
+            "model_setup",
+            "StartingPointTable.xlsx was not found; aborting model setup.",
+            {"input_file": str(input_path.resolve())},
         )
         return 1
 
@@ -609,6 +657,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         log(
             "error",
             "Unable to determine forecast year for Working.sce.",
+        )
+        emit_stage_response(
+            "error",
+            "model_setup",
+            "Unable to determine forecast year for Working.sce.",
+            {},
         )
         return 1
 
@@ -901,132 +955,64 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     appended_variables = add_from_startingpoint(ifs_root, input_path, ifsv_df)
 
-    if output_root is not None and ifs_id is not None:
-        input_param = build_input_param_from_startingpoint(ifsv_df)
-        input_coef = build_input_coef_from_working_db(str(working_run_db_path))
-        output_set = build_output_set_from_ifsvartab(ifsv_df)
+    if output_root is None:
+        log(
+            "error",
+            "Output folder is required to persist BIGPOPA configuration",
+        )
+        emit_stage_response(
+            "error",
+            "model_setup",
+            "Output folder is required to persist BIGPOPA configuration.",
+            {"output_folder": args.output_folder},
+        )
+        return 1
 
-        config_obj = canonical_config(ifs_id, input_param, input_coef, output_set)
-        model_id = hash_model_id(config_obj)
+    if ifs_id is None:
+        log(
+            "error",
+            "Unable to determine ifs_id for configuration persistence",
+        )
+        emit_stage_response(
+            "error",
+            "model_setup",
+            "Unable to resolve ifs_id; configuration cannot be stored.",
+            {},
+        )
+        return 1
 
-        bigpopa_db_path = output_root / "bigpopa.db"
-        conn_bp = sqlite3.connect(str(bigpopa_db_path))
+    input_param = build_input_param_from_startingpoint(ifsv_df)
+    input_coef = build_input_coef_from_working_db(str(working_run_db_path))
+    output_set = build_output_set_from_ifsvartab(ifsv_df)
+
+    config_obj = canonical_config(ifs_id, input_param, input_coef, output_set)
+    model_id = hash_model_id(config_obj)
+
+    bigpopa_db_path = output_root / "bigpopa.db"
+    inserted = 0
+    conn_bp = sqlite3.connect(str(bigpopa_db_path))
+    try:
         cur_bp = conn_bp.cursor()
+        ensure_bigpopa_schema(cur_bp)
+        # Insert configuration row if it does not already exist.
         cur_bp.execute(
             """
-            CREATE TABLE IF NOT EXISTS model_input (
-                model_id TEXT PRIMARY KEY,
-                ifs_id INTEGER NOT NULL,
-                input_param TEXT,
-                input_coef TEXT,
-                output_set TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
+            INSERT OR IGNORE INTO model_input (
+                ifs_id, model_id, input_param, input_coef, output_set
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                ifs_id,
+                model_id,
+                json.dumps(input_param),
+                json.dumps(input_coef),
+                json.dumps(output_set),
+            ),
         )
-        cur_bp.execute(
-            """
-            CREATE TABLE IF NOT EXISTS model_output (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ifs_id INTEGER,
-                model_id TEXT NOT NULL,
-                model_status TEXT NOT NULL,
-                fit_var TEXT,
-                fit_pooled REAL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        try:
-            cur_bp.execute(
-                """
-                INSERT OR IGNORE INTO model_input (
-                    ifs_id, model_id, input_param, input_coef, output_set
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    ifs_id,
-                    model_id,
-                    json.dumps(input_param),
-                    json.dumps(input_coef),
-                    json.dumps(output_set),
-                ),
-            )
-            conn_bp.commit()
-
-            cur_bp.execute(
-                """
-                SELECT model_status, fit_var, fit_pooled
-                FROM model_output
-                WHERE model_id = ?
-                ORDER BY rowid DESC LIMIT 1
-                """,
-                (model_id,),
-            )
-            cached = cur_bp.fetchone()
-        finally:
-            conn_bp.close()
-
-        model_dir = output_root / model_id
-        ensure_dir(model_dir)
-
-        working_db_out = model_dir / f"Working.{model_id}.run.db"
-        working_sce_out = model_dir / f"Working.{model_id}.sce"
-        meta_json_out = model_dir / f"model_{model_id}.json"
-
-        if working_run_db_path.exists() and working_run_db_path != working_db_out:
-            shutil.copy2(working_run_db_path, working_db_out)
-        if working_sce_path.exists() and working_sce_path != working_sce_out:
-            shutil.copy2(working_sce_path, working_sce_out)
-
-        metadata_contents = {
-            "model_id": model_id,
-            "ifs_id": ifs_id,
-            "working_run_db": str(working_db_out),
-            "working_sce": str(working_sce_out),
-            "config": config_obj,
-            "sce_variables_appended": appended_variables,
-            "coefficients_updated": len(updates),
-        }
-        with meta_json_out.open("w", encoding="utf-8") as meta_handle:
-            json.dump(metadata_contents, meta_handle, indent=2)
-
-        if cached:
-            status, fit_var_json, fit_pooled = cached
-            print(
-                json.dumps(
-                    {
-                        "stage": "model_setup",
-                        "is_duplicate": True,
-                        "message": "Reusing cached results",
-                        "model_id": model_id,
-                        "ifs_id": ifs_id,
-                        "model_dir": str(model_dir),
-                        "output": {
-                            "model_status": status,
-                            "fit_var": json.loads(fit_var_json) if fit_var_json else None,
-                            "fit_pooled": fit_pooled,
-                        },
-                    }
-                )
-            )
-            return 0
-
-        print(
-            json.dumps(
-                {
-                    "stage": "model_setup",
-                    "is_duplicate": False,
-                    "message": "Model setup completed; ready to run IFs",
-                    "model_id": model_id,
-                    "ifs_id": ifs_id,
-                    "model_dir": str(model_dir),
-                    "working_run_db": str(working_db_out),
-                    "working_sce": str(working_sce_out),
-                }
-            )
-        )
-        return 0
+        inserted = cur_bp.rowcount
+        conn_bp.commit()
+    finally:
+        conn_bp.close()
 
     log(
         "success",
@@ -1034,6 +1020,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         updates=updates,
         sce_variables_appended=appended_variables,
         sce_file=str(working_sce_path.resolve()),
+        model_id=model_id,
+        ifs_id=ifs_id,
+        config_inserted=bool(inserted),
+    )
+
+    emit_stage_response(
+        "success",
+        "model_setup",
+        "Model setup completed; configuration stored in database.",
+        {"ifs_id": ifs_id, "model_id": model_id},
     )
     return 0
 
