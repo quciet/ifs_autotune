@@ -282,12 +282,29 @@ function runPythonScript(scriptName, args = []) {
         if (!trimmedStdout) {
           throw new Error('No stdout to parse');
         }
+
+        // Search for the last valid JSON line in the stdout
         const lines = trimmedStdout.split(/\r?\n/);
-        const lastLine = lines[lines.length - 1];
-        const result = JSON.parse(lastLine);
-        resolve(result);
+        let parsedResult = null;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          try {
+            parsedResult = JSON.parse(line);
+            break;
+          } catch {
+            continue; // skip non-JSON lines like "Year 2030"
+          }
+        }
+
+        if (parsedResult) {
+          resolve(parsedResult);
+        } else {
+          console.warn('[BIGPOPA] No JSON found in stdout. Returning raw log output.');
+          resolve({ status: 'raw_output', message: trimmedStdout });
+        }
       } catch (error) {
-        reject(new Error(`Failed to parse JSON output: ${stdout}`));
+        reject(new Error(`Failed to parse Python output safely: ${error.message}`));
       }
     });
   });
