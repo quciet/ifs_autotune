@@ -164,14 +164,14 @@ export async function validateIFsFolder({
   }
 }
 
-export type RunIFsParams = {
+export interface RunIFsParams {
   validatedPath: string;
   endYear: number;
-  baseYear: number | null | undefined;
+  baseYear?: number | null;
   outputDirectory: string;
-  modelId?: string | null;
-  ifsId?: number | null;
-};
+  modelId: string;
+  ifsId: number;
+}
 
 export type IFsProgressEvent = {
   year: number;
@@ -244,6 +244,13 @@ export async function runIFs({
     throw new StageError("run_ifs", "Electron bridge is unavailable.");
   }
 
+  const normalizedModelId = modelId.trim();
+  const normalizedIfsId = Number(ifsId);
+
+  if (!normalizedModelId || !Number.isFinite(normalizedIfsId)) {
+    throw new Error("Missing modelId or ifsId — runIFs cannot proceed.");
+  }
+
   try {
     const payload = await window.electron.invoke("run_ifs", {
       validatedPath,
@@ -253,8 +260,8 @@ export async function runIFs({
       end_year: endYear,
       base_year: baseYear ?? null,
       output_dir: outputDirectory,
-      modelId: typeof modelId === "string" ? modelId : null,
-      ifsId: typeof ifsId === "number" ? ifsId : null,
+      modelId: normalizedModelId,
+      ifsId: normalizedIfsId,
     });
     return normalizeStageResponse<"run_ifs", RunIFsData>(payload, "run_ifs");
   } catch (error) {
