@@ -174,7 +174,7 @@ def main() -> int:
             "debug",
             "Fetched existing model status",
             model_id=model_id,
-            status=existing_status_row[0] if existing_status_row else None,
+            existing_status=existing_status_row[0] if existing_status_row else None,
         )
         bp.commit()
     except sqlite3.Error as exc:
