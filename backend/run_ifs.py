@@ -30,35 +30,6 @@ def emit_stage_response(status: str, stage: str, message: str, data: Dict[str, o
     sys.stdout.flush()
 
 
-def ensure_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
-# Ensure BIGPOPA schema matches the hashed model workflow expectations.
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS model_input (
-            ifs_id INTEGER,
-            model_id TEXT PRIMARY KEY,
-            input_param TEXT,
-            input_coef TEXT,
-            output_set TEXT,
-            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id)
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS model_output (
-            ifs_id INTEGER,
-            model_id TEXT PRIMARY KEY,
-            model_status TEXT,
-            fit_var TEXT,
-            fit_pooled REAL,
-            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id),
-            FOREIGN KEY (model_id) REFERENCES model_input(model_id)
-        )
-        """
-    )
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Launch IFs with custom arguments.")
     parser.add_argument("--ifs-root", required=True, help="Path to the IFs installation root.")
@@ -137,7 +108,6 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with conn_bp:
                 cursor = conn_bp.cursor()
-                ensure_bigpopa_schema(cursor)
                 cursor.execute(
                     "SELECT 1 FROM model_input WHERE model_id = ?",
                     (model_id,),
