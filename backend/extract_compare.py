@@ -79,6 +79,9 @@ def main() -> int:
     parser.add_argument("--input-file", required=True, help="Path to StartingPointTable.xlsx")
     parser.add_argument("--model-id", required=True, help="Model ID string for output filenames")
     parser.add_argument("--ifs-id", required=True, type=int, help="IFs version identifier")
+    parser.add_argument(
+        "--bigpopa-db", required=False, help="Path to the BIGPOPA database."
+    )
     args = parser.parse_args()
 
     ifs_root = Path(args.ifs_root)
@@ -86,6 +89,7 @@ def main() -> int:
     input_file = Path(args.input_file)
     model_id = args.model_id
     ifs_id = args.ifs_id
+    bigpopa_override = Path(args.bigpopa_db).resolve() if args.bigpopa_db else None
 
     if not model_db.exists():
         log("error", "Model database not found", model_db=str(model_db))
@@ -127,12 +131,15 @@ def main() -> int:
         )
         return 1
 
-    # Locate the BIGPOPA database adjacent to the output folder.
-    if model_dir.parent.name.lower() == "output":
-        bigpopa_root = model_dir.parent.parent
+    # Locate the BIGPOPA database adjacent to the output folder unless overridden.
+    if bigpopa_override is not None:
+        bigpopa_db_path = bigpopa_override
     else:
-        bigpopa_root = model_dir.parent
-    bigpopa_db_path = bigpopa_root / "bigpopa.db"
+        if model_dir.parent.name.lower() == "output":
+            bigpopa_root = model_dir.parent.parent
+        else:
+            bigpopa_root = model_dir.parent
+        bigpopa_db_path = bigpopa_root / "bigpopa.db"
 
     if not bigpopa_db_path.exists():
         log("error", "BIGPOPA database missing", database=str(bigpopa_db_path))

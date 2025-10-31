@@ -282,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
                     {"input_file": input_file_path},
                 )
 
+            bigpopa_db_path = os.path.join(output_dir, "bigpopa.db")
+
             subprocess.run(
                 [
                     sys.executable,
@@ -296,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
                     model_id,
                     "--ifs-id",
                     str(ifs_id),
+                    "--bigpopa-db",
+                    bigpopa_db_path,
                 ],
                 check=True,
             )
