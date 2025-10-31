@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 
@@ -257,6 +258,71 @@ def main(argv: list[str] | None = None) -> int:
                 "run_folder": payload["model_folder"],
             },
         )
+
+        # === STEP 2: Automatically trigger extract_compare.py ===
+        try:
+            extract_compare_path = Path(__file__).resolve().parent / "extract_compare.py"
+            model_db_path = os.path.join(payload["model_folder"], f"Working.{model_id}.run.db")
+            input_file_path = os.path.join(output_dir, "StartingPointTable.xlsx")
+
+            if not os.path.exists(model_db_path):
+                emit_stage_response(
+                    "error",
+                    "extract_compare",
+                    f"Model run DB not found at {model_db_path}",
+                    {"model_id": model_id},
+                )
+                return 1
+
+            if not os.path.exists(input_file_path):
+                emit_stage_response(
+                    "warn",
+                    "extract_compare",
+                    f"Input StartingPointTable.xlsx not found in {output_dir}; proceeding with database-driven output_set.",
+                    {"input_file": input_file_path},
+                )
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(extract_compare_path),
+                    "--ifs-root",
+                    ifs_root,
+                    "--model-db",
+                    model_db_path,
+                    "--input-file",
+                    input_file_path,
+                    "--model-id",
+                    model_id,
+                    "--ifs-id",
+                    str(ifs_id),
+                ],
+                check=True,
+            )
+
+            emit_stage_response(
+                "success",
+                "extract_compare",
+                "Variable extraction and comparison completed.",
+                {"model_id": model_id, "ifs_id": ifs_id, "model_folder": payload["model_folder"]},
+            )
+        except subprocess.CalledProcessError as exc:
+            emit_stage_response(
+                "error",
+                "extract_compare",
+                f"extract_compare.py failed with return code {exc.returncode}",
+                {"model_id": model_id},
+            )
+            return 1
+        except Exception as exc:
+            emit_stage_response(
+                "error",
+                "extract_compare",
+                f"Unexpected error running extract_compare.py: {exc}",
+                {"model_id": model_id},
+            )
+            return 1
+
         return 0
     finally:
         conn_bp.close()
