@@ -134,132 +134,133 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        with conn_bp:
-            cursor = conn_bp.cursor()
-            ensure_bigpopa_schema(cursor)
-            cursor.execute(
-                "SELECT 1 FROM model_input WHERE model_id = ?",
-                (model_id,),
-            )
-            if cursor.fetchone() is None:
-                emit_stage_response(
-                    "error",
-                    "run_ifs",
-                    "Model configuration not found in BIGPOPA database.",
-                    {"model_id": model_id},
+        try:
+            with conn_bp:
+                cursor = conn_bp.cursor()
+                ensure_bigpopa_schema(cursor)
+                cursor.execute(
+                    "SELECT 1 FROM model_input WHERE model_id = ?",
+                    (model_id,),
                 )
-                return 1
+                if cursor.fetchone() is None:
+                    emit_stage_response(
+                        "error",
+                        "run_ifs",
+                        "Model configuration not found in BIGPOPA database.",
+                        {"model_id": model_id},
+                    )
+                    return 1
 
-        process = subprocess.Popen(
-            command,
-            cwd=working_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-    except Exception as exc:  # pragma: no cover - surface unexpected spawn errors
-        emit_stage_response(
-            "error",
-            "run_ifs",
-            "Failed to launch IFs executable.",
-            {"error": str(exc)},
-        )
-        return 1
+            process = subprocess.Popen(
+                command,
+                cwd=working_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except Exception as exc:  # pragma: no cover - surface unexpected spawn errors
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                "Failed to launch IFs executable.",
+                {"error": str(exc)},
+            )
+            return 1
 
-    assert process.stdout is not None  # for the type checker
-    try:
-        for raw_line in process.stdout:
-            # Re-emit the IFs output so the desktop shell can relay progress updates
-            # to the UI in real time.
-            sys.stdout.write(raw_line)
-            sys.stdout.flush()
-    finally:
-        process.stdout.close()
+        assert process.stdout is not None  # for the type checker
+        try:
+            for raw_line in process.stdout:
+                # Re-emit the IFs output so the desktop shell can relay progress updates
+                # to the UI in real time.
+                sys.stdout.write(raw_line)
+                sys.stdout.flush()
+        finally:
+            process.stdout.close()
 
-    return_code = process.wait()
+        return_code = process.wait()
 
-    if return_code != 0:
-        emit_stage_response(
-            "error",
-            "run_ifs",
-            f"IFs exited with code {return_code}.",
-            {"return_code": return_code},
-        )
-        return 1
+        if return_code != 0:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                f"IFs exited with code {return_code}.",
+                {"return_code": return_code},
+            )
+            return 1
 
-    try:
-        end_year, w_gdp = _read_progress_summary(progress_path)
-    except FileNotFoundError:
-        emit_stage_response(
-            "error",
-            "run_ifs",
-            "progress.txt was not found after the IFs run finished.",
-            {"progress_path": progress_path},
-        )
-        return 1
-    except ValueError as exc:
-        emit_stage_response(
-            "error",
-            "run_ifs",
-            str(exc),
-            {},
-        )
-        return 1
+        try:
+            end_year, w_gdp = _read_progress_summary(progress_path)
+        except FileNotFoundError:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                "progress.txt was not found after the IFs run finished.",
+                {"progress_path": progress_path},
+            )
+            return 1
+        except ValueError as exc:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                str(exc),
+                {},
+            )
+            return 1
 
-    if end_year != args.end_year:
-        emit_stage_response(
-            "error",
-            "run_ifs",
-            f"Progress file reports end year {end_year}, expected {args.end_year}.",
-            {"reported_end_year": end_year, "expected_end_year": args.end_year},
-        )
-        return 1
+        if end_year != args.end_year:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                f"Progress file reports end year {end_year}, expected {args.end_year}.",
+                {"reported_end_year": end_year, "expected_end_year": args.end_year},
+            )
+            return 1
 
-    try:
-        payload = _prepare_run_artifacts(
-            ifs_root=ifs_root,
-            output_dir=output_dir,
-            base_year=base_year,
-            end_year=end_year,
-            w_gdp=w_gdp,
-            model_id=model_id,
-        )
-    except FileNotFoundError:
-        emit_stage_response(
-            "error",
-            "run_ifs",
-            "Working.run.db was not found after the IFs run finished.",
-            {"working_run_db": os.path.join(ifs_root, "RUNFILES", "Working.run.db")},
-        )
-        return 1
-    except OSError as exc:
-        emit_stage_response(
-            "error",
-            "run_ifs",
-            str(exc),
-            {},
-        )
-        return 1
+        try:
+            payload = _prepare_run_artifacts(
+                ifs_root=ifs_root,
+                output_dir=output_dir,
+                base_year=base_year,
+                end_year=end_year,
+                w_gdp=w_gdp,
+                model_id=model_id,
+            )
+        except FileNotFoundError:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                "Working.run.db was not found after the IFs run finished.",
+                {"working_run_db": os.path.join(ifs_root, "RUNFILES", "Working.run.db")},
+            )
+            return 1
+        except OSError as exc:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                str(exc),
+                {},
+            )
+            return 1
 
-    try:
-        _reset_working_database(ifs_root)
-    except FileNotFoundError as exc:
-        emit_stage_response(
-            "error",
-            "run_ifs",
-            f"Unable to reset working database: {exc}",
-            {},
-        )
-        return 1
-    except OSError as exc:
-        emit_stage_response(
-            "error",
-            "run_ifs",
-            str(exc),
-            {},
-        )
-        return 1
+        try:
+            _reset_working_database(ifs_root)
+        except FileNotFoundError as exc:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                f"Unable to reset working database: {exc}",
+                {},
+            )
+            return 1
+        except OSError as exc:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                str(exc),
+                {},
+            )
+            return 1
 
         with conn_bp:
             cursor = conn_bp.cursor()
@@ -310,7 +311,7 @@ def _prepare_run_artifacts(
     if not os.path.exists(source_sce):
         raise FileNotFoundError(source_sce)
 
-    model_dir = os.path.join(output_dir, "output", model_id)
+    model_dir = os.path.join(output_dir, model_id)
     os.makedirs(model_dir, exist_ok=True)
 
     destination_db = os.path.join(model_dir, f"Working.{model_id}.run.db")
