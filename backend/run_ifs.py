@@ -279,8 +279,6 @@ def main(argv: list[str] | None = None) -> int:
             found_pairs = 0
 
             try:
-                import sqlite3, json
-
                 with sqlite3.connect(bigpopa_db_path) as conn:
                     cur = conn.cursor()
                     cur.execute(
@@ -305,11 +303,19 @@ def main(argv: list[str] | None = None) -> int:
                             {"bigpopa_db": bigpopa_db_path},
                         )
                         return 1
+            except sqlite3.Error as exc:
+                emit_stage_response(
+                    "error",
+                    "extract_compare",
+                    f"Database error while reading output_set: {exc}",
+                    {"bigpopa_db": bigpopa_db_path},
+                )
+                return 1
             except Exception as exc:
                 emit_stage_response(
                     "error",
                     "extract_compare",
-                    f"Failed to read output_set from model_input: {exc}",
+                    f"Unexpected error while reading output_set: {exc}",
                     {"bigpopa_db": bigpopa_db_path},
                 )
                 return 1
