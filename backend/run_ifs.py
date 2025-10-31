@@ -274,15 +274,45 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
 
-            if not os.path.exists(input_file_path):
-                emit_stage_response(
-                    "warn",
-                    "extract_compare",
-                    f"Input StartingPointTable.xlsx not found in {output_dir}; proceeding with database-driven output_set.",
-                    {"input_file": input_file_path},
-                )
-
+            # === Verify output_set exists in BIGPOPA database ===
             bigpopa_db_path = os.path.join(output_dir, "bigpopa.db")
+            found_pairs = 0
+
+            try:
+                import sqlite3, json
+
+                with sqlite3.connect(bigpopa_db_path) as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT output_set FROM model_input WHERE model_id = ?",
+                        (model_id,),
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        output_set = json.loads(row[0])
+                        found_pairs = len(output_set)
+                        emit_stage_response(
+                            "info",
+                            "extract_compare",
+                            f"Located {found_pairs} var:hist pairs in model_input.output_set for model_id={model_id}.",
+                            {"bigpopa_db": bigpopa_db_path, "output_set_size": found_pairs},
+                        )
+                    else:
+                        emit_stage_response(
+                            "error",
+                            "extract_compare",
+                            f"No output_set found for model_id={model_id}; cannot continue extraction.",
+                            {"bigpopa_db": bigpopa_db_path},
+                        )
+                        return 1
+            except Exception as exc:
+                emit_stage_response(
+                    "error",
+                    "extract_compare",
+                    f"Failed to read output_set from model_input: {exc}",
+                    {"bigpopa_db": bigpopa_db_path},
+                )
+                return 1
 
             subprocess.run(
                 [
