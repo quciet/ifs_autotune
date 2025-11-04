@@ -121,6 +121,27 @@ function TuneIFsPage({
     });
   };
 
+  const resolveSuccessMessage = (
+    stage: ApiStage,
+    message: unknown,
+  ): string => {
+    const trimmed = typeof message === "string" ? message.trim() : "";
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+
+    switch (stage) {
+      case "model_setup":
+        return "Model setup completed successfully.";
+      case "run_ifs":
+        return "IFs run completed successfully.";
+      case "extract_compare":
+        return "Variable extraction and comparison completed successfully.";
+      default:
+        return "Operation completed successfully.";
+    }
+  };
+
   const updateStageStatus = (
     stage: ApiStage,
     level: StatusLevel,
@@ -402,7 +423,11 @@ function TuneIFsPage({
       });
 
       setModelSetupResult(response.data);
-      updateStageStatus(response.stage, "success", response.message);
+      const successMessage = resolveSuccessMessage(
+        response.stage,
+        response.message,
+      );
+      updateStageStatus(response.stage, "success", successMessage);
       setError(null);
     } catch (err) {
       const { stage, message } = resolveStageError(err, "model_setup");
@@ -465,7 +490,11 @@ function TuneIFsPage({
 
       setError(null);
       setRunResult(response.data);
-      updateStageStatus(response.stage, "success", response.message);
+      const successMessage = resolveSuccessMessage(
+        response.stage,
+        response.message,
+      );
+      updateStageStatus(response.stage, "success", successMessage);
 
       const endYearFromResponse =
         typeof response.data.end_year === "number"
@@ -537,7 +566,11 @@ function TuneIFsPage({
       });
 
       setExtractResult(response.data);
-      updateStageStatus(response.stage, "success", response.message);
+      const successMessage = resolveSuccessMessage(
+        response.stage,
+        response.message,
+      );
+      updateStageStatus(response.stage, "success", successMessage);
       setError(null);
     } catch (err) {
       const { stage, message } = resolveStageError(err, "extract_compare");
