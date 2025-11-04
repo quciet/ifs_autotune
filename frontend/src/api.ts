@@ -78,10 +78,15 @@ type RawStageResponse = {
   data?: unknown;
 };
 
-function normalizeStageResponse<TStage extends ApiStage, TData>(
+function normalizeStageResponse<
+  TExpected extends ApiStage,
+  TAllowed extends ApiStage,
+  TData,
+>(
   raw: unknown,
-  expectedStage: TStage,
-): StageSuccess<TStage, TData> {
+  expectedStage: TExpected,
+  allowedStages: TAllowed[] = [],
+): StageSuccess<TExpected | TAllowed, TData> {
   if (!raw || typeof raw !== "object") {
     throw new StageError(
       expectedStage,
@@ -103,7 +108,9 @@ function normalizeStageResponse<TStage extends ApiStage, TData>(
     throw new StageError(stageName, message);
   }
 
-  if (stageName !== expectedStage) {
+  const validStages = new Set<ApiStage>([expectedStage, ...allowedStages]);
+
+  if (!validStages.has(stageName)) {
     throw new StageError(
       expectedStage,
       `Unexpected stage "${stageName}" returned from backend.`,
@@ -119,7 +126,7 @@ function normalizeStageResponse<TStage extends ApiStage, TData>(
 
   return {
     status: "success",
-    stage: expectedStage,
+    stage: stageName as TExpected | TAllowed,
     message,
     data: typed.data as TData,
   };
@@ -221,10 +228,7 @@ export async function modelSetup({
       outputFolder: outputFolder ?? null,
     };
     const result = await window.electron.invoke("model_setup", payload);
-    return normalizeStageResponse<"model_setup", ModelSetupData>(
-      result,
-      "model_setup",
-    );
+    return normalizeStageResponse(result, "model_setup");
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to complete model setup.";
@@ -239,7 +243,9 @@ export async function runIFs({
   outputDirectory,
   modelId,
   ifsId,
-}: RunIFsParams): Promise<StageSuccess<"run_ifs", RunIFsData>> {
+}: RunIFsParams): Promise<
+  StageSuccess<"run_ifs" | "extract_compare", RunIFsData>
+> {
   if (!window.electron?.invoke) {
     throw new StageError("run_ifs", "Electron bridge is unavailable.");
   }
@@ -263,7 +269,7 @@ export async function runIFs({
       modelId: normalizedModelId,
       ifsId: normalizedIfsId,
     });
-    return normalizeStageResponse<"run_ifs", RunIFsData>(payload, "run_ifs");
+    return normalizeStageResponse(payload, "run_ifs", ["extract_compare"]);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to start the IFs run.";
@@ -292,10 +298,7 @@ export async function extractCompare({
       modelId,
       ifsId,
     });
-    return normalizeStageResponse<"extract_compare", ExtractCompareData>(
-      response,
-      "extract_compare",
-    );
+    return normalizeStageResponse(response, "extract_compare");
   } catch (error) {
     const message =
       error instanceof Error
