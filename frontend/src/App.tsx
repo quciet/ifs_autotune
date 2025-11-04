@@ -489,24 +489,35 @@ function TuneIFsPage({
       });
 
       setError(null);
-      setRunResult(response.data);
+
       const successMessage = resolveSuccessMessage(
         response.stage,
         response.message,
       );
-      updateStageStatus(response.stage, "success", successMessage);
 
-      const endYearFromResponse =
-        typeof response.data.end_year === "number"
-          ? response.data.end_year
-          : clampedEndYear;
-      setProgressYear(endYearFromResponse);
-      setProgressPercent(100);
-      targetEndYearRef.current = endYearFromResponse;
+      if (response.stage === "run_ifs") {
+        setRunResult(response.data);
+        updateStageStatus("run_ifs", "success", successMessage);
 
-      if (typeof response.data.base_year === "number") {
-        baseYearRef.current = response.data.base_year;
-        setEffectiveBaseYear(response.data.base_year);
+        const endYearFromResponse =
+          typeof response.data.end_year === "number"
+            ? response.data.end_year
+            : clampedEndYear;
+        setProgressYear(endYearFromResponse);
+        setProgressPercent(100);
+        targetEndYearRef.current = endYearFromResponse;
+
+        if (typeof response.data.base_year === "number") {
+          baseYearRef.current = response.data.base_year;
+          setEffectiveBaseYear(response.data.base_year);
+        }
+      } else if (response.stage === "extract_compare") {
+        updateStageStatus("extract_compare", "success", successMessage);
+      } else {
+        console.warn(
+          `[${response.stage}] Unexpected stage returned from backend.`,
+        );
+        updateStageStatus(response.stage, "success", successMessage);
       }
     } catch (err) {
       const { stage, message } = resolveStageError(err, "run_ifs");
