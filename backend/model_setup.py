@@ -790,10 +790,23 @@ def main(argv: Optional[list[str]] = None) -> int:
             continue
 
         rows_considered += 1
+        # IMPORTANT DOMAIN RULE – DO NOT CHANGE:
+        # StartingPointTable selection rule:
+        #   Only NON-ZERO numeric values indicate that a coefficient is active.
+        #   Zero means “off”, identical to blank.
+        #   This rule is REQUIRED by BIGPOPA’s active learning pipeline.
+        #   Do NOT treat 0 as a valid value.
         for coef_name in COEFFICIENT_COLUMNS:
             raw_value = _normalize_number(row.get(coef_name))
-            if raw_value is None:
+
+            # Explicit BIGPOPA rule:
+            # - Blank or missing → ignore
+            # - 0 or 0.0 → ignore
+            # - Non-zero numeric → SELECT the coefficient
+            if raw_value is None or raw_value == 0.0:
                 continue
+
+            # Only non-zero coefficients are included
             input_coef.setdefault(func_name, {}).setdefault(x_var, {}).setdefault(coef_name, None)
 
     if output_root is None:
