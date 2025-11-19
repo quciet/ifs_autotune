@@ -1,9 +1,8 @@
-"""Randomize IFs regression coefficients based on a starting point table.
+"""Prepare BIGPOPA model input based on a starting point table.
 
 This script is invoked by the desktop shell as part of the "Model Setup"
 process. It reads coefficients from ``StartingPointTable.xlsx`` (``TablFunc``
-and ``AnalFunc`` sheets) and updates the corresponding entries in
-``RUNFILES/Working.run.db``.
+and ``AnalFunc`` sheets) and records the configuration in ``bigpopa.db``.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import os
 import random
 import sqlite3
 import sys
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -580,18 +580,18 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     ifs_root = Path(args.ifs_root)
     output_root: Optional[Path] = Path(args.output_folder).resolve() if args.output_folder else None
-    working_run_db_path = ifs_root / "RUNFILES" / "Working.run.db"
-    if not working_run_db_path.exists():
+    base_run_db_path = ifs_root / "RUNFILES" / "IFsBase.run.db"
+    if not base_run_db_path.exists():
         log(
             "error",
-            "Missing Working.run.db",
-            database=str(working_run_db_path.resolve()),
+            "Missing IFsBase.run.db",
+            database=str(base_run_db_path.resolve()),
         )
         emit_stage_response(
             "error",
             "model_setup",
-            "Working.run.db was not found; cannot randomize parameters.",
-            {"working_run_db": str(working_run_db_path.resolve())},
+            "IFsBase.run.db was not found; cannot proceed with baseline extraction.",
+            {"base_run_db": str(base_run_db_path.resolve())},
         )
         return 1
 
@@ -656,7 +656,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         base_year = existing_years[0]
 
     if base_year is None:
-        base_year = _infer_base_year_from_db(working_run_db_path)
+        base_year = _infer_base_year_from_db(base_run_db_path)
 
     if forecast_year is None:
         log(
@@ -725,9 +725,6 @@ def main(argv: Optional[list[str]] = None) -> int:
             base_year=base_year,
         )
 
-    log("info", "Creating Working.sce for parameters")
-    working_sce_path = create_working_sce(ifs_root)
-
     sheet_order = ["TablFunc", "AnalFunc"]
     log("debug", "Listing Excel sheets to process", sheets=sheet_order)
     sheets = []
@@ -775,194 +772,29 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     updates: List[Dict[str, Any]] = []
     rows_considered = 0
-    rows_matched = 0
-    coefs_updated = 0
+    input_coef: Dict[str, Dict[str, Dict[str, float]]] = {}
 
-    input_coef_used: Dict[str, Dict[str, Dict[str, float]]] = {}
+    for row in collected_rows:
+        func_name = str(row.get("Function Name") or "").strip()
+        x_var = str(row.get("XVariable") or "").strip()
+        y_var = str(row.get("YVariable") or "").strip()
 
-    try:
-        log(
-            "info",
-            "Connecting to Working.run.db",
-            database=str(working_run_db_path.resolve()),
-        )
-        conn = sqlite3.connect(str(working_run_db_path))
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [row[0] for row in cursor.fetchall()]
-        log("debug", "Tables found in database", tables=tables)
-
-        for table in tables:
-            try:
-                cursor.execute(f"PRAGMA table_info(\"{table}\")")
-            except sqlite3.Error as exc:
-                log(
-                    "warn",
-                    "Failed to inspect table columns",
-                    table=table,
-                    error=str(exc),
-                )
-                continue
-            columns = [column_row[1] for column_row in cursor.fetchall()]
+        if not (func_name and x_var and y_var):
             log(
-                "debug",
-                "Columns found in table",
-                table=table,
-                columns=columns,
-            )
-
-        log("info", "Updating coefficients in Working.run.db")
-
-        intercept_cache: Dict[Tuple[str, str], float] = {}
-
-        for row in collected_rows:
-            func_name = str(row.get("Function Name") or "").strip()
-            x_var = str(row.get("XVariable") or "").strip()
-            y_var = str(row.get("YVariable") or "").strip()
-
-            if not (func_name and x_var and y_var):
-                log(
-                    "warn",
-                    "Skipping row with missing identifiers",
-                    func=func_name,
-                    xvar=x_var,
-                    yvar=y_var,
-                )
-                continue
-
-            rows_considered += 1
-
-            log(
-                "debug",
-                "Processing regression row",
+                "warn",
+                "Skipping row with missing identifiers",
                 func=func_name,
                 xvar=x_var,
                 yvar=y_var,
             )
+            continue
 
-            cursor.execute(
-                "SELECT Seq FROM ifs_reg WHERE UPPER(Name)=UPPER(?) AND UPPER(InputName)=UPPER(?) AND UPPER(OutputName)=UPPER(?)",
-                (func_name, x_var, y_var),
-            )
-            seq_row = cursor.fetchone()
-
-            if not seq_row:
-                log(
-                    "warn",
-                    "No match in ifs_reg",
-                    func=func_name,
-                    xvar=x_var,
-                    yvar=y_var,
-                )
+        rows_considered += 1
+        for coef_name in COEFFICIENT_COLUMNS:
+            raw_value = _normalize_number(row.get(coef_name))
+            if raw_value is None:
                 continue
-
-            seq = seq_row[0]
-            log(
-                "debug",
-                "Found Seq",
-                func=func_name,
-                xvar=x_var,
-                yvar=y_var,
-                seq=seq,
-            )
-            rows_matched += 1
-
-            for coef_name in COEFFICIENT_COLUMNS:
-                raw_value = _normalize_number(row.get(coef_name))
-                if raw_value is None:
-                    continue
-
-                cursor.execute(
-                    "SELECT Value FROM ifs_reg_coeff WHERE RegressionName=? AND RegressionSeq=? AND Name=?",
-                    (func_name, seq, coef_name),
-                )
-                existing = cursor.fetchone()
-                if existing is None:
-                    log(
-                        "warn",
-                        "Missing coefficient row",
-                        func=func_name,
-                        seq=seq,
-                        coef=coef_name,
-                    )
-                    continue
-
-                if coef_name == "a":
-                    is_anal_func = str(row.get("SourceSheet", "")).lower() == "analfunc"
-                    key = (func_name, y_var)
-                    if is_anal_func:
-                        if key in intercept_cache:
-                            new_value = intercept_cache[key]
-                        else:
-                            new_value = _randomize_intercept(raw_value)
-                            intercept_cache[key] = new_value
-                    else:
-                        new_value = _randomize_intercept(raw_value)
-                else:
-                    randomized = _randomize_slope(raw_value)
-                    if randomized is None:
-                        continue
-                    new_value = randomized
-
-                log(
-                    "debug",
-                    "Updating coefficient",
-                    func=func_name,
-                    seq=seq,
-                    coef=coef_name,
-                    new_value=float(new_value),
-                )
-                cursor.execute(
-                    "UPDATE ifs_reg_coeff SET Value=? WHERE RegressionName=? AND RegressionSeq=? AND Name=?",
-                    (float(new_value), func_name, seq, coef_name),
-                )
-                input_coef_used.setdefault(func_name, {}).setdefault(x_var, {})[coef_name] = float(new_value)
-                coefs_updated += 1
-                log(
-                    "debug",
-                    "Updated regression coefficient",
-                    function=func_name,
-                    seq=seq,
-                    coefficient=coef_name,
-                    x_variable=x_var,
-                    y_variable=y_var,
-                    old=float(existing[0]),
-                    new=float(new_value),
-                )
-                updates.append(
-                    {
-                        "Function": func_name,
-                        "XVariable": x_var,
-                        "YVariable": y_var,
-                        "Seq": seq,
-                        "Coefficient": coef_name,
-                        "OldValue": float(existing[0]),
-                        "NewValue": float(new_value),
-                    }
-                )
-
-        conn.commit()
-        log(
-            "info",
-            "Committed coefficient updates",
-            total_updates=len(updates),
-        )
-        log(
-            "info",
-            "Summary",
-            rows_considered=rows_considered,
-            rows_matched=rows_matched,
-            coefs_updated=coefs_updated,
-        )
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    input_param_used: Dict[str, float] = {}
-    appended_variables, input_param_used = add_from_startingpoint(ifs_root, input_path, ifsv_df)
+            input_coef.setdefault(func_name, {}).setdefault(x_var, {}).setdefault(coef_name, None)
 
     if output_root is None:
         log(
@@ -977,7 +809,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 1
 
-    if ifs_id is None:
+    if ifs_id is None or version_payload is None:
         log(
             "error",
             "Unable to determine ifs_id for configuration persistence",
@@ -990,8 +822,77 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
         return 1
 
-    input_param = input_param_used
-    input_coef = input_coef_used
+    ifs_static_id = version_payload.get("ifs_static_id") if version_payload else None
+    if ifs_static_id is None:
+        log(
+            "error",
+            "Unable to resolve ifs_static_id for default retrieval",
+        )
+        emit_stage_response(
+            "error",
+            "model_setup",
+            "Unable to resolve ifs_static_id; configuration cannot be stored.",
+            {},
+        )
+        return 1
+
+    bigpopa_db_path = output_root / "bigpopa.db"
+
+    input_param_raw = build_input_param_from_startingpoint(ifsv_df)
+    enabled_param_names = list(input_param_raw.keys())
+    input_param: Dict[str, Any] = {}
+    input_coef_defaults: Dict[str, Dict[str, Dict[str, float]]] = {}
+
+    try:
+        conn_bp = sqlite3.connect(str(bigpopa_db_path))
+        cursor = conn_bp.cursor()
+        ensure_bigpopa_schema(cursor)
+
+        for param_name in enabled_param_names:
+            cursor.execute(
+                """
+                SELECT param_default
+                FROM parameter
+                WHERE ifs_static_id = ? AND LOWER(param_name) = LOWER(?)
+                LIMIT 1
+                """,
+                (ifs_static_id, param_name),
+            )
+            row = cursor.fetchone()
+            if row and row[0] is not None:
+                input_param[param_name] = float(row[0])
+            elif param_name in input_param_raw:
+                input_param[param_name] = input_param_raw[param_name]
+
+        for func_name, x_map in input_coef.items():
+            for x_var, coef_map in x_map.items():
+                for coef_name in list(coef_map.keys()):
+                    cursor.execute(
+                        """
+                        SELECT beta_default
+                        FROM coefficient
+                        WHERE ifs_static_id = ?
+                          AND LOWER(function_name) = LOWER(?)
+                          AND LOWER(x_name) = LOWER(?)
+                          AND LOWER(beta_name) = LOWER(?)
+                        ORDER BY reg_seq ASC
+                        LIMIT 1
+                        """,
+                        (ifs_static_id, func_name, x_var, coef_name),
+                    )
+                    row = cursor.fetchone()
+                    if row and row[0] is not None:
+                        input_coef_defaults.setdefault(func_name, {}).setdefault(x_var, {})[
+                            coef_name
+                        ] = float(row[0])
+        conn_bp.commit()
+    finally:
+        try:
+            conn_bp.close()
+        except Exception:
+            pass
+
+    input_coef = input_coef_defaults
 
     # Extract output_set mapping (Variable → Table) from DataDict sheet
     try:
@@ -1009,8 +910,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     config_obj = canonical_config(ifs_id, input_param, input_coef, output_set)
     model_id = hash_model_id(config_obj)
+    output_dir = output_root / model_id
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    bigpopa_db_path = output_root / "bigpopa.db"
     inserted = 0
     conn_bp = sqlite3.connect(str(bigpopa_db_path))
     try:
@@ -1036,15 +938,43 @@ def main(argv: Optional[list[str]] = None) -> int:
     finally:
         conn_bp.close()
 
+    extract_compare_path = Path(__file__).resolve().with_name("extract_compare.py")
+    extract_args = [
+        sys.executable,
+        str(extract_compare_path),
+        "--ifs-root",
+        str(ifs_root),
+        "--model-db",
+        str(base_run_db_path),
+        "--input-file",
+        str(input_path),
+        "--model-id",
+        model_id,
+        "--ifs-id",
+        str(ifs_id),
+        "--bigpopa-db",
+        str(bigpopa_db_path),
+        "--output-dir",
+        str(output_dir),
+    ]
+
+    extract_return = None
+    try:
+        extract_proc = subprocess.run(extract_args, check=False)
+        extract_return = extract_proc.returncode
+    except Exception as exc:  # noqa: BLE001
+        log("warn", "Failed to execute extract_compare", error=str(exc))
+
     log(
         "success",
         "Model Setup completed successfully",
         updates=updates,
-        sce_variables_appended=appended_variables,
-        sce_file=str(working_sce_path.resolve()),
+        sce_variables_appended=0,
+        sce_file=str(existing_sce_path.resolve()),
         model_id=model_id,
         ifs_id=ifs_id,
         config_inserted=bool(inserted),
+        extract_return=extract_return,
     )
 
     emit_stage_response(
@@ -1053,7 +983,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "Model setup completed; configuration stored in database.",
         {"ifs_id": ifs_id, "model_id": model_id},
     )
-    return 0
+    return 0 if extract_return in (None, 0) else int(extract_return)
 
 
 if __name__ == "__main__":

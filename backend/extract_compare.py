@@ -82,6 +82,11 @@ def main() -> int:
     parser.add_argument(
         "--bigpopa-db", required=False, help="Path to the BIGPOPA database."
     )
+    parser.add_argument(
+        "--output-dir",
+        required=False,
+        help="Override output directory for extracted artifacts.",
+    )
     args = parser.parse_args()
 
     ifs_root = Path(args.ifs_root)
@@ -90,6 +95,7 @@ def main() -> int:
     model_id = args.model_id
     ifs_id = args.ifs_id
     bigpopa_override = Path(args.bigpopa_db).resolve() if args.bigpopa_db else None
+    override_output = Path(args.output_dir).resolve() if args.output_dir else None
 
     if not model_db.exists():
         log("error", "Model database not found", model_db=str(model_db))
@@ -101,27 +107,33 @@ def main() -> int:
         )
         return 1
 
-    model_dir = model_db.parent
-    if model_dir.name != model_id:
-        alternate_dir = model_dir / model_id
-        if alternate_dir.exists():
-            model_dir = alternate_dir
-        else:
-            log(
-                "error",
-                "Model directory mismatch",
-                expected=model_id,
-                actual=str(model_dir),
-            )
-            emit_stage_response(
-                "error",
-                "extract_compare",
-                "Model directory does not match the provided model_id.",
-                {"model_id": model_id, "model_dir": str(model_dir)},
-            )
-            return 1
+    model_dir = override_output if override_output else model_db.parent
+    is_baseline = model_db.name.lower() == "ifsbase.run.db"
 
-    if not model_dir.exists():
+    if override_output:
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+    if not is_baseline and not override_output:
+        if model_dir.name != model_id:
+            alternate_dir = model_dir / model_id
+            if alternate_dir.exists():
+                model_dir = alternate_dir
+            else:
+                log(
+                    "error",
+                    "Model directory mismatch",
+                    expected=model_id,
+                    actual=str(model_dir),
+                )
+                emit_stage_response(
+                    "error",
+                    "extract_compare",
+                    "Model directory does not match the provided model_id.",
+                    {"model_id": model_id, "model_dir": str(model_dir)},
+                )
+                return 1
+
+    if not is_baseline and not model_dir.exists():
         log("error", "Model output folder missing", folder=str(model_dir))
         emit_stage_response(
             "error",
