@@ -851,8 +851,6 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     bigpopa_db_path = output_root / "bigpopa.db"
 
-    input_param_raw = build_input_param_from_startingpoint(ifsv_df)
-    enabled_param_names = list(input_param_raw.keys())
     input_param: Dict[str, Any] = {}
     input_coef_defaults: Dict[str, Dict[str, Dict[str, float]]] = {}
 
@@ -861,21 +859,49 @@ def main(argv: Optional[list[str]] = None) -> int:
         cursor = conn_bp.cursor()
         ensure_bigpopa_schema(cursor)
 
-        for param_name in enabled_param_names:
-            cursor.execute(
-                """
-                SELECT param_default
-                FROM parameter
-                WHERE ifs_static_id = ? AND LOWER(param_name) = LOWER(?)
-                LIMIT 1
-                """,
-                (ifs_static_id, param_name),
+        # ---------------------------
+        # FIXED PARAMETER SELECTION
+        # ---------------------------
+
+        # Verify required IFsVar structure
+        if "Switch" not in ifsv_df.columns or "Name" not in ifsv_df.columns:
+            raise ValueError(
+                "IFsVar sheet must contain columns 'Switch' and 'Name'. "
+                "These identifiers are fixed and must not be changed."
             )
-            row = cursor.fetchone()
-            if row and row[0] is not None:
-                input_param[param_name] = float(row[0])
-            elif param_name in input_param_raw:
-                input_param[param_name] = input_param_raw[param_name]
+
+        # Select only parameters where Switch == 1
+        selected_rows = ifsv_df[ifsv_df["Switch"] == 1].copy()
+
+        input_param = {}
+
+        if len(selected_rows) > 0:
+            enabled_param_names = (
+                selected_rows["Name"]
+                .astype(str)
+                .str.strip()
+                .tolist()
+            )
+
+            for param_name in enabled_param_names:
+                cursor.execute(
+                    """
+                    SELECT param_default
+                    FROM parameter
+                    WHERE ifs_static_id = ?
+                      AND LOWER(param_name) = LOWER(?)
+                    LIMIT 1
+                    """,
+                    (ifs_static_id, param_name),
+                )
+                row = cursor.fetchone()
+                if row and row[0] is not None:
+                    input_param[param_name] = float(row[0])
+                else:
+                    raise ValueError(
+                        f"Parameter '{param_name}' was selected in IFsVar "
+                        f"but no matching entry was found in bigpopa.db.parameter."
+                    )
 
         for func_name, x_map in input_coef.items():
             for x_var, coef_map in x_map.items():
