@@ -7,19 +7,17 @@ import {
   useState,
 } from "react";
 import {
-  extractCompare,
   modelSetup,
-  runIFs,
+  runML,
   subscribeToIFsProgress,
   validateIFsFolder,
   StageError,
   type ApiStage,
   type ApiStatus,
   type CheckResponse,
-  type ExtractCompareData,
   type IFsProgressEvent,
   type ModelSetupData,
-  type RunIFsData,
+  type MLDriverData,
 } from "./api";
 
 const REQUIRED_INPUT_SHEETS = ["AnalFunc", "TablFunc", "IFsVar", "DataDict"];
@@ -88,19 +86,16 @@ function TuneIFsPage({
   const [endYear, setEndYear] = useState<number>(DEFAULT_END_YEAR);
   const [running, setRunning] = useState(false);
   const [modelSetupRunning, setModelSetupRunning] = useState(false);
-  const [extracting, setExtracting] = useState(false);
   const [modelSetupResult, setModelSetupResult] =
     useState<ModelSetupData | null>(null);
   const [progressYear, setProgressYear] = useState<number | null>(null);
   const [progressPercent, setProgressPercent] = useState(0);
-  const [runResult, setRunResult] = useState<RunIFsData | null>(null);
-  const [extractResult, setExtractResult] = useState<ExtractCompareData | null>(
-    null,
-  );
+  const [runResult, setRunResult] = useState<MLDriverData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Waiting to start.");
   const [statusLevel, setStatusLevel] = useState<StatusLevel>("info");
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [mlLogEntries, setMLLogEntries] = useState<string[]>([]);
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
   );
@@ -135,8 +130,8 @@ function TuneIFsPage({
         return "Model setup completed successfully.";
       case "run_ifs":
         return "IFs run completed successfully.";
-      case "extract_compare":
-        return "Variable extraction and comparison completed successfully.";
+      case "ml_driver":
+        return "ML optimization completed successfully.";
       default:
         return "Operation completed successfully.";
     }
@@ -174,24 +169,6 @@ function TuneIFsPage({
     };
   };
 
-  const resolveModelDbPath = (data: RunIFsData): string => {
-    if (
-      typeof data.output_file === "string" &&
-      data.output_file.trim().length > 0
-    ) {
-      return data.output_file.trim();
-    }
-
-    const folder = typeof data.run_folder === "string" ? data.run_folder.trim() : "";
-    if (!folder) {
-      return "";
-    }
-
-    const needsSeparator = !/[\\/]$/.test(folder);
-    const separator = needsSeparator ? (folder.includes("\\") ? "\\" : "/") : "";
-    return `${folder}${separator}Working.${data.model_id}.run.db`;
-  };
-
   const minEndYear =
     typeof effectiveBaseYear === "number" && Number.isFinite(effectiveBaseYear)
       ? Math.min(effectiveBaseYear, MAX_END_YEAR)
@@ -212,7 +189,6 @@ function TuneIFsPage({
     setStatusLevel("info");
     setModelSetupResult(null);
     setRunResult(null);
-    setExtractResult(null);
     setLogEntries([]);
     logIdRef.current = 0;
     setProgressYear(null);
@@ -272,6 +248,18 @@ function TuneIFsPage({
   }, [runResult]);
 
   useEffect(() => {
+    if (!window.electron?.onMLProgress) {
+      return;
+    }
+
+    const unsubscribe = window.electron.onMLProgress((line: string) => {
+      setMLLogEntries((prev) => [...prev, line]);
+    });
+
+    return () => unsubscribe?.();
+  }, []);
+
+  useEffect(() => {
     if (!window.electron?.on) {
       return;
     }
@@ -304,7 +292,6 @@ function TuneIFsPage({
   const resetModelSetupState = () => {
     setModelSetupResult(null);
     setRunResult(null);
-    setExtractResult(null);
   };
 
   const handleEndYearInputChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -347,7 +334,7 @@ function TuneIFsPage({
   };
 
   const handleChangeOutputDirectory = async () => {
-    if (running || modelSetupRunning || extracting) {
+    if (running || modelSetupRunning) {
       return;
     }
 
@@ -365,13 +352,12 @@ function TuneIFsPage({
   };
 
   const handleModelSetup = async () => {
-    if (running || modelSetupRunning || extracting) {
+    if (running || modelSetupRunning) {
       return;
     }
 
     setError(null);
     setRunResult(null);
-    setExtractResult(null);
     updateStageStatus("model_setup", "info", "Starting model setup...");
     setModelSetupResult(null);
     setProgressYear(null);
@@ -442,28 +428,28 @@ function TuneIFsPage({
   const handleRunClick = async () => {
     setError(null);
     setRunResult(null);
-    setExtractResult(null);
     setProgressYear(null);
     setProgressPercent(0);
+    setMLLogEntries([]);
 
     const parsedEndYear = Number(endYearInput);
     if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
       const message = "Please enter a valid end year.";
-      updateStageStatus("run_ifs", "error", message);
+      updateStageStatus("ml_driver", "error", message);
       setError(message);
       return;
     }
 
     if (!outputDirectory) {
       const message = "Please choose an output folder before running IFs.";
-      updateStageStatus("run_ifs", "error", message);
+      updateStageStatus("ml_driver", "error", message);
       setError(message);
       return;
     }
 
     if (!modelSetupResult || modelSetupRunning) {
       const message = "Please run model setup before starting IFs.";
-      updateStageStatus("run_ifs", "error", message);
+      updateStageStatus("ml_driver", "error", message);
       setError(message);
       return;
     }
@@ -473,13 +459,13 @@ function TuneIFsPage({
     setEndYear(clampedEndYear);
     setEndYearInput(String(clampedEndYear));
     setModelSetupResult(null);
-    updateStageStatus("run_ifs", "info", "Starting IFs run...");
+    updateStageStatus("ml_driver", "info", "Starting IFs run...");
     setRunning(true);
 
     try {
-      appendLog("run_ifs", "info", "Submitting IFs run request.");
+      appendLog("ml_driver", "info", "Submitting IFs run request.");
 
-      const response = await runIFs({
+      const response = await runML({
         validatedPath,
         endYear: clampedEndYear,
         baseYear: baseYearRef.current,
@@ -495,101 +481,28 @@ function TuneIFsPage({
         response.message,
       );
 
-      if (response.stage === "run_ifs") {
-        setRunResult(response.data);
-        updateStageStatus("run_ifs", "success", successMessage);
+      setRunResult(response.data);
+      updateStageStatus(response.stage, "success", successMessage);
 
-        const endYearFromResponse =
-          typeof response.data.end_year === "number"
-            ? response.data.end_year
-            : clampedEndYear;
-        setProgressYear(endYearFromResponse);
-        setProgressPercent(100);
-        targetEndYearRef.current = endYearFromResponse;
+      const endYearFromResponse =
+        typeof response.data.end_year === "number"
+          ? response.data.end_year
+          : clampedEndYear;
+      setProgressYear(endYearFromResponse);
+      setProgressPercent(100);
+      targetEndYearRef.current = endYearFromResponse;
 
-        if (typeof response.data.base_year === "number") {
-          baseYearRef.current = response.data.base_year;
-          setEffectiveBaseYear(response.data.base_year);
-        }
-      } else if (response.stage === "extract_compare") {
-        updateStageStatus("extract_compare", "success", successMessage);
-      } else {
-        console.warn(
-          `[${response.stage}] Unexpected stage returned from backend.`,
-        );
-        updateStageStatus(response.stage, "success", successMessage);
+      if (typeof response.data.base_year === "number") {
+        baseYearRef.current = response.data.base_year;
+        setEffectiveBaseYear(response.data.base_year);
       }
     } catch (err) {
-      const { stage, message } = resolveStageError(err, "run_ifs");
+      const { stage, message } = resolveStageError(err, "ml_driver");
       setError(message);
       setRunResult(null);
       updateStageStatus(stage, "error", message);
     } finally {
       setRunning(false);
-    }
-  };
-
-  const handleExtractCompare = async () => {
-    if (running || modelSetupRunning || extracting) {
-      return;
-    }
-
-    if (!runResult) {
-      const message = "Run data is not available. Please run IFs first.";
-      updateStageStatus("extract_compare", "error", message);
-      setError(message);
-      return;
-    }
-
-    if (!validatedInputPath || !validatedInputPath.trim()) {
-      const message =
-        "Validated input file path is missing. Please re-run validation to continue.";
-      updateStageStatus("extract_compare", "error", message);
-      setError(message);
-      return;
-    }
-
-    const modelDbPath = resolveModelDbPath(runResult);
-    if (!modelDbPath) {
-      const message = "Unable to determine model database path for comparison.";
-      updateStageStatus("extract_compare", "error", message);
-      setError(message);
-      return;
-    }
-
-    setError(null);
-    updateStageStatus("extract_compare", "info", "Starting extract & compare...");
-    setExtracting(true);
-
-    try {
-      appendLog(
-        "extract_compare",
-        "info",
-        "Submitting extract & compare request.",
-      );
-
-      const response = await extractCompare({
-        ifsRoot: validatedPath,
-        modelDb: modelDbPath,
-        inputFilePath: validatedInputPath,
-        modelId: runResult.model_id,
-        ifsId: runResult.ifs_id,
-      });
-
-      setExtractResult(response.data);
-      const successMessage = resolveSuccessMessage(
-        response.stage,
-        response.message,
-      );
-      updateStageStatus(response.stage, "success", successMessage);
-      setError(null);
-    } catch (err) {
-      const { stage, message } = resolveStageError(err, "extract_compare");
-      setExtractResult(null);
-      updateStageStatus(stage, "error", message);
-      setError(message);
-    } finally {
-      setExtracting(false);
     }
   };
 
@@ -609,13 +522,6 @@ function TuneIFsPage({
   const wgdDisplay =
     runResult && typeof runResult.w_gdp === "number"
       ? runResult.w_gdp.toLocaleString(undefined, { maximumFractionDigits: 2 })
-      : null;
-
-  const fitPooledDisplay =
-    extractResult && typeof extractResult.fit_pooled === "number"
-      ? extractResult.fit_pooled.toFixed(4)
-      : extractResult && extractResult.fit_pooled === null
-      ? "N/A"
       : null;
 
   return (
@@ -667,12 +573,12 @@ function TuneIFsPage({
         </div>
       </div>
 
-      <div className="tune-actions">
+      <div className="tune-actions four-buttons">
         <button
           type="button"
           className="button"
           onClick={handleModelSetup}
-          disabled={running || modelSetupRunning || extracting}
+          disabled={running || modelSetupRunning}
         >
           {modelSetupRunning ? "Setting up..." : "Model Setup"}
         </button>
@@ -683,7 +589,6 @@ function TuneIFsPage({
           disabled={
             running ||
             modelSetupRunning ||
-            extracting ||
             !outputDirectory ||
             !modelSetupResult
           }
@@ -692,24 +597,19 @@ function TuneIFsPage({
         </button>
         <button
           type="button"
-          className="button"
-          onClick={handleExtractCompare}
-          disabled={
-            running ||
-            modelSetupRunning ||
-            extracting ||
-            !runResult
-          }
+          className="button secondary"
+          onClick={handleChangeOutputDirectory}
+          disabled={running || modelSetupRunning}
         >
-          {extracting ? "Extracting..." : "Extract & Compare"}
+          Change output folder
         </button>
         <button
           type="button"
           className="button secondary"
-          onClick={handleChangeOutputDirectory}
-          disabled={running || modelSetupRunning || extracting}
+          onClick={onBack}
+          disabled={running}
         >
-          Change output folder
+          Back to Validation
         </button>
       </div>
 
@@ -739,12 +639,32 @@ function TuneIFsPage({
           <div className="metadata-inline">
             <div className="run-status success">Run completed</div>
             <ul>
-              <li>
-                <strong>Model ID:</strong> {runResult.model_id}
-              </li>
-              <li>
-                <strong>IFs ID:</strong> {runResult.ifs_id}
-              </li>
+              {runResult.model_id && (
+                <li>
+                  <strong>Model ID:</strong> {runResult.model_id}
+                </li>
+              )}
+              {typeof runResult.ifs_id === "number" && (
+                <li>
+                  <strong>IFs ID:</strong> {runResult.ifs_id}
+                </li>
+              )}
+              {runResult.best_model_id && (
+                <li>
+                  <strong>Best model ID:</strong> {runResult.best_model_id}
+                </li>
+              )}
+              {typeof runResult.best_fit_pooled === "number" && (
+                <li>
+                  <strong>Best pooled fit (MSE):</strong>{" "}
+                  {runResult.best_fit_pooled.toFixed(4)}
+                </li>
+              )}
+              {typeof runResult.iterations === "number" && (
+                <li>
+                  <strong>Iterations:</strong> {runResult.iterations}
+                </li>
+              )}
               {typeof runResult.base_year === "number" && (
                 <li>
                   <strong>Base year:</strong> {runResult.base_year}
@@ -760,34 +680,33 @@ function TuneIFsPage({
                   <strong>World GDP (WGDP):</strong> {wgdDisplay}
                 </li>
               )}
-              <li>
-                <strong>Run folder:</strong> {runResult.run_folder}
-              </li>
+              {runResult.run_folder && (
+                <li>
+                  <strong>Run folder:</strong> {runResult.run_folder}
+                </li>
+              )}
               {runResult.output_file && (
                 <li>
                   <strong>Run database:</strong> {runResult.output_file}
                 </li>
               )}
             </ul>
-            {fitPooledDisplay != null && (
-              <div className="fit-results">
-                <strong>Pooled fit (MSE):</strong> {fitPooledDisplay}
-              </div>
-            )}
           </div>
         ) : null}
 
       </div>
 
-      <div className="tune-footer">
-        <button
-          type="button"
-          className="button secondary"
-          onClick={onBack}
-          disabled={running}
-        >
-          Back to Validation
-        </button>
+      <div className="ml-console">
+        <div className="ml-console-title">ML Optimization Log</div>
+        <div className="ml-console-body">
+          {mlLogEntries.length === 0 ? (
+            <div className="progress-text">Waiting for ML output...</div>
+          ) : (
+            mlLogEntries.map((entry, index) => (
+              <div key={`${index}-${entry.slice(0, 12)}`}>{entry}</div>
+            ))
+          )}
+        </div>
       </div>
 
     </section>

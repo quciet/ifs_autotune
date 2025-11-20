@@ -177,6 +177,7 @@ function runPythonScript(scriptName, args = []) {
     };
 
     const isRunIFsScript = RUN_IFS_SCRIPT_NAMES.has(scriptName);
+    const isMlDriver = scriptName === 'ml_driver.py';
     const window = mainWindow;
     let stdout = '';
     let stderr = '';
@@ -249,6 +250,10 @@ function runPythonScript(scriptName, args = []) {
       const text = data.toString();
       stdout += text;
       stdoutBuffer += text;
+
+      if (isMlDriver && window && !window.isDestroyed()) {
+        window.webContents.send('ml-progress', text);
+      }
 
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() ?? '';
@@ -711,6 +716,40 @@ function launchIFsRun(payload) {
 }
 
 ipcMain.handle('run-ifs', async (_event, payload) => launchIFsRun(payload));
+ipcMain.handle('run-ml', async (_event, payload) => {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Invalid payload for run-ml');
+  }
+
+  if (!payload.validatedPath) {
+    throw new Error('run-ml requires a validatedPath');
+  }
+
+  if (!payload.outputDirectory) {
+    throw new Error('run-ml requires an outputDirectory');
+  }
+
+  if (payload.endYear == null) {
+    throw new Error('run-ml requires an endYear');
+  }
+
+  const args = [
+    '--ifs-root',
+    payload.validatedPath,
+    '--end-year',
+    String(payload.endYear),
+    '--output-folder',
+    payload.outputDirectory,
+    '--bigpopa-db',
+    path.join(payload.outputDirectory, 'bigpopa.db'),
+  ];
+
+  if (payload.baseYear != null) {
+    args.push('--base-year', String(payload.baseYear));
+  }
+
+  return runPythonScript('ml_driver.py', args);
+});
 ipcMain.handle('run_ifs', async (_event, payload) => {
   if (!payload || typeof payload !== 'object') {
     throw new Error('Invalid payload for run_ifs');
