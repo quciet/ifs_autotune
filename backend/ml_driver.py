@@ -305,6 +305,43 @@ def _run_model(
     model_id = hash_model_id(canonical)
 
     with sqlite3.connect(bigpopa_db) as conn:
+        # ----------------------------------------------------------------------
+        # HUMAN-READABLE COMMENT (For Codex/GitHub Review)
+        #
+        # BEFORE RUNNING IFS, CHECK FOR CACHED RESULTS
+        # ------------------------------------------------
+        # This block implements caching: if this exact model_id was already
+        # evaluated in the past (i.e., model_output contains fit_pooled),
+        # we should *not* run IFs again. Instead, we immediately return the
+        # stored fit_pooled value.
+        #
+        # Why?
+        # - model_input entries are hashed by canonical_config; so identical
+        #   parameter/coef sets always produce identical model_ids.
+        # - If ml_driver proposes a point we've already evaluated, this ensures
+        #   we reuse previous results and avoid redundant heavy IFs simulations.
+        # - Greatly improves speed & makes ML loop behave deterministically.
+        #
+        # ----------------------------------------------------------------------
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT fit_pooled FROM model_output WHERE model_id = ? LIMIT 1",
+            (model_id,),
+        )
+        row = cur.fetchone()
+        if row and row[0] is not None:
+            # Found previously evaluated model — reuse stored fit_pooled
+            fit_val = float(row[0])
+            key = tuple(np.round(flatten_inputs(param_values, coef_values), 6))
+            print(f"Reusing evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}")
+            return fit_val, model_id
+
+    # --------------------------------------------------------------------------
+    # If no cached value was found, proceed to insert this configuration and
+    # prepare for a fresh IFs run.
+    # --------------------------------------------------------------------------
+
+    with sqlite3.connect(bigpopa_db) as conn:
         cursor = conn.cursor()
         if not dataset_id_supported:
             raise RuntimeError("model_input.dataset_id column is required for ML runs")
@@ -463,27 +500,6 @@ def main(argv: list[str] | None = None) -> int:
 
         initial_vec = flatten_inputs(param_template, coef_template)
         vector_to_model_id.setdefault(tuple(np.round(initial_vec, 6)), initial_model_id)
-
-        if not Y_obs:
-            emit_stage_response(
-                "info",
-                "ml_driver",
-                "No evaluated samples found; running baseline configuration.",
-                {"model_id": initial_model_id},
-            )
-            baseline_fit, baseline_model_id = _run_model(
-                args=args,
-                param_values=param_template,
-                coef_values=coef_template,
-                output_set=output_set,
-                ifs_id=ifs_id,
-                dataset_id=dataset_id,
-                bigpopa_db=bigpopa_db,
-                dataset_id_supported=dataset_id_supported,
-            )
-            X_obs.append(initial_vec)
-            Y_obs.append(float(baseline_fit))
-            vector_to_model_id[tuple(np.round(initial_vec, 6))] = baseline_model_id
 
         ranges = _build_search_ranges(conn, ifs_static_id, param_template, coef_template)
         X_grid = _sample_grid(ranges, n_samples=n_sample)
