@@ -28,7 +28,7 @@ export type ValidationInputFileCheck = ValidationPathCheck & {
   missingSheets?: string[];
 };
 
-export type ApiStage = "model_setup" | "run_ifs" | "extract_compare";
+export type ApiStage = "model_setup" | "run_ifs" | "ml_driver";
 
 export type ApiStatus = "success" | "error";
 
@@ -65,10 +65,18 @@ export type RunIFsData = {
   metadata_file?: string;
 };
 
-export type ExtractCompareData = {
-  model_id: string;
-  fit_pooled: number | null;
-  fit_var?: Record<string, unknown> | null;
+export type MLDriverData = {
+  best_model_id?: string | null;
+  best_fit_pooled?: number | null;
+  iterations?: number | null;
+  ifs_id?: number;
+  model_id?: string;
+  run_folder?: string;
+  w_gdp?: number | null;
+  output_file?: string;
+  metadata_file?: string;
+  base_year?: number | null;
+  end_year?: number | null;
 };
 
 type RawStageResponse = {
@@ -236,29 +244,27 @@ export async function modelSetup({
   }
 }
 
-export async function runIFs({
+export async function runML({
   validatedPath,
   endYear,
   baseYear,
   outputDirectory,
   modelId,
   ifsId,
-}: RunIFsParams): Promise<
-  StageSuccess<"run_ifs" | "extract_compare", RunIFsData>
-> {
+}: RunIFsParams): Promise<StageSuccess<"ml_driver", MLDriverData>> {
   if (!window.electron?.invoke) {
-    throw new StageError("run_ifs", "Electron bridge is unavailable.");
+    throw new StageError("ml_driver", "Electron bridge is unavailable.");
   }
 
   const normalizedModelId = modelId.trim();
   const normalizedIfsId = Number(ifsId);
 
   if (!normalizedModelId || !Number.isFinite(normalizedIfsId)) {
-    throw new Error("Missing modelId or ifsId — runIFs cannot proceed.");
+    throw new Error("Missing modelId or ifsId — runML cannot proceed.");
   }
 
   try {
-    const payload = await window.electron.invoke("run_ifs", {
+    const payload = await window.electron.invoke("run-ml", {
       validatedPath,
       endYear,
       baseYear: baseYear ?? null,
@@ -269,42 +275,11 @@ export async function runIFs({
       modelId: normalizedModelId,
       ifsId: normalizedIfsId,
     });
-    return normalizeStageResponse(payload, "run_ifs", ["extract_compare"]);
+    return normalizeStageResponse(payload, "ml_driver");
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to start the IFs run.";
-    throw new StageError("run_ifs", message);
-  }
-}
-
-export async function extractCompare({
-  ifsRoot,
-  modelDb,
-  inputFilePath,
-  modelId,
-  ifsId,
-}: ExtractCompareParams): Promise<
-  StageSuccess<"extract_compare", ExtractCompareData>
-> {
-  if (!window.electron?.invoke) {
-    throw new StageError("extract_compare", "Electron bridge is unavailable.");
-  }
-
-  try {
-    const response = await window.electron.invoke("extract_compare", {
-      ifsRoot,
-      modelDb,
-      inputFilePath,
-      modelId,
-      ifsId,
-    });
-    return normalizeStageResponse(response, "extract_compare");
-  } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Unable to complete extract & compare.";
-    throw new StageError("extract_compare", message);
+    throw new StageError("ml_driver", message);
   }
 }
 
