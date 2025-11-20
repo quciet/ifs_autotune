@@ -20,6 +20,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from backend.model_setup.dataset_utils import compute_dataset_id
+
 from log_ifs_version import log_version_metadata
 
 import pandas as pd
@@ -947,6 +949,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     output_set = output_set_used
 
+    dataset_id = compute_dataset_id(
+        ifs_id=ifs_id,
+        input_param=input_param,
+        input_coef=input_coef,
+        output_set=output_set,
+    )
+
     config_obj = canonical_config(ifs_id, input_param, input_coef, output_set)
     model_id = hash_model_id(config_obj)
     output_dir = output_root / model_id
@@ -961,8 +970,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         cur_bp.execute(
             """
             INSERT OR IGNORE INTO model_input (
-                ifs_id, model_id, input_param, input_coef, output_set
-            ) VALUES (?, ?, ?, ?, ?)
+                ifs_id, model_id, input_param, input_coef, output_set, dataset_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 ifs_id,
@@ -970,6 +979,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 json.dumps(input_param),
                 json.dumps(input_coef),
                 json.dumps(output_set),
+                dataset_id,
             ),
         )
         inserted = cur_bp.rowcount
