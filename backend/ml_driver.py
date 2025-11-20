@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
+import pandas as pd
+
+sys.path.append(str(Path(__file__).resolve().parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from backend import dataset_utils
 from backend.model_setup import canonical_config, hash_model_id
@@ -103,17 +107,39 @@ def unflatten_vector(
 # --- Database helpers ------------------------------------------------------
 
 
-def _load_latest_model(conn: sqlite3.Connection) -> Tuple[int, str, dict, dict, dict]:
+def _model_input_has_dataset_id(conn: sqlite3.Connection) -> bool:
     cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(model_input)")
+    return any(row[1] == "dataset_id" for row in cursor.fetchall())
+
+
+def _load_latest_model(
+    conn: sqlite3.Connection, has_dataset_id: bool
+) -> Tuple[int, str, dict, dict, dict, int | None]:
+    cursor = conn.cursor()
+    select_clause = "ifs_id, model_id, input_param, input_coef, output_set"
+    if has_dataset_id:
+        select_clause += ", dataset_id"
     cursor.execute(
-        "SELECT ifs_id, model_id, input_param, input_coef, output_set FROM model_input ORDER BY rowid DESC LIMIT 1"
+        f"SELECT {select_clause} FROM model_input ORDER BY rowid DESC LIMIT 1"
     )
     row = cursor.fetchone()
     if not row:
         raise RuntimeError("No model_input rows found; cannot start ML driver.")
 
-    ifs_id, model_id, ip_raw, ic_raw, os_raw = row
-    return int(ifs_id), str(model_id), json.loads(ip_raw), json.loads(ic_raw), json.loads(os_raw)
+    if has_dataset_id:
+        ifs_id, model_id, ip_raw, ic_raw, os_raw, dataset_id = row
+    else:
+        ifs_id, model_id, ip_raw, ic_raw, os_raw = row
+        dataset_id = None
+    return (
+        int(ifs_id),
+        str(model_id),
+        json.loads(ip_raw),
+        json.loads(ic_raw),
+        json.loads(os_raw),
+        int(dataset_id) if dataset_id is not None else None,
+    )
 
 
 def _get_ifs_static_id(conn: sqlite3.Connection, ifs_id: int) -> Tuple[int | None, int | None]:
@@ -213,6 +239,40 @@ def _sample_grid(ranges: List[Tuple[float, float]], n_samples: int = 200) -> np.
     return np.asarray(samples, dtype=float)
 
 
+def _load_ml_settings(starting_point_table: Path) -> Tuple[int, int]:
+    default_n_sample = 200
+    default_n_max_iteration = 30
+
+    if not starting_point_table.exists():
+        return default_n_sample, default_n_max_iteration
+
+    try:
+        df = pd.read_excel(starting_point_table, sheet_name="ML", engine="openpyxl")
+    except Exception:
+        return default_n_sample, default_n_max_iteration
+
+    n_sample = default_n_sample
+    n_max_iteration = default_n_max_iteration
+
+    for _, row in df.iterrows():
+        method = str(row.get("Method") or "").strip().lower()
+        if method != "general":
+            continue
+        parameter = str(row.get("Parameter") or "").strip().lower()
+        value = row.get("Value")
+        try:
+            numeric_value = int(float(value))
+        except (TypeError, ValueError):
+            continue
+
+        if parameter == "n_sample":
+            n_sample = numeric_value
+        elif parameter == "n_max_iteration":
+            n_max_iteration = numeric_value
+
+    return n_sample, n_max_iteration
+
+
 # --- Active learning orchestration ----------------------------------------
 
 
@@ -223,22 +283,27 @@ def _run_model(
     coef_values: dict,
     output_set: dict,
     ifs_id: int,
+    dataset_id: int | None,
     bigpopa_db: Path,
+    dataset_id_supported: bool,
 ) -> Tuple[float, str]:
     canonical = canonical_config(ifs_id, param_values, coef_values, output_set)
     model_id = hash_model_id(canonical)
 
     with sqlite3.connect(bigpopa_db) as conn:
         cursor = conn.cursor()
+        if not dataset_id_supported:
+            raise RuntimeError("model_input.dataset_id column is required for ML runs")
         cursor.execute(
             """
-            INSERT INTO model_input (ifs_id, model_id, input_param, input_coef, output_set)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO model_input (ifs_id, model_id, dataset_id, input_param, input_coef, output_set)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(model_id) DO NOTHING
             """,
             (
                 ifs_id,
                 model_id,
+                dataset_id,
                 json.dumps(canonical["input_param"]),
                 json.dumps(canonical["input_coef"]),
                 json.dumps(canonical["output_set"]),
@@ -327,7 +392,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     with conn:
-        ifs_id, latest_model_id, input_param, input_coef, output_set = _load_latest_model(conn)
+        dataset_id_supported = _model_input_has_dataset_id(conn)
+        ifs_id, latest_model_id, input_param, input_coef, output_set, dataset_id = _load_latest_model(
+            conn, dataset_id_supported
+        )
+        if dataset_id_supported and dataset_id is None:
+            raise RuntimeError("dataset_id is missing from the latest model_input entry")
         ifs_static_id, stored_base_year = _get_ifs_static_id(conn, ifs_id)
         if args.base_year is None:
             args.base_year = stored_base_year
@@ -340,6 +410,9 @@ def main(argv: list[str] | None = None) -> int:
             {"ifs_id": ifs_id},
         )
         return 1
+
+    starting_point_table = Path(args.output_folder) / "StartingPointTable.xlsx"
+    n_sample, n_max_iteration = _load_ml_settings(starting_point_table)
 
     try:
         structure = dataset_utils.extract_structure_keys(input_param, input_coef, output_set)
@@ -380,14 +453,16 @@ def main(argv: list[str] | None = None) -> int:
                 coef_values=coef_template,
                 output_set=output_set,
                 ifs_id=ifs_id,
+                dataset_id=dataset_id,
                 bigpopa_db=bigpopa_db,
+                dataset_id_supported=dataset_id_supported,
             )
             X_obs.append(initial_vec)
             Y_obs.append(float(baseline_fit))
             vector_to_model_id[tuple(np.round(initial_vec, 6))] = baseline_model_id
 
         ranges = _build_search_ranges(conn, ifs_static_id, param_template, coef_template)
-        X_grid = _sample_grid(ranges)
+        X_grid = _sample_grid(ranges, n_samples=n_sample)
 
         def callback(x_vector: np.ndarray | float):
             param_values, coef_values = unflatten_vector(x_vector, param_template, coef_template)
@@ -397,7 +472,9 @@ def main(argv: list[str] | None = None) -> int:
                 coef_values=coef_values,
                 output_set=output_set,
                 ifs_id=ifs_id,
+                dataset_id=dataset_id,
                 bigpopa_db=bigpopa_db,
+                dataset_id_supported=dataset_id_supported,
             )
             vector_to_model_id[tuple(np.round(np.atleast_1d(x_vector), 6))] = model_id
             return fit_val
@@ -407,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
             X_obs=np.asarray(X_obs),
             Y_obs=np.asarray(Y_obs),
             X_grid=X_grid,
+            n_iters=n_max_iteration,
         )
 
         best_index = int(np.argmin(Y_obs_arr))
