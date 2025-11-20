@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from backend.prepare_coeff_param import apply_config_to_ifs_files
+
 
 # Emit a structured response for Electron consumption.
 def emit_stage_response(status: str, stage: str, message: str, data: Dict[str, object]) -> None:
@@ -106,22 +108,89 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        input_param: Dict[str, object] = {}
+        input_coef: Dict[str, object] = {}
+
         try:
             with conn_bp:
                 cursor = conn_bp.cursor()
                 cursor.execute(
-                    "SELECT 1 FROM model_input WHERE model_id = ?",
+                    """
+                    SELECT input_param, input_coef
+                    FROM model_input
+                    WHERE model_id = ?
+                    """,
                     (model_id,),
                 )
-                if cursor.fetchone() is None:
-                    emit_stage_response(
-                        "error",
-                        "run_ifs",
-                        "Model configuration not found in BIGPOPA database.",
-                        {"model_id": model_id},
-                    )
-                    return 1
+                row = cursor.fetchone()
+        except sqlite3.Error as exc:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                f"Database error while reading model configuration: {exc}",
+                {"model_id": model_id},
+            )
+            return 1
 
+        if row is None:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                "Model configuration not found in BIGPOPA database.",
+                {"model_id": model_id},
+            )
+            return 1
+
+        try:
+            input_param = json.loads(row[0]) if row[0] else {}
+        except json.JSONDecodeError as exc:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                f"Unable to parse input_param for model_id={model_id}: {exc}",
+                {"model_id": model_id},
+            )
+            return 1
+
+        try:
+            input_coef = json.loads(row[1]) if row[1] else {}
+        except json.JSONDecodeError as exc:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                f"Unable to parse input_coef for model_id={model_id}: {exc}",
+                {"model_id": model_id},
+            )
+            return 1
+
+        if base_year is None:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                "Base year must be provided to configure IFs run.",
+                {"model_id": model_id},
+            )
+            return 1
+
+        try:
+            # Apply model configuration to IFs Working.sce and Working.run.db
+            apply_config_to_ifs_files(
+                ifs_root=Path(args.ifs_root),
+                input_param=input_param,
+                input_coef=input_coef,
+                base_year=args.base_year,
+                end_year=args.end_year,
+            )
+        except Exception as exc:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                f"Failed to apply model configuration to IFs files: {exc}",
+                {"model_id": model_id},
+            )
+            return 1
+
+        try:
             process = subprocess.Popen(
                 command,
                 cwd=working_dir,
