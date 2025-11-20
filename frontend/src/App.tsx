@@ -129,7 +129,7 @@ function TuneIFsPage({
       case "model_setup":
         return "Model setup completed successfully.";
       case "run_ifs":
-        return "IFs run completed successfully.";
+        return "ML Optimization run completed successfully.";
       case "ml_driver":
         return "ML optimization completed successfully.";
       default:
@@ -441,14 +441,14 @@ function TuneIFsPage({
     }
 
     if (!outputDirectory) {
-      const message = "Please choose an output folder before running IFs.";
+      const message = "Please choose an output folder before running ML Optimization.";
       updateStageStatus("ml_driver", "error", message);
       setError(message);
       return;
     }
 
     if (!modelSetupResult || modelSetupRunning) {
-      const message = "Please run model setup before starting IFs.";
+      const message = "Please run model setup before starting ML Optimization.";
       updateStageStatus("ml_driver", "error", message);
       setError(message);
       return;
@@ -459,11 +459,11 @@ function TuneIFsPage({
     setEndYear(clampedEndYear);
     setEndYearInput(String(clampedEndYear));
     setModelSetupResult(null);
-    updateStageStatus("ml_driver", "info", "Starting IFs run...");
+    updateStageStatus("ml_driver", "info", "Starting ML Optimization run...");
     setRunning(true);
 
     try {
-      appendLog("ml_driver", "info", "Submitting IFs run request.");
+      appendLog("ml_driver", "info", "Submitting ML Optimization run request.");
 
       const response = await runML({
         validatedPath,
@@ -511,8 +511,8 @@ function TuneIFsPage({
 
   const runProgressLabel = running
     ? progressYear != null
-      ? `Running IFs… Last reported year: ${progressYear} (${formattedPercent})`
-      : "Running IFs…"
+      ? `Running ML Optimization… Last reported year: ${progressYear} (${formattedPercent})`
+      : "Running ML Optimization…"
     : runResult
     ? null
     : progressYear != null
@@ -593,7 +593,7 @@ function TuneIFsPage({
             !modelSetupResult
           }
         >
-          {running ? "Running..." : "Run IFs"}
+          {running ? "Running..." : "Run ML Optimization"}
         </button>
         <button
           type="button"
@@ -1046,7 +1046,7 @@ function App() {
         <p className="subtitle">
           {view === "validate"
             ? "Browse to your IFs installation folder and validate it against the backend API."
-            : "Configure and launch IFs runs with live progress tracking."}
+            : "Configure and launch ML Optimization runs with live progress tracking."}
         </p>
       </header>
 
