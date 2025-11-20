@@ -163,6 +163,8 @@ ipcMain.handle('get-default-input-file', async () => {
 
 const REQUIRED_INPUT_SHEETS = ['AnalFunc', 'TablFunc', 'IFsVar', 'DataDict'];
 
+const RUN_IFS_SCRIPT_NAMES = new Set(['run_ifs.py', 'ml_driver.py']);
+
 function runPythonScript(scriptName, args = []) {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(__dirname, '..', 'backend', scriptName);
@@ -174,7 +176,7 @@ function runPythonScript(scriptName, args = []) {
       shell: false,
     };
 
-    const isRunIFsScript = scriptName === 'run_ifs.py';
+    const isRunIFsScript = RUN_IFS_SCRIPT_NAMES.has(scriptName);
     const window = mainWindow;
     let stdout = '';
     let stderr = '';
@@ -509,15 +511,18 @@ function launchIFsRun(payload) {
   }
 
   const resolvedOutputDirectory = path.resolve(outputDirectoryRaw);
-  const scriptPath = path.join(__dirname, '..', 'backend', 'run_ifs.py');
+  const scriptPath = path.join(__dirname, '..', 'backend', 'ml_driver.py');
+  const bigpopaPath = path.join(resolvedOutputDirectory, 'bigpopa.db');
   const args = [
     scriptPath,
     '--ifs-root',
     lastValidatedPath,
     '--end-year',
     String(desiredEndYear),
-    '--output-dir',
+    '--output-folder',
     resolvedOutputDirectory,
+    '--bigpopa-db',
+    bigpopaPath,
     '--start-token',
     '5',
     '--log',
@@ -728,23 +733,17 @@ ipcMain.handle('run_ifs', async (_event, payload) => {
     payload.validatedPath,
     '--end-year',
     String(payload.endYear),
-    '--output-dir',
+    '--output-folder',
     payload.outputDirectory,
+    '--bigpopa-db',
+    path.join(payload.outputDirectory, 'bigpopa.db'),
   ];
 
   if (payload.baseYear != null) {
     args.push('--base-year', String(payload.baseYear));
   }
 
-  if (payload.modelId) {
-    args.push('--model-id', String(payload.modelId));
-  }
-
-  if (payload.ifsId != null) {
-    args.push('--ifs-id', String(payload.ifsId));
-  }
-
-  return runPythonScript('run_ifs.py', args);
+  return runPythonScript('ml_driver.py', args);
 });
 
 ipcMain.handle('extract_compare', async (_event, payload) => {
