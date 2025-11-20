@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from backend.model_setup.dataset_utils import compute_dataset_id
+from dataset_utils import compute_dataset_id
 
 from log_ifs_version import log_version_metadata
 
