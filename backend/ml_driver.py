@@ -113,19 +113,21 @@ def _model_input_has_dataset_id(conn: sqlite3.Connection) -> bool:
     return any(row[1] == "dataset_id" for row in cursor.fetchall())
 
 
-def _load_latest_model(
-    conn: sqlite3.Connection, has_dataset_id: bool
+def _load_model_by_id(
+    conn: sqlite3.Connection, has_dataset_id: bool, model_id: str
 ) -> Tuple[int, str, dict, dict, dict, int | None]:
     cursor = conn.cursor()
     select_clause = "ifs_id, model_id, input_param, input_coef, output_set"
     if has_dataset_id:
         select_clause += ", dataset_id"
     cursor.execute(
-        f"SELECT {select_clause} FROM model_input ORDER BY rowid DESC LIMIT 1"
+        f"SELECT {select_clause} FROM model_input WHERE model_id = ? LIMIT 1", (model_id,)
     )
     row = cursor.fetchone()
     if not row:
-        raise RuntimeError("No model_input rows found; cannot start ML driver.")
+        raise RuntimeError(
+            "No model_input rows found for the provided model_id; cannot start ML driver."
+        )
 
     if has_dataset_id:
         ifs_id, model_id, ip_raw, ic_raw, os_raw, dataset_id = row
@@ -184,18 +186,22 @@ def _build_search_ranges(
         )
         row = cursor.fetchone()
         default_val = float(input_param[param_name])
+        param_min = None
+        param_max = None
         if row:
-            min_val = row[0] if row[0] is not None else default_val
-            max_val = row[1] if row[1] is not None else default_val
-            default_val = row[2] if row[2] is not None else default_val
-        else:
-            min_val = default_val
-            max_val = default_val
+            param_min, param_max, param_default = row
+            if param_default is not None:
+                default_val = float(param_default)
 
-        if min_val == max_val:
-            min_val = default_val * 0.9 if default_val != 0 else -1.0
-            max_val = default_val * 1.1 if default_val != 0 else 1.0
-        ranges.append((float(min_val), float(max_val)))
+        if default_val != 0:
+            fallback_min = default_val - abs(default_val)
+            fallback_max = default_val + abs(default_val)
+        else:
+            fallback_min, fallback_max = -1.0, 1.0
+
+        min_val = float(param_min) if param_min is not None else float(fallback_min)
+        max_val = float(param_max) if param_max is not None else float(fallback_max)
+        ranges.append((min_val, max_val))
 
     for func in sorted(input_coef.keys()):
         for x_name in sorted(input_coef[func].keys()):
@@ -217,14 +223,22 @@ def _build_search_ranges(
                 beta_default = row[0] if row else None
                 beta_std = row[1] if row else None
 
-                center = beta_default if beta_default is not None else default_val
+                center = float(beta_default) if beta_default is not None else default_val
                 if beta_std is not None:
                     span = abs(beta_std) * 3
                     min_val = center - span
                     max_val = center + span
+                elif center != 0:
+                    min_val = center - abs(center)
+                    max_val = center + abs(center)
                 else:
-                    min_val = center - abs(center) * 0.1 if center != 0 else -1.0
-                    max_val = center + abs(center) * 0.1 if center != 0 else 1.0
+                    min_val, max_val = -1.0, 1.0
+
+                if beta_default is not None:
+                    if beta_default > 0:
+                        min_val = max(min_val, 0.0)
+                    elif beta_default < 0:
+                        max_val = min(max_val, 0.0)
 
                 ranges.append((float(min_val), float(max_val)))
     return ranges
@@ -371,6 +385,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-token", default="5")
     parser.add_argument("--log", default="jrs.txt")
     parser.add_argument("--websessionid", default="qsdqsqsdqsdqsdqs")
+    parser.add_argument(
+        "--initial-model-id",
+        required=True,
+        help="Model ID of the initial model_input row to seed the ML driver",
+    )
 
     args = parser.parse_args(argv)
     args.output_folder = os.path.abspath(args.output_folder)
@@ -393,11 +412,16 @@ def main(argv: list[str] | None = None) -> int:
 
     with conn:
         dataset_id_supported = _model_input_has_dataset_id(conn)
-        ifs_id, latest_model_id, input_param, input_coef, output_set, dataset_id = _load_latest_model(
-            conn, dataset_id_supported
-        )
+        (
+            ifs_id,
+            initial_model_id,
+            input_param,
+            input_coef,
+            output_set,
+            dataset_id,
+        ) = _load_model_by_id(conn, dataset_id_supported, args.initial_model_id)
         if dataset_id_supported and dataset_id is None:
-            raise RuntimeError("dataset_id is missing from the latest model_input entry")
+            raise RuntimeError("dataset_id is missing from the selected model_input entry")
         ifs_static_id, stored_base_year = _get_ifs_static_id(conn, ifs_id)
         if args.base_year is None:
             args.base_year = stored_base_year
@@ -438,14 +462,14 @@ def main(argv: list[str] | None = None) -> int:
             vector_to_model_id[tuple(np.round(vec, 6))] = sample["model_id"]
 
         initial_vec = flatten_inputs(param_template, coef_template)
-        vector_to_model_id.setdefault(tuple(np.round(initial_vec, 6)), latest_model_id)
+        vector_to_model_id.setdefault(tuple(np.round(initial_vec, 6)), initial_model_id)
 
         if not Y_obs:
             emit_stage_response(
                 "info",
                 "ml_driver",
                 "No evaluated samples found; running baseline configuration.",
-                {"model_id": latest_model_id},
+                {"model_id": initial_model_id},
             )
             baseline_fit, baseline_model_id = _run_model(
                 args=args,
