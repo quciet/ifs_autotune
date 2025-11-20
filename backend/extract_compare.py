@@ -42,6 +42,7 @@ def ensure_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
             input_param TEXT,
             input_coef TEXT,
             output_set TEXT,
+            dataset_id TEXT,
             FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id)
         )
         """
