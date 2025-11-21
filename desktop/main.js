@@ -722,7 +722,7 @@ ipcMain.handle('run-ml', async (_event, payload) => {
   }
 
   if (!payload.initialModelId) {
-    throw new Error('run-ml requires initialModelId (from model setup)');
+    throw new Error('run-ml requires initialModelId');
   }
 
   if (!payload.validatedPath) {
@@ -741,13 +741,14 @@ ipcMain.handle('run-ml', async (_event, payload) => {
     '--ifs-root', payload.validatedPath,
     '--output-folder', payload.outputDirectory,
     '--end-year', String(payload.endYear),
-    '--initial-model-id', payload.initialModelId,
+    '--initial-model-id', payload.initialModelId
   ];
 
   if (payload.baseYear != null) {
     args.push('--base-year', String(payload.baseYear));
   }
 
+  // Start ML optimization loop — DO NOT modify run-ifs logic.
   return runPythonScript('ml_driver.py', args);
 });
 ipcMain.handle('run_ifs', async (_event, payload) => {
