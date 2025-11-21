@@ -8,7 +8,6 @@ import {
 } from "react";
 import {
   modelSetup,
-  runML,
   subscribeToIFsProgress,
   validateIFsFolder,
   StageError,
@@ -465,13 +464,16 @@ function TuneIFsPage({
     try {
       appendLog("ml_driver", "info", "Submitting ML Optimization run request.");
 
-      const response = await runML({
+      if (!window.electron?.invoke) {
+        throw new StageError("ml_driver", "Electron bridge is unavailable.");
+      }
+
+      const response = await window.electron.invoke("run-ml", {
+        initialModelId: modelSetupResult.model_id,
         validatedPath,
-        endYear: clampedEndYear,
-        baseYear: baseYearRef.current,
         outputDirectory,
-        modelId: modelSetupResult.model_id,
-        ifsId: modelSetupResult.ifs_id,
+        baseYear: baseYearRef.current,
+        endYear: clampedEndYear,
       });
 
       setError(null);

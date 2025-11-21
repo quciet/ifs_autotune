@@ -721,27 +721,27 @@ ipcMain.handle('run-ml', async (_event, payload) => {
     throw new Error('Invalid payload for run-ml');
   }
 
+  if (!payload.initialModelId) {
+    throw new Error('run-ml requires initialModelId (from model setup)');
+  }
+
   if (!payload.validatedPath) {
-    throw new Error('run-ml requires a validatedPath');
+    throw new Error('run-ml requires validatedPath');
   }
 
   if (!payload.outputDirectory) {
-    throw new Error('run-ml requires an outputDirectory');
+    throw new Error('run-ml requires outputDirectory');
   }
 
-  if (payload.endYear == null) {
-    throw new Error('run-ml requires an endYear');
+  if (!payload.endYear) {
+    throw new Error('run-ml requires endYear');
   }
 
   const args = [
-    '--ifs-root',
-    payload.validatedPath,
-    '--end-year',
-    String(payload.endYear),
-    '--output-folder',
-    payload.outputDirectory,
-    '--bigpopa-db',
-    path.join(payload.outputDirectory, 'bigpopa.db'),
+    '--ifs-root', payload.validatedPath,
+    '--output-folder', payload.outputDirectory,
+    '--end-year', String(payload.endYear),
+    '--initial-model-id', payload.initialModelId,
   ];
 
   if (payload.baseYear != null) {
