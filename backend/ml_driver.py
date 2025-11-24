@@ -385,7 +385,12 @@ def _run_model(
     if args.websessionid is not None:
         command.extend(["--websessionid", str(args.websessionid)])
 
-    process = subprocess.run(command, capture_output=False, text=True)
+    # Ensure python knows where the package root is
+    env = os.environ.copy()
+    project_root = str(Path(__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+
+    process = subprocess.run(command, capture_output=False, text=True, env=env)
     if process.returncode != 0:
         raise RuntimeError(f"run_ifs.py failed with exit code {process.returncode}")
 
