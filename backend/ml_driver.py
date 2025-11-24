@@ -253,38 +253,81 @@ def _sample_grid(ranges: List[Tuple[float, float]], n_samples: int = 200) -> np.
     return np.asarray(samples, dtype=float)
 
 
-def _load_ml_settings(starting_point_table: Path) -> Tuple[int, int]:
+def _load_ml_settings(starting_point_table: Path):
+    """
+    Read ML tab from StartingPointTable.xlsx.
+
+    Supported Excel parameters:
+      n_sample = integer
+      n_max_iteration = integer
+      n_convergence = integer (patience)
+      min_convergence_pct = percent number (0.01 = 0.01%)
+
+    min_convergence_pct is converted to a fraction for active_learning_loop:
+      Example: Excel 0.01 → 0.01% → 0.0001
+    """
     default_n_sample = 200
     default_n_max_iteration = 30
+    default_n_convergence = 10
+    default_min_convergence_pct = 0.01 / 100.0  # default = 0.01% = 0.0001
+
+    n_sample = default_n_sample
+    n_max_iteration = default_n_max_iteration
+    n_convergence = default_n_convergence
+    min_convergence_pct = default_min_convergence_pct
 
     if not starting_point_table.exists():
-        return default_n_sample, default_n_max_iteration
+        return (
+            n_sample,
+            n_max_iteration,
+            n_convergence,
+            min_convergence_pct,
+        )
 
     try:
         df = pd.read_excel(starting_point_table, sheet_name="ML", engine="openpyxl")
     except Exception:
-        return default_n_sample, default_n_max_iteration
-
-    n_sample = default_n_sample
-    n_max_iteration = default_n_max_iteration
+        return (
+            n_sample,
+            n_max_iteration,
+            n_convergence,
+            min_convergence_pct,
+        )
 
     for _, row in df.iterrows():
         method = str(row.get("Method") or "").strip().lower()
         if method != "general":
             continue
+
         parameter = str(row.get("Parameter") or "").strip().lower()
         value = row.get("Value")
+
+        # Cast as float first
         try:
-            numeric_value = int(float(value))
+            numeric_value = float(value)
         except (TypeError, ValueError):
             continue
 
         if parameter == "n_sample":
-            n_sample = numeric_value
-        elif parameter == "n_max_iteration":
-            n_max_iteration = numeric_value
+            n_sample = int(numeric_value)
 
-    return n_sample, n_max_iteration
+        elif parameter == "n_max_iteration":
+            n_max_iteration = int(numeric_value)
+
+        elif parameter == "n_convergence":
+            n_convergence = int(numeric_value)
+
+        elif parameter == "min_convergence_pct":
+            # User enters percentages (0.01 = 0.01%).
+            # Convert percent → fraction for ML loop.
+            min_convergence_pct = float(numeric_value) / 100.0
+
+    return (
+        n_sample,
+        n_max_iteration,
+        n_convergence,
+        min_convergence_pct,
+    )
 
 
 # --- Active learning orchestration ----------------------------------------
@@ -478,7 +521,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     starting_point_table = Path(args.output_folder) / "StartingPointTable.xlsx"
-    n_sample, n_max_iteration = _load_ml_settings(starting_point_table)
+    (
+        n_sample,
+        n_max_iteration,
+        n_convergence,
+        min_convergence_pct,
+    ) = _load_ml_settings(starting_point_table)
 
     try:
         structure = dataset_utils.extract_structure_keys(input_param, input_coef, output_set)
@@ -530,6 +578,8 @@ def main(argv: list[str] | None = None) -> int:
             Y_obs=np.asarray(Y_obs),
             X_grid=X_grid,
             n_iters=n_max_iteration,
+            patience=n_convergence,              # new
+            min_improve_pct=min_convergence_pct, # new (fraction, not percent)
         )
 
         best_index = int(np.argmin(Y_obs_arr))
