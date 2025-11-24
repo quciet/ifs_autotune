@@ -115,7 +115,7 @@ def _model_input_has_dataset_id(conn: sqlite3.Connection) -> bool:
 
 def _load_model_by_id(
     conn: sqlite3.Connection, has_dataset_id: bool, model_id: str
-) -> Tuple[int, str, dict, dict, dict, int | None]:
+) -> Tuple[int, str, dict, dict, dict, str | None]:
     cursor = conn.cursor()
     select_clause = "ifs_id, model_id, input_param, input_coef, output_set"
     if has_dataset_id:
@@ -140,7 +140,7 @@ def _load_model_by_id(
         json.loads(ip_raw),
         json.loads(ic_raw),
         json.loads(os_raw),
-        int(dataset_id) if dataset_id is not None else None,
+        dataset_id,   # keep dataset_id as string
     )
 
 
@@ -297,7 +297,7 @@ def _run_model(
     coef_values: dict,
     output_set: dict,
     ifs_id: int,
-    dataset_id: int | None,
+    dataset_id: str | None,
     bigpopa_db: Path,
     dataset_id_supported: bool,
 ) -> Tuple[float, str]:
