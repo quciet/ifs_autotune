@@ -716,40 +716,37 @@ function launchIFsRun(payload) {
 }
 
 ipcMain.handle('run-ifs', async (_event, payload) => launchIFsRun(payload));
-ipcMain.handle('run-ml', async (_event, payload) => {
-  if (!payload || typeof payload !== 'object') {
-    throw new Error('Invalid payload for run-ml');
-  }
+ipcMain.handle("run-ml", async (event, args) => {
+  return new Promise((resolve, reject) => {
+    try {
+      const py = spawn(
+        "python",
+        [
+          path.join(__dirname, "..", "backend", "ml_driver.py"),
+          "--ifs-root", args.ifsRoot,
+          "--end-year", args.endYear,
+          "--output-folder", args.outputFolder,
+          "--initial-model-id", args.initialModelId,
+          "--bigpopa-db", path.join(args.outputFolder, "bigpopa.db")
+        ],
+        { shell: true }
+      );
 
-  if (!payload.initialModelId) {
-    throw new Error('run-ml requires initialModelId');
-  }
+      py.stdout.on("data", (data) => {
+        event.sender.send("ml-log", data.toString());
+      });
 
-  if (!payload.validatedPath) {
-    throw new Error('run-ml requires validatedPath');
-  }
+      py.stderr.on("data", (data) => {
+        event.sender.send("ml-log", data.toString());
+      });
 
-  if (!payload.outputDirectory) {
-    throw new Error('run-ml requires outputDirectory');
-  }
-
-  if (!payload.endYear) {
-    throw new Error('run-ml requires endYear');
-  }
-
-  const args = [
-    '--ifs-root', payload.validatedPath,
-    '--output-folder', payload.outputDirectory,
-    '--end-year', String(payload.endYear),
-    '--initial-model-id', payload.initialModelId
-  ];
-
-  if (payload.baseYear != null) {
-    args.push('--base-year', String(payload.baseYear));
-  }
-
-  // Start ML optimization loop — DO NOT modify run-ifs logic.
-  return runPythonScript('ml_driver.py', args);
+      py.on("close", (code) => {
+        resolve({ code });
+      });
+    } catch (err) {
+      reject(err);
+    }
+  });
 });
 ipcMain.handle('run_ifs', async (_event, payload) => {
   if (!payload || typeof payload !== 'object') {

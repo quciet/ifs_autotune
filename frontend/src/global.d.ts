@@ -12,6 +12,7 @@ declare global {
       getDefaultInputFile: () => Promise<string>;
       invoke: <T = unknown, R = unknown>(channel: string, data?: T) => Promise<R>;
       onMLProgress: (callback: (line: string) => void) => () => void;
+      onMLLog: (callback: (line: string) => void) => () => void;
       on: (
         channel: string,
         listener: (...args: unknown[]) => void,
