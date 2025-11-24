@@ -19,6 +19,15 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.removeListener('ml-progress', subscription);
     };
   },
+  onMLLog(callback) {
+    const subscription = (_evt, data) => callback(data);
+
+    ipcRenderer.on("ml-log", subscription);
+
+    return () => {
+      ipcRenderer.removeListener("ml-log", subscription);
+    };
+  },
   on: (channel, callback) => {
     const subscription = (_event, ...args) => {
       callback(...args);

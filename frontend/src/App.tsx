@@ -247,11 +247,14 @@ function TuneIFsPage({
   }, [runResult]);
 
   useEffect(() => {
-    if (!window.electron?.onMLProgress) {
+    const subscribe =
+      window.electron?.onMLLog ?? window.electron?.onMLProgress ?? null;
+
+    if (!subscribe) {
       return;
     }
 
-    const unsubscribe = window.electron.onMLProgress((line: string) => {
+    const unsubscribe = subscribe((line: string) => {
       setMLLogEntries((prev) => [...prev, line]);
     });
 
@@ -470,34 +473,49 @@ function TuneIFsPage({
 
       const response = await window.electron.invoke("run-ml", {
         initialModelId: modelSetupResult.model_id,
-        validatedPath,
-        outputDirectory,
+        ifsRoot: validatedPath,
+        outputFolder: outputDirectory,
         baseYear: baseYearRef.current,
         endYear: clampedEndYear,
       });
 
+      const exitCode =
+        response && typeof response === "object" && "code" in response
+          ? (response as { code: unknown }).code
+          : null;
+
+      if (typeof exitCode !== "number") {
+        throw new StageError(
+          "ml_driver",
+          "Received an unexpected response from ML Optimization.",
+        );
+      }
+
+      if (exitCode !== 0) {
+        throw new StageError(
+          "ml_driver",
+          `ML Optimization exited with code ${exitCode}.`,
+        );
+      }
+
       setError(null);
 
       const successMessage = resolveSuccessMessage(
-        response.stage,
-        response.message,
+        "ml_driver",
+        "ML optimization completed successfully.",
       );
 
-      setRunResult(response.data);
-      updateStageStatus(response.stage, "success", successMessage);
+      const nextRunResult: MLDriverData = {
+        base_year: baseYearRef.current ?? undefined,
+        end_year: clampedEndYear,
+      };
 
-      const endYearFromResponse =
-        typeof response.data.end_year === "number"
-          ? response.data.end_year
-          : clampedEndYear;
-      setProgressYear(endYearFromResponse);
+      setRunResult(nextRunResult);
+      updateStageStatus("ml_driver", "success", successMessage);
+
+      setProgressYear(clampedEndYear);
       setProgressPercent(100);
-      targetEndYearRef.current = endYearFromResponse;
-
-      if (typeof response.data.base_year === "number") {
-        baseYearRef.current = response.data.base_year;
-        setEffectiveBaseYear(response.data.base_year);
-      }
+      targetEndYearRef.current = clampedEndYear;
     } catch (err) {
       const { stage, message } = resolveStageError(err, "ml_driver");
       setError(message);
