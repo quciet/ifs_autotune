@@ -107,7 +107,7 @@ def active_learning_loop(
         history.append((t, x_next, y_next, best_y_curr))
 
         print(
-            f"[{t+1:03d}/{n_iters}] acq={acquisition}, x_next={_format_candidate(x_next_array)}, "
+            f"[{t+1:03d}/{n_iters}] "
             f"y_next={y_next:.4f} ({'reused' if reused else 'new'}), best_y={best_y_curr:.4f}"
         )
 

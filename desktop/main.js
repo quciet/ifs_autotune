@@ -732,15 +732,71 @@ ipcMain.handle("run-ml", async (event, args) => {
         { shell: true }
       );
 
+      let stdoutBuffer = '';
+
+      const handleLine = (line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+
+        console.log("[ML-DRIVER]", trimmed);
+
+        // 1. ML Log (Bottom Panel): Lines matching [XXX/XXX]
+        if (/^\[\d{3}\/\d{3}\]/.test(trimmed)) {
+          event.sender.send("ml-log", trimmed);
+          return;
+        }
+
+        // 2. IFs Progress (Top Panel Bar): Lines starting with "Year "
+        const yearMatch = trimmed.match(/^Year\s+(\d{1,4})/i);
+        if (yearMatch) {
+          const year = Number.parseInt(yearMatch[1], 10);
+          if (Number.isFinite(year)) {
+            event.sender.send("ifs-progress", { year });
+          }
+          return;
+        }
+
+        // 3. Status Text (Top Panel Text): JSON messages and other text
+        let statusMessage = trimmed;
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === "object") {
+            const parsedMessage =
+              typeof parsed.message === "string" ? parsed.message.trim() : "";
+            if (parsedMessage.length > 0) {
+              // Prefix with status if available
+              statusMessage = `[${parsed.status || "log"}] ${parsedMessage}`;
+            } else if (parsed.status) {
+              statusMessage = `[${parsed.status}] ${trimmed}`;
+            }
+          }
+        } catch {
+          // Not JSON, treat as raw text status update
+        }
+
+        // Send to top panel status text
+        event.sender.send("model-setup-progress", statusMessage);
+      };
+
       py.stdout.on("data", (data) => {
-        event.sender.send("ml-log", data.toString());
+        stdoutBuffer += data.toString();
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() ?? '';
+        lines.forEach(handleLine);
       });
 
       py.stderr.on("data", (data) => {
-        event.sender.send("ml-log", data.toString());
+        const text = data.toString().trim();
+        if (text) {
+          console.error("[ML-DRIVER-ERR]", text);
+          event.sender.send("ml-log", `[ERROR] ${text}`);
+        }
       });
 
       py.on("close", (code) => {
+        if (stdoutBuffer.trim()) {
+          handleLine(stdoutBuffer);
+        }
         resolve({ code });
       });
     } catch (err) {
