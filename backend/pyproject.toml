@@ -6,9 +6,18 @@ dependencies = [
   "pydantic",
   "pydantic-settings",
   "pytest",
+  "fastapi",
+  "httpx",
   "pandas",
   "openpyxl",
+  "numpy",
+  "scikit-learn",
+  "torch",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.setuptools]
+packages = ["app", "optimization", "tools", "tests"]
+py-modules = ["combine_var_hist", "dataset_utils", "extract_compare", "log_ifs_version", "ml_driver", "model_setup", "prepare_coeff_param", "run_ifs", "validate_ifs"]
