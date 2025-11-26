@@ -168,12 +168,16 @@ const RUN_IFS_SCRIPT_NAMES = new Set(['run_ifs.py', 'ml_driver.py']);
 function runPythonScript(scriptName, args = []) {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(__dirname, '..', 'backend', scriptName);
-    const pythonArgs = [scriptPath, ...args];
+    const pythonArgs = ['-u', scriptPath, ...args];
 
     const processOptions = {
       cwd: path.join(__dirname, '..'),
       windowsHide: true,
       shell: false,
+      env: {
+        ...process.env,
+        PYTHONUNBUFFERED: '1',
+      },
     };
 
     const isRunIFsScript = RUN_IFS_SCRIPT_NAMES.has(scriptName);
