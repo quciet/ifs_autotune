@@ -477,6 +477,7 @@ function TuneIFsPage({
         outputFolder: outputDirectory,
         baseYear: baseYearRef.current,
         endYear: clampedEndYear,
+        inputFilePath: validatedInputPath,
       });
 
       const exitCode =

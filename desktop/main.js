@@ -721,14 +721,22 @@ ipcMain.handle("run-ml", async (event, args) => {
     try {
       const py = spawn(
         "python",
-        [
-          path.join(__dirname, "..", "backend", "ml_driver.py"),
-          "--ifs-root", args.ifsRoot,
-          "--end-year", args.endYear,
-          "--output-folder", args.outputFolder,
-          "--initial-model-id", args.initialModelId,
-          "--bigpopa-db", path.join(args.outputFolder, "bigpopa.db")
-        ],
+        (() => {
+          const baseArgs = [
+            path.join(__dirname, "..", "backend", "ml_driver.py"),
+            "--ifs-root", args.ifsRoot,
+            "--end-year", args.endYear,
+            "--output-folder", args.outputFolder,
+            "--initial-model-id", args.initialModelId,
+            "--bigpopa-db", path.join(args.outputFolder, "bigpopa.db"),
+          ];
+
+          if (args.inputFilePath) {
+            baseArgs.push("--starting-point-table", args.inputFilePath);
+          }
+
+          return baseArgs;
+        })(),
         { shell: true }
       );
 

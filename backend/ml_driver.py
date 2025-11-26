@@ -475,6 +475,11 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Model ID of the initial model_input row to seed the ML driver",
     )
+    parser.add_argument(
+        "--starting-point-table",
+        dest="starting_point_table",
+        help="Path to the user-provided StartingPointTable.xlsx",
+    )
 
     args = parser.parse_args(argv)
     args.output_folder = os.path.abspath(args.output_folder)
@@ -520,7 +525,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    starting_point_table = Path(args.output_folder) / "StartingPointTable.xlsx"
+    output_starting_point_table = (Path(args.output_folder) / "StartingPointTable.xlsx").resolve()
+    starting_point_table = output_starting_point_table
+    if args.starting_point_table:
+        provided_starting_point = Path(args.starting_point_table).expanduser().resolve()
+        if provided_starting_point.is_file():
+            starting_point_table = provided_starting_point
+        else:
+            emit_stage_response(
+                "error",
+                "ml_driver",
+                "Provided StartingPointTable.xlsx could not be read; falling back to output folder copy.",
+                {
+                    "provided_path": str(provided_starting_point),
+                    "fallback_path": str(output_starting_point_table),
+                },
+            )
+
     (
         n_sample,
         n_max_iteration,
