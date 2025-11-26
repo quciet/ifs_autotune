@@ -161,9 +161,13 @@ def validate_ifs_folder(
     output_path: Optional[str] = None,
     input_file: Optional[str] = None,
 ) -> dict:
-    from backend.db_init import ensure_working_db
+    from backend.db_init import (
+        ensure_working_db,
+        ensure_working_startingpointtable,
+    )
 
     ensure_working_db()
+    ensure_working_startingpointtable()
     sanitized_path = (path or "").strip()
     absolute_path = os.path.abspath(sanitized_path) if sanitized_path else None
 
