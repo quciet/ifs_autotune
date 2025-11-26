@@ -21,7 +21,7 @@ def ensure_working_db():
     Ensure desktop/input/bigpopa.db exists. If missing, clone template.
     """
     template = Path("desktop/input/template/bigpopa_clean.db")
-    working = Path("desktop/input/bigpopa.db")
+    working = Path("desktop/output/bigpopa.db")
 
     if working.exists():
         return
@@ -30,7 +30,7 @@ def ensure_working_db():
 
     working.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(template, working)
-    print("[BIGPOPA] Created working bigpopa.db from clean template.")
+    print("[BIGPOPA] Created working bigpopa.db in desktop/output/ from clean template.")
 
 
 def ensure_working_startingpointtable():

@@ -1,5 +1,10 @@
 pydantic
 pydantic-settings
 pytest
+fastapi
+httpx
 pandas
 openpyxl
+numpy
+scikit-learn
+torch
