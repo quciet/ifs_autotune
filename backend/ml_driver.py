@@ -551,7 +551,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         structure = dataset_utils.extract_structure_keys(input_param, input_coef, output_set)
-        samples = dataset_utils.load_compatible_training_samples(str(bigpopa_db), structure)
+        samples = dataset_utils.load_compatible_training_samples(
+            str(bigpopa_db), structure, dataset_id
+        )
 
         param_template = input_param
         coef_template = input_coef

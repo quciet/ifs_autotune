@@ -39,15 +39,27 @@ def is_subset_dataset(structA, structB):
     return PA.issubset(PB) and CA.issubset(CB) and OA.issubset(OB)
 
 
-def load_compatible_training_samples(db_path: str, current_structure: tuple):
+def load_compatible_training_samples(
+    db_path: str, current_structure: tuple, dataset_id: str | None
+):
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
-    cur.execute("SELECT model_id, input_param, input_coef, output_set FROM model_input")
+    if dataset_id is None:
+        cur.execute(
+            "SELECT model_id, input_param, input_coef, output_set, dataset_id"
+            " FROM model_input WHERE dataset_id IS NULL"
+        )
+    else:
+        cur.execute(
+            "SELECT model_id, input_param, input_coef, output_set, dataset_id"
+            " FROM model_input WHERE dataset_id = ?",
+            (dataset_id,),
+        )
     rows = cur.fetchall()
 
     compatible = []
-    for model_id, ipjs, icjs, osjs in rows:
+    for model_id, ipjs, icjs, osjs, _ in rows:
         try:
             ip = json.loads(ipjs)
             ic = json.loads(icjs)
@@ -57,24 +69,41 @@ def load_compatible_training_samples(db_path: str, current_structure: tuple):
 
         structA = extract_structure_keys(ip, ic, os)
         if is_subset_dataset(structA, current_structure):
-            compatible.append(model_id)
+            compatible.append((model_id, ip, ic, os))
 
     samples = []
-    for mid in compatible:
-        cur.execute("SELECT fit_pooled FROM model_output WHERE model_id = ?", (mid,))
+    for mid, ip, ic, os in compatible:
+        if dataset_id is None:
+            cur.execute(
+                """
+                SELECT mo.fit_pooled
+                FROM model_output mo
+                JOIN model_input mi ON mo.model_id = mi.model_id
+                WHERE mi.model_id = ? AND mi.dataset_id IS NULL
+                """,
+                (mid,),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT mo.fit_pooled
+                FROM model_output mo
+                JOIN model_input mi ON mo.model_id = mi.model_id
+                WHERE mi.model_id = ? AND mi.dataset_id = ?
+                """,
+                (mid, dataset_id),
+            )
+
         fr = cur.fetchone()
         fit = fr[0] if fr else None
 
-        cur.execute("SELECT input_param, input_coef, output_set FROM model_input WHERE model_id = ?", (mid,))
-        r2 = cur.fetchone()
-        if r2:
-            samples.append({
-                "model_id": mid,
-                "input_param": json.loads(r2[0]),
-                "input_coef": json.loads(r2[1]),
-                "output_set": json.loads(r2[2]),
-                "fit_pooled": fit,
-            })
+        samples.append({
+            "model_id": mid,
+            "input_param": ip,
+            "input_coef": ic,
+            "output_set": os,
+            "fit_pooled": fit,
+        })
 
     conn.close()
     return samples
