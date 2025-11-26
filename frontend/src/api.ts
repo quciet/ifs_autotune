@@ -186,6 +186,7 @@ export interface RunIFsParams {
   outputDirectory: string;
   modelId: string;
   ifsId: number;
+  inputFilePath?: string;
 }
 
 export type IFsProgressEvent = {
@@ -251,6 +252,7 @@ export async function runML({
   outputDirectory,
   modelId,
   ifsId,
+  inputFilePath,
 }: RunIFsParams): Promise<StageSuccess<"ml_driver", MLDriverData>> {
   if (!window.electron?.invoke) {
     throw new StageError("ml_driver", "Electron bridge is unavailable.");
@@ -274,6 +276,7 @@ export async function runML({
       output_dir: outputDirectory,
       modelId: normalizedModelId,
       ifsId: normalizedIfsId,
+      inputFilePath: inputFilePath ?? null,
     });
     return normalizeStageResponse(payload, "ml_driver");
   } catch (error) {
