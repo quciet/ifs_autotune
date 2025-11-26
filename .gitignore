@@ -17,9 +17,6 @@ __pycache__/
 .coverage
 htmlcov/
 
-# SQLite databases (local dev only)
-bigpopa.db
-
 # --------------------
 # Node / Frontend
 # --------------------
