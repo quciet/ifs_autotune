@@ -39,7 +39,7 @@ BIGPOPA is a desktop tool for automating and optimizing International Futures (I
 
 3. **Install backend in editable mode**
    - Ensure you have Python 3.11 or later installed.
-   - From the `backend` folder:
+   - Starting from root directory ifs_autotune/
      ```bash
      cd backend
      pip install -e .
@@ -48,7 +48,8 @@ BIGPOPA is a desktop tool for automating and optimizing International Futures (I
 
 4. **Install frontend + desktop dependencies**
    - Ensure you have Node.js 18+ and npm installed.
-   - Install packages for both frontend and Electron:
+   - Install packages for both frontend and Electron
+   - Starting from the root directory ifs_autotune/
      ```bash
      cd frontend
      npm install
@@ -77,17 +78,3 @@ BIGPOPA is a desktop tool for automating and optimizing International Futures (I
 
 ---
 
-## Build the desktop app (production)
-
-From the `desktop/` folder, run:
-
-```bash
-npm run electron-build
-```
-
-This produces an installer (`.exe`) that bundles:
-- Electron runtime
-- React UI (compiled build)
-- Python backend scripts
-
-Users can install and run BIGPOPA locally with no extra setup.
