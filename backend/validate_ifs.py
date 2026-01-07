@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from xml.etree import ElementTree
 
-from fastapi import APIRouter
 
 ####################################################
 # 1. WORKING FILE INITIALIZERS (from db_init.py)
@@ -71,9 +70,6 @@ REQUIRED_PATHS = [
 ]
 
 REQUIRED_INPUT_SHEETS = ["AnalFunc", "TablFunc", "IFsVar", "DataDict"]
-
-
-router = APIRouter()
 
 
 
@@ -281,7 +277,6 @@ def validate_ifs_folder(
     }
 
 
-@router.post("/check")
 def check_folder(payload: dict) -> dict:
     return validate_ifs_folder(
         payload["path"],

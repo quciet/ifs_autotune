@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the BIGPOPA backend and frontend dev servers together."""
+"""Run the BIGPOPA frontend dev server."""
 from __future__ import annotations
 
 import os
@@ -13,11 +13,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 SERVICES = (
-    {
-        "name": "backend",
-        "cmd": [sys.executable, "-m", "uvicorn", "app.main:app", "--reload"],
-        "cwd": ROOT / "backend",
-    },
     {
         "name": "frontend",
         "cmd": ["npm", "run", "dev"],
