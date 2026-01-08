@@ -377,7 +377,7 @@ def _run_model(
             fit_val = float(row[0])
             key = tuple(np.round(flatten_inputs(param_values, coef_values), 6))
             print(
-                f"[ML-STATUS] Reusing evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}",
+                f"Reusing evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}",
                 flush=True,
             )
             return fit_val, model_id
@@ -454,7 +454,7 @@ def _run_model(
 
     key = tuple(np.round(flatten_inputs(param_values, coef_values), 6))
     print(
-        f"[ML-STATUS] Evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}",
+        f"Evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}",
         flush=True,
     )
     return fit_val, model_id
