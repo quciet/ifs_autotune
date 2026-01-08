@@ -742,7 +742,13 @@ ipcMain.handle("run-ml", async (event, args) => {
 
           return baseArgs;
         })(),
-        { shell: true }
+        {
+          shell: true,
+          env: {
+            ...process.env,
+            PYTHONUNBUFFERED: "1",
+          },
+        }
       );
 
       let stdoutBuffer = '';

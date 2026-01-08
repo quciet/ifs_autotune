@@ -55,7 +55,10 @@ def active_learning_loop(
 
     best_y_prev = float(np.min(Y_obs))
     ml_prefix = "[ML-STATUS] "
-    print(f"{ml_prefix}Starting active learning run — initial best_y = {best_y_prev:.4f}")
+    print(
+        f"{ml_prefix}Starting active learning run — initial best_y = {best_y_prev:.4f}",
+        flush=True,
+    )
 
     for t in range(n_iters):
         models = train_ensemble(
@@ -89,7 +92,7 @@ def active_learning_loop(
                 x_next_array = candidate
                 break
         if x_next_array is None:
-            print(f"{ml_prefix}All candidates evaluated. Stopping early.")
+            print(f"{ml_prefix}All candidates evaluated. Stopping early.", flush=True)
             break
 
         key = tuple(np.round(x_next_array, 6))
@@ -110,7 +113,8 @@ def active_learning_loop(
         print(
             f"{ml_prefix}[{t+1:03d}/{n_iters}] "
             f"y_next={y_next:.4f} ({'reused' if reused else 'new'}), "
-            f"best_y={best_y_curr:.4f}"
+            f"best_y={best_y_curr:.4f}",
+            flush=True,
         )
 
         if min_improve_pct is not None:
@@ -122,7 +126,8 @@ def active_learning_loop(
             if no_improve_counter >= patience:
                 print(
                     f"{ml_prefix}Stopping early: no improvement > "
-                    f"{min_improve_pct*100:.2f}% for {patience} consecutive iterations."
+                    f"{min_improve_pct*100:.2f}% for {patience} consecutive iterations.",
+                    flush=True,
                 )
                 break
         best_y_prev = best_y_curr
