@@ -727,6 +727,7 @@ ipcMain.handle("run-ml", async (event, args) => {
         "python",
         (() => {
           const baseArgs = [
+            "-u",
             path.join(__dirname, "..", "backend", "ml_driver.py"),
             "--ifs-root", args.ifsRoot,
             "--end-year", args.endYear,
@@ -752,8 +753,8 @@ ipcMain.handle("run-ml", async (event, args) => {
 
         console.log("[ML-DRIVER]", trimmed);
 
-        // 1. ML Log (Bottom Panel): Lines matching [XXX/XXX]
-        if (/^\[\d{3}\/\d{3}\]/.test(trimmed)) {
+        // 1. ML Log (Bottom Panel): Explicit ML status tag
+        if (trimmed.startsWith("[ML-STATUS]")) {
           event.sender.send("ml-log", trimmed);
           return;
         }
