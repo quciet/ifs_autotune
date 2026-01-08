@@ -376,7 +376,10 @@ def _run_model(
             # Found previously evaluated model — reuse stored fit_pooled
             fit_val = float(row[0])
             key = tuple(np.round(flatten_inputs(param_values, coef_values), 6))
-            print(f"Reusing evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}")
+            print(
+                f"[ML-STATUS] Reusing evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}",
+                flush=True,
+            )
             return fit_val, model_id
 
     # --------------------------------------------------------------------------
@@ -450,11 +453,16 @@ def _run_model(
         fit_val = float(row[0])
 
     key = tuple(np.round(flatten_inputs(param_values, coef_values), 6))
-    print(f"Evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}")
+    print(
+        f"[ML-STATUS] Evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}",
+        flush=True,
+    )
     return fit_val, model_id
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(description="Active learning driver for BIGPOPA")
     parser.add_argument("--ifs-root", required=True, help="Path to IFs root")
     parser.add_argument("--end-year", required=True, type=int, help="Simulation end year")
