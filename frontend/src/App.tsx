@@ -661,7 +661,6 @@ function TuneIFsPage({
 
         {runResult ? (
           <div className="metadata-inline">
-            <div className="run-status success">Run completed</div>
             <ul>
               {runResult.model_id && (
                 <li>
@@ -687,16 +686,6 @@ function TuneIFsPage({
               {typeof runResult.iterations === "number" && (
                 <li>
                   <strong>Iterations:</strong> {runResult.iterations}
-                </li>
-              )}
-              {typeof runResult.base_year === "number" && (
-                <li>
-                  <strong>Base year:</strong> {runResult.base_year}
-                </li>
-              )}
-              {typeof runResult.end_year === "number" && (
-                <li>
-                  <strong>End year:</strong> {runResult.end_year}
                 </li>
               )}
               {wgdDisplay && (

@@ -562,18 +562,6 @@ body {
   color: #1a202c;
 }
 
-.run-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.4rem 0.75rem;
-  border-radius: 9999px;
-  font-weight: 600;
-  background: rgba(72, 187, 120, 0.15);
-  color: #276749;
-  margin-bottom: 0.75rem;
-}
-
 .ml-console {
   margin-top: 1.5rem;
   background: #1a1a1a;
