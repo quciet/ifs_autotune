@@ -528,6 +528,7 @@ function TuneIFsPage({
   };
 
   const displayPercent = Math.min(100, Math.max(0, progressPercent));
+  const showProgressBar = false;
   const formattedPercent = `${displayPercent.toFixed(1)}%`;
 
   const runProgressLabel = running
@@ -650,11 +651,13 @@ function TuneIFsPage({
 
         {error && <div className="progress-text error">{error}</div>}
 
-        <progress
-          className="progress-indicator"
-          max={100}
-          value={displayPercent}
-        />
+        {showProgressBar && (
+          <progress
+            className="progress-indicator"
+            max={100}
+            value={displayPercent}
+          />
+        )}
 
         {runResult ? (
           <div className="metadata-inline">
