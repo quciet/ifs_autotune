@@ -95,6 +95,7 @@ function TuneIFsPage({
   const [statusLevel, setStatusLevel] = useState<StatusLevel>("info");
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [mlLogEntries, setMLLogEntries] = useState<string[]>([]);
+  const [currentModelProgress, setCurrentModelProgress] = useState<string | null>(null);
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
   );
@@ -256,6 +257,11 @@ function TuneIFsPage({
 
     const unsubscribe = subscribe((line: string) => {
       setMLLogEntries((prev) => [...prev, line]);
+
+      const match = line.match(/\[(\d+)\/(\d+)\]/);
+      if (match) {
+        setCurrentModelProgress(`${match[1]}/${match[2]}`);
+      }
     });
 
     return () => unsubscribe?.();
@@ -433,6 +439,7 @@ function TuneIFsPage({
     setProgressYear(null);
     setProgressPercent(0);
     setMLLogEntries([]);
+    setCurrentModelProgress(null);
 
     const parsedEndYear = Number(endYearInput);
     if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
@@ -529,16 +536,18 @@ function TuneIFsPage({
 
   const displayPercent = Math.min(100, Math.max(0, progressPercent));
   const showProgressBar = false;
-  const formattedPercent = `${displayPercent.toFixed(1)}%`;
-
   const runProgressLabel = running
     ? progressYear != null
-      ? `Running ML Optimization… Last reported year: ${progressYear} (${formattedPercent})`
+      ? currentModelProgress
+        ? `Running ML Optimization… Model ${currentModelProgress}, current year of run: ${progressYear}`
+        : `Running ML Optimization… current year of run: ${progressYear}`
+      : currentModelProgress
+      ? `Running ML Optimization… Model ${currentModelProgress}`
       : "Running ML Optimization…"
     : runResult
     ? null
     : progressYear != null
-    ? `Last reported year: ${progressYear} (${formattedPercent})`
+    ? `Last reported year: ${progressYear}`
     : null;
 
   const wgdDisplay =
