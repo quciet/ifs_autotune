@@ -70,6 +70,14 @@ def flatten_inputs(input_param: dict, input_coef: dict) -> np.ndarray:
     return np.array(vector, dtype=float)
 
 
+def _format_point_for_log(values: np.ndarray) -> str:
+    """Format an input vector for deterministic, readable logging output."""
+
+    arr = np.asarray(values, dtype=float).ravel()
+    joined_values = ", ".join(f"{v:.6f}" for v in arr)
+    return f"({joined_values})"
+
+
 def unflatten_vector(
     vector: Iterable[float], input_param_template: dict, input_coef_template: dict
 ) -> Tuple[dict, dict]:
@@ -375,9 +383,10 @@ def _run_model(
         if row and row[0] is not None:
             # Found previously evaluated model — reuse stored fit_pooled
             fit_val = float(row[0])
-            key = tuple(np.round(flatten_inputs(param_values, coef_values), 6))
+            point = np.round(flatten_inputs(param_values, coef_values), 6)
+            point_text = _format_point_for_log(point)
             print(
-                f"Reusing evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}",
+                f"Reusing evaluated model {model_id} at {point_text} => fit_pooled={fit_val:.6f}",
                 flush=True,
             )
             return fit_val, model_id
@@ -452,9 +461,10 @@ def _run_model(
             raise RuntimeError("fit_pooled is NULL after IFs run")
         fit_val = float(row[0])
 
-    key = tuple(np.round(flatten_inputs(param_values, coef_values), 6))
+    point = np.round(flatten_inputs(param_values, coef_values), 6)
+    point_text = _format_point_for_log(point)
     print(
-        f"Evaluated model {model_id} at {key} => fit_pooled={fit_val:.6f}",
+        f"Evaluated model {model_id} at {point_text} => fit_pooled={fit_val:.6f}",
         flush=True,
     )
     return fit_val, model_id
