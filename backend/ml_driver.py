@@ -219,6 +219,13 @@ def _build_search_ranges(
         max_val = float(user_max) if user_max is not None else (
             float(param_max) if param_max is not None else float(fallback_max)
         )
+        if min_val is not None and max_val is not None and min_val > max_val:
+            original_min, original_max = min_val, max_val
+            min_val, max_val = max_val, min_val
+            print(
+                f"Warning: swapped bounds for parameter '{param_name}' because min ({original_min}) > max ({original_max})",
+                flush=True,
+            )
         ranges.append((min_val, max_val))
 
     for func in sorted(input_coef.keys()):
@@ -271,6 +278,18 @@ def _build_search_ranges(
                     elif beta_default < 0:
                         max_val = min(max_val, 0.0)
 
+                if min_val is not None and max_val is not None and min_val > max_val:
+                    original_min, original_max = min_val, max_val
+                    min_val, max_val = max_val, min_val
+                    print(
+                        (
+                            "Warning: swapped bounds for coefficient "
+                            f"(func='{func}', x_name='{x_name}', beta='{beta}') "
+                            f"because min ({original_min}) > max ({original_max})"
+                        ),
+                        flush=True,
+                    )
+
                 ranges.append((float(min_val), float(max_val)))
     return ranges
 
@@ -298,7 +317,7 @@ def _to_optional_float(value: object) -> float | None:
         return None
     if isinstance(value, str):
         value = value.strip()
-        if not value:
+        if not value or value.lower() in {"nan", "null"}:
             return None
     try:
         return float(value)
