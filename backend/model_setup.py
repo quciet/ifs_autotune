@@ -27,20 +27,6 @@ from log_ifs_version import log_version_metadata
 import pandas as pd
 
 
-COEFFICIENT_COLUMNS: List[str] = [
-    "a",
-    "b1",
-    "b2",
-    "b3",
-    "b4",
-    "b5",
-    "b6",
-    "b7",
-    "b8",
-    "b9",
-]
-
-
 def _round_numbers(obj: Any, places: int = 6) -> Any:
     if isinstance(obj, float):
         return round(obj, places)
@@ -751,7 +737,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         func_name = str(row.get("Function Name") or "").strip()
         x_var = str(row.get("XVariable") or "").strip()
         y_var = str(row.get("YVariable") or "").strip()
-        if not (func_name and x_var and y_var):
+        coef_name = str(row.get("Coefficient") or "").strip()
+        if not (func_name and x_var and y_var and coef_name):
             continue
         valid_rows.append(row)
         if len(example_rows) < 5:
@@ -759,9 +746,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "func": func_name,
                 "xvar": x_var,
                 "yvar": y_var,
+                "coef": coef_name,
             }
-            for coef_name in COEFFICIENT_COLUMNS:
-                example[coef_name] = _normalize_number(row.get(coef_name))
             example_rows.append(example)
 
     log(
@@ -781,36 +767,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         func_name = str(row.get("Function Name") or "").strip()
         x_var = str(row.get("XVariable") or "").strip()
         y_var = str(row.get("YVariable") or "").strip()
+        coef_name = str(row.get("Coefficient") or "").strip()
 
-        if not (func_name and x_var and y_var):
+        if not (func_name and x_var and y_var and coef_name):
             log(
                 "warn",
                 "Skipping row with missing identifiers",
                 func=func_name,
                 xvar=x_var,
                 yvar=y_var,
+                coef=coef_name,
             )
             continue
 
         rows_considered += 1
-        # IMPORTANT DOMAIN RULE – DO NOT CHANGE:
-        # StartingPointTable selection rule:
-        #   Only NON-ZERO numeric values indicate that a coefficient is active.
-        #   Zero means “off”, identical to blank.
-        #   This rule is REQUIRED by BIGPOPA’s active learning pipeline.
-        #   Do NOT treat 0 as a valid value.
-        for coef_name in COEFFICIENT_COLUMNS:
-            raw_value = _normalize_number(row.get(coef_name))
-
-            # Explicit BIGPOPA rule:
-            # - Blank or missing → ignore
-            # - 0 or 0.0 → ignore
-            # - Non-zero numeric → SELECT the coefficient
-            if raw_value is None or raw_value == 0.0:
-                continue
-
-            # Only non-zero coefficients are included
-            input_coef.setdefault(func_name, {}).setdefault(x_var, {}).setdefault(coef_name, None)
+        input_coef.setdefault(func_name, {}).setdefault(x_var, {}).setdefault(coef_name, None)
 
     if output_root is None:
         log(
