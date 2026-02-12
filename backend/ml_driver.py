@@ -177,7 +177,12 @@ def _merge_with_template(template_param: dict, template_coef: dict, sample_param
 
 
 def _build_search_ranges(
-    conn: sqlite3.Connection, ifs_static_id: int, input_param: dict, input_coef: dict
+    conn: sqlite3.Connection,
+    ifs_static_id: int,
+    input_param: dict,
+    input_coef: dict,
+    user_param_bounds: dict[str, tuple[float | None, float | None]],
+    user_coef_bounds: dict[tuple[str, str, str], tuple[float | None, float | None]],
 ) -> List[Tuple[float, float]]:
     cursor = conn.cursor()
     ranges: List[Tuple[float, float]] = []
@@ -207,8 +212,13 @@ def _build_search_ranges(
         else:
             fallback_min, fallback_max = -1.0, 1.0
 
-        min_val = float(param_min) if param_min is not None else float(fallback_min)
-        max_val = float(param_max) if param_max is not None else float(fallback_max)
+        user_min, user_max = user_param_bounds.get(param_name, (None, None))
+        min_val = float(user_min) if user_min is not None else (
+            float(param_min) if param_min is not None else float(fallback_min)
+        )
+        max_val = float(user_max) if user_max is not None else (
+            float(param_max) if param_max is not None else float(fallback_max)
+        )
         ranges.append((min_val, max_val))
 
     for func in sorted(input_coef.keys()):
@@ -232,17 +242,30 @@ def _build_search_ranges(
                 beta_std = row[1] if row else None
 
                 center = float(beta_default) if beta_default is not None else default_val
+                db_min = None
+                db_max = None
                 if beta_std is not None:
                     span = abs(beta_std) * 3
-                    min_val = center - span
-                    max_val = center + span
-                elif center != 0:
-                    min_val = center - abs(center)
-                    max_val = center + abs(center)
-                else:
-                    min_val, max_val = -1.0, 1.0
+                    db_min = center - span
+                    db_max = center + span
 
-                if beta_default is not None:
+                if center != 0:
+                    fallback_min = center - abs(center)
+                    fallback_max = center + abs(center)
+                else:
+                    fallback_min, fallback_max = -1.0, 1.0
+
+                user_min, user_max = user_coef_bounds.get((func, x_name, beta), (None, None))
+                excel_fully_specified = user_min is not None and user_max is not None
+
+                min_val = float(user_min) if user_min is not None else (
+                    float(db_min) if db_min is not None else float(fallback_min)
+                )
+                max_val = float(user_max) if user_max is not None else (
+                    float(db_max) if db_max is not None else float(fallback_max)
+                )
+
+                if beta_default is not None and not excel_fully_specified:
                     if beta_default > 0:
                         min_val = max(min_val, 0.0)
                     elif beta_default < 0:
@@ -259,6 +282,71 @@ def _sample_grid(ranges: List[Tuple[float, float]], n_samples: int = 200) -> np.
         point = [rng.uniform(low, high) if low != high else low for low, high in ranges]
         samples.append(point)
     return np.asarray(samples, dtype=float)
+
+
+def _switch_is_on(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() == "on"
+    try:
+        return float(value) == 1.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _to_optional_float(value: object) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_user_bounds(
+    starting_point_table: Path,
+) -> tuple[dict[str, tuple[float | None, float | None]], dict[tuple[str, str, str], tuple[float | None, float | None]]]:
+    param_bounds: dict[str, tuple[float | None, float | None]] = {}
+    coef_bounds: dict[tuple[str, str, str], tuple[float | None, float | None]] = {}
+
+    if not starting_point_table.exists():
+        return param_bounds, coef_bounds
+
+    def _read_sheet(sheet_name: str) -> pd.DataFrame:
+        try:
+            return pd.read_excel(starting_point_table, sheet_name=sheet_name, engine="openpyxl")
+        except Exception:
+            return pd.DataFrame()
+
+    for _, row in _read_sheet("IfsVar").iterrows():
+        if not _switch_is_on(row.get("Switch")):
+            continue
+        name = str(row.get("Name") or "").strip()
+        if not name:
+            continue
+        param_bounds[name] = (
+            _to_optional_float(row.get("Minimum")),
+            _to_optional_float(row.get("Maximum")),
+        )
+
+    for sheet_name in ("TablFunc", "AnalFunc"):
+        for _, row in _read_sheet(sheet_name).iterrows():
+            if not _switch_is_on(row.get("Switch")):
+                continue
+            function_name = str(row.get("Function Name") or "").strip()
+            x_name = str(row.get("XVariable") or "").strip()
+            beta_name = str(row.get("Coefficient") or "").strip()
+            if not function_name or not x_name or not beta_name:
+                continue
+            coef_bounds[(function_name, x_name, beta_name)] = (
+                _to_optional_float(row.get("Minimum")),
+                _to_optional_float(row.get("Maximum")),
+            )
+
+    return param_bounds, coef_bounds
 
 
 def _load_ml_settings(starting_point_table: Path):
@@ -566,6 +654,7 @@ def main(argv: list[str] | None = None) -> int:
         n_convergence,
         min_convergence_pct,
     ) = _load_ml_settings(starting_point_table)
+    user_param_bounds, user_coef_bounds = _load_user_bounds(starting_point_table)
 
     try:
         structure = dataset_utils.extract_structure_keys(input_param, input_coef, output_set)
@@ -595,7 +684,14 @@ def main(argv: list[str] | None = None) -> int:
         initial_vec = flatten_inputs(param_template, coef_template)
         vector_to_model_id.setdefault(tuple(np.round(initial_vec, 6)), initial_model_id)
 
-        ranges = _build_search_ranges(conn, ifs_static_id, param_template, coef_template)
+        ranges = _build_search_ranges(
+            conn,
+            ifs_static_id,
+            param_template,
+            coef_template,
+            user_param_bounds,
+            user_coef_bounds,
+        )
         X_grid = _sample_grid(ranges, n_samples=n_sample)
 
         def callback(x_vector: np.ndarray | float):
