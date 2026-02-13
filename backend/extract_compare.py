@@ -350,10 +350,9 @@ def main() -> int:
             log("warn", f"Failed to convert Parquet files: {exc}")
 
         fit_metrics: List[Dict[str, object]] = []
+        min_points_per_country = 3
         total_sq_error = 0.0
         total_count = 0
-        ss_res_total = 0.0
-        ss_tot_total = 0.0
 
         for item in extracted:
             var_name = item["Variable"]
@@ -405,14 +404,38 @@ def main() -> int:
             squared_errors = (valid["v"] - valid["v_h"]) ** 2
 
             if fit_metric == "r2":
-                ss_res = squared_errors.sum()
-                ss_tot = ((valid["v_h"] - valid["v_h"].mean()) ** 2).sum()
-                if ss_tot == 0:
-                    r2_v = 1.0 if ss_res == 0 else 0.0
-                else:
-                    ss_res_total += ss_res
-                    ss_tot_total += ss_tot
-                    r2_v = 1 - (ss_res / ss_tot)
+                if not {"1", "0"}.issubset(valid.columns):
+                    log(
+                        "warn",
+                        f"Combined data for {var_name} missing required columns for country-level R2",
+                        has_country="1" in valid.columns,
+                        has_year="0" in valid.columns,
+                    )
+                    r2_v = None
+                    fit_metrics.append({"Variable": var_name, "Table": table_name, "R2": r2_v})
+                    continue
+
+                country_r2_values: List[float] = []
+                for _, group in valid.groupby("1"):
+                    gg = group.dropna(subset=["v", "v_h"]).sort_values("0")
+                    if len(gg) < min_points_per_country:
+                        continue
+
+                    country_errors = (gg["v_h"] - gg["v"]) ** 2
+                    ss_res_c = country_errors.sum()
+                    ss_tot_c = ((gg["v_h"] - gg["v_h"].mean()) ** 2).sum()
+
+                    if ss_tot_c == 0:
+                        r2_c = 1.0 if ss_res_c == 0 else 0.0
+                    else:
+                        r2_c = 1 - (ss_res_c / ss_tot_c)
+                    country_r2_values.append(float(r2_c))
+
+                r2_v = (
+                    sum(country_r2_values) / len(country_r2_values)
+                    if country_r2_values
+                    else None
+                )
                 fit_metrics.append({"Variable": var_name, "Table": table_name, "R2": r2_v})
             else:
                 mse_v = squared_errors.mean()
@@ -421,7 +444,8 @@ def main() -> int:
                 fit_metrics.append({"Variable": var_name, "Table": table_name, "MSE": mse_v})
 
         if fit_metric == "r2":
-            pooled_r2 = 1 - (ss_res_total / ss_tot_total) if ss_tot_total > 0 else None
+            r2_values = [metric["R2"] for metric in fit_metrics if metric.get("R2") is not None]
+            pooled_r2 = (sum(r2_values) / len(r2_values)) if r2_values else None
             pooled_metric = 1 - pooled_r2 if pooled_r2 is not None else None
             metric_column = "R2"
             pooled_column = "PooledR2Loss"
