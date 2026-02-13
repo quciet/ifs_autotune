@@ -4,6 +4,65 @@ Local-first desktop application for automating and optimizing IFs model runs.
 Runs fully offline: React/Electron frontend + Python backend, with Electron acting as the bridge.
 
 ---
+## Quickstart (Windows, one command)
+
+### Prerequisites
+- Git
+- Python **3.11 or newer**
+- Node.js LTS (npm is included)
+
+### Clone + run
+```bash
+git clone https://github.com/<your-org>/ifs_autotune.git
+cd ifs_autotune
+scripts\Run_BIGPOPA.bat
+```
+
+That single command will:
+- create `backend\.venv` (if missing),
+- install backend/frontend/desktop dependencies,
+- launch BIGPOPA.
+
+> `backend\.venv` is **REQUIRED** for this project and is automatically created on first run.
+
+### Optional PowerShell launcher
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\Run_BIGPOPA.ps1
+```
+
+### Troubleshooting
+- **Port already in use (usually 5173):** close old Node/Electron windows and run `scripts\Run_BIGPOPA.bat` again.
+- **`npm` not found:** install Node.js LTS, reopen terminal, and run again.
+- **`pip install -e backend` fails:** delete stale egg-info and retry:
+  ```bat
+  rmdir /s /q backend\bigpopa_backend.egg-info
+  scripts\Run_BIGPOPA.bat
+  ```
+
+## Alternative: existing development workflow
+
+If you prefer the original manual dev flow, it is still supported.
+
+1. Install backend deps in the required project venv:
+   ```bash
+   python -m venv backend/.venv
+   backend/.venv/Scripts/python -m pip install -U pip
+   backend/.venv/Scripts/python -m pip install -e backend
+   ```
+2. Install frontend + desktop deps:
+   ```bash
+   cd frontend && npm install
+   cd ../desktop && npm install
+   ```
+3. Run desktop dev mode:
+   ```bash
+   cd desktop
+   npm run electron-dev
+   ```
+
+> Note: `backend\.venv` remains required in both quickstart and manual development paths.
+
+---
 ## How it Works
 
 BIGPOPA is a desktop tool for automating and optimizing International Futures (IFs) model runs. The application guides the user through the following workflow:
@@ -18,63 +77,4 @@ BIGPOPA is a desktop tool for automating and optimizing International Futures (I
 -   **`StartingPointTable.xlsx`**: This is the primary input file for configuring the model and the machine learning optimization. Users can define model parameters, coefficients, and other settings in the various sheets of this Excel workbook.
 -   **`bigpopa.db`**: This is a SQLite database that is created in the user-specified output directory. It stores all model configurations, run artifacts, and final results. It also functions as a cache, allowing the optimization loop to reuse results from previously evaluated model configurations, which significantly speeds up the process.
 
-## Run the app locally (development)
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/<your-org>/ifs_autotune.git
-   cd ifs_autotune
-   ```
-
-2. **(Optional) Set up a Python virtual environment**
-   - Using the built-in `venv` module:
-     ```bash
-     cd backend
-     python -m venv .venv
-     .venv\Scripts\activate    # On Windows
-     # or: source .venv/bin/activate  # On Linux/Mac
-     ```
-   - Exit the environment with `deactivate` when done.
-   - Using Conda or another manager also works.
-
-3. **Install backend in editable mode**
-   - Ensure you have Python 3.11 or later installed.
-   - Starting from root directory ifs_autotune/
-     ```bash
-     cd backend
-     pip install -e .
-     cd ..
-     ```
-
-4. **Install frontend + desktop dependencies**
-   - Ensure you have Node.js 18+ and npm installed.
-   - Install packages for both frontend and Electron
-   - Starting from the root directory ifs_autotune/
-     ```bash
-     cd frontend
-     npm install
-     cd ../desktop
-     npm install
-     cd ..
-     ```
-
-5. **Place the default input workbook (optional but recommended)**
-   - Create an `input` folder inside `desktop/` if it does not already exist.
-   - Copy your `StartingPointTable.xlsx` into `desktop/input/StartingPointTable.xlsx`.
-   - The desktop app will automatically point the file picker at this location when it launches.
-
-6. **Launch the desktop app (dev mode)**
-   - From the `desktop/` folder:
-     ```bash
-     npm run electron-dev
-     ```
-   - This will:
-     - Start the React frontend with hot reload (Vite).
-     - Start Electron and open a desktop window.
-   - Use the **Browse** button (native folder picker) or paste a path to select your IFs installation folder, then click **Validate**.
-   - Validation results display:
-     - ✅ or ❌ for required files/folders (`IFsInit.db`, `DATA/SAMBase.db`, `RUNFILES/DataDict.db`, `RUNFILES/IFsHistSeries.db`, `net8/ifs.exe`, `RUNFILES/`, `Scenario/`).
-     - Extracted base year from `IFsInit.db`.
-
 ---
-
