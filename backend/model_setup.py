@@ -87,6 +87,36 @@ def _row_enabled(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "on", "yes"}
 
 
+def _load_ml_text_settings(starting_point_table: Path) -> Tuple[str, str]:
+    fit_metric = "mse"
+    ml_method = "neural network"
+
+    if not starting_point_table.exists():
+        return fit_metric, ml_method
+
+    try:
+        df = pd.read_excel(starting_point_table, sheet_name="ML", engine="openpyxl")
+    except Exception:
+        return fit_metric, ml_method
+
+    for _, row in df.iterrows():
+        method = str(row.get("Method") or "").strip().lower()
+        if method != "general":
+            continue
+
+        parameter = str(row.get("Parameter") or "").strip().lower()
+        value = str(row.get("Value") or "").strip().lower()
+        if not value:
+            continue
+
+        if parameter == "fit_metric":
+            fit_metric = value
+        elif parameter == "ml_method":
+            ml_method = value
+
+    return fit_metric, ml_method
+
+
 def build_input_param_from_startingpoint(ifsv_df: pd.DataFrame) -> Dict[str, Any]:
     mp: Dict[str, Any] = {}
     if ifsv_df.empty:
@@ -678,11 +708,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     if args.output_folder and base_year is not None:
         try:
+            fit_metric, ml_method = _load_ml_text_settings(input_path)
             version_payload = log_version_metadata(
                 ifs_root=ifs_root,
                 output_folder=Path(args.output_folder),
                 base_year=base_year,
                 end_year=forecast_year,
+                fit_metric=fit_metric,
+                ml_method=ml_method,
             )
         except Exception as exc:
             log(

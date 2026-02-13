@@ -258,13 +258,24 @@ def _populate_real_data(
     return len(parameter_rows), len(coefficient_rows)
 
 
+def _normalize_ml_text(value: Optional[str], default: str) -> str:
+    text = str(value or "").strip().lower()
+    return text or default
+
+
 def log_version_metadata(
-    *, ifs_root: Path, output_folder: Path, base_year: int, end_year: int
+    *,
+    ifs_root: Path,
+    output_folder: Path,
+    base_year: int,
+    end_year: int,
+    fit_metric: str = "mse",
+    ml_method: str = "neural network",
 ) -> Dict[str, Any]:
     version_raw = _read_version_string(ifs_root)
     version_number = _normalize_version(version_raw)
-    fit_metric = "mse"
-    ml_method = "neural network"
+    fit_metric = _normalize_ml_text(fit_metric, "mse")
+    ml_method = _normalize_ml_text(ml_method, "neural network")
 
     db_path = output_folder / "bigpopa.db"
     _ensure_database(db_path)
