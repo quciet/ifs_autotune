@@ -429,8 +429,10 @@ def main() -> int:
                     ss_res_c = country_errors.sum()
                     ss_tot_c = ((gg["v_h"] - gg["v_h"].mean()) ** 2).sum()
 
-                    ss_res_v += float(ss_res_c)
-                    ss_tot_v += float(ss_tot_c)
+                    # skip country with zero historical variance so ss_tot_c==0 doesn't distort pooled R²
+                    if ss_tot_c > 0:
+                        ss_res_v += float(ss_res_c)
+                        ss_tot_v += float(ss_tot_c)
 
                 total_ss_res += ss_res_v
                 total_ss_tot += ss_tot_v
