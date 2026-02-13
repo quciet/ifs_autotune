@@ -345,6 +345,18 @@ def main() -> int:
         min_points_per_country = 3
         total_sq_error = 0.0
         total_count = 0
+        total_ss_res = 0.0
+        total_ss_tot = 0.0
+
+        effective_fit_metric = fit_metric
+        if fit_metric not in {"r2", "mse"}:
+            log(
+                "warn",
+                "Unknown fit_metric in ifs_version; defaulting to mse",
+                ifs_id=ifs_id,
+                fit_metric=fit_metric,
+            )
+            effective_fit_metric = "mse"
 
         for item in extracted:
             var_name = item["Variable"]
@@ -371,7 +383,7 @@ def main() -> int:
                 )
             except Exception as exc:  # noqa: BLE001
                 log("warn", f"Failed to combine {var_name} with {table_name}: {exc}")
-                metric_column = "R2" if fit_metric == "r2" else "MSE"
+                metric_column = "R2" if effective_fit_metric == "r2" else "MSE"
                 fit_metrics.append({"Variable": var_name, "Table": table_name, metric_column: None})
                 continue
 
@@ -382,18 +394,18 @@ def main() -> int:
                     has_v="v" in combined_df.columns,
                     has_v_h="v_h" in combined_df.columns,
                 )
-                metric_column = "R2" if fit_metric == "r2" else "MSE"
+                metric_column = "R2" if effective_fit_metric == "r2" else "MSE"
                 fit_metrics.append({"Variable": var_name, "Table": table_name, metric_column: None})
                 continue
 
             valid = combined_df.dropna(subset=["v", "v_h"])
             if valid.empty:
-                metric_label = "R2" if fit_metric == "r2" else "MSE"
+                metric_label = "R2" if effective_fit_metric == "r2" else "MSE"
                 log("warn", f"No overlapping data to compute {metric_label} for {var_name}")
                 fit_metrics.append({"Variable": var_name, "Table": table_name, metric_label: None})
                 continue
 
-            if fit_metric == "r2":
+            if effective_fit_metric == "r2":
                 if not {"1", "0"}.issubset(valid.columns):
                     log(
                         "warn",
@@ -405,7 +417,9 @@ def main() -> int:
                     fit_metrics.append({"Variable": var_name, "Table": table_name, "R2": r2_v})
                     continue
 
-                country_r2_values: List[float] = []
+                ss_res_v = 0.0
+                ss_tot_v = 0.0
+
                 for _, group in valid.groupby("1"):
                     gg = group.dropna(subset=["v", "v_h"]).sort_values("0")
                     if len(gg) < min_points_per_country:
@@ -415,54 +429,27 @@ def main() -> int:
                     ss_res_c = country_errors.sum()
                     ss_tot_c = ((gg["v_h"] - gg["v_h"].mean()) ** 2).sum()
 
-                    if ss_tot_c == 0:
-                        r2_c = 1.0 if ss_res_c == 0 else 0.0
-                    else:
-                        r2_c = 1 - (ss_res_c / ss_tot_c)
-                    country_r2_values.append(float(r2_c))
+                    ss_res_v += float(ss_res_c)
+                    ss_tot_v += float(ss_tot_c)
 
-                r2_v = (
-                    sum(country_r2_values) / len(country_r2_values)
-                    if country_r2_values
-                    else None
-                )
+                total_ss_res += ss_res_v
+                total_ss_tot += ss_tot_v
+
+                r2_v = 1 - (ss_res_v / ss_tot_v) if ss_tot_v > 0 else None
                 fit_metrics.append({"Variable": var_name, "Table": table_name, "R2": r2_v})
-            elif fit_metric == "mse":
-                squared_errors = (valid["v"] - valid["v_h"]) ** 2
-                mse_v = squared_errors.mean()
-                total_sq_error += squared_errors.sum()
-                total_count += len(squared_errors)
-                fit_metrics.append({"Variable": var_name, "Table": table_name, "MSE": mse_v})
-            else:
-                log(
-                    "warn",
-                    "Unknown fit_metric in ifs_version; defaulting to mse",
-                    ifs_id=ifs_id,
-                    fit_metric=fit_metric,
-                )
+            elif effective_fit_metric == "mse":
                 squared_errors = (valid["v"] - valid["v_h"]) ** 2
                 mse_v = squared_errors.mean()
                 total_sq_error += squared_errors.sum()
                 total_count += len(squared_errors)
                 fit_metrics.append({"Variable": var_name, "Table": table_name, "MSE": mse_v})
 
-        if fit_metric == "r2":
-            r2_values = [metric["R2"] for metric in fit_metrics if metric.get("R2") is not None]
-            pooled_r2 = (sum(r2_values) / len(r2_values)) if r2_values else None
+        if effective_fit_metric == "r2":
+            pooled_r2 = 1 - (total_ss_res / total_ss_tot) if total_ss_tot > 0 else None
             pooled_metric = 1 - pooled_r2 if pooled_r2 is not None else None
             metric_column = "R2"
             pooled_column = "PooledR2Loss"
-        elif fit_metric == "mse":
-            pooled_metric = total_sq_error / total_count if total_count > 0 else None
-            metric_column = "MSE"
-            pooled_column = "PooledMSE"
-        else:
-            log(
-                "warn",
-                "Unknown fit_metric in ifs_version; defaulting to mse",
-                ifs_id=ifs_id,
-                fit_metric=fit_metric,
-            )
+        elif effective_fit_metric == "mse":
             pooled_metric = total_sq_error / total_count if total_count > 0 else None
             metric_column = "MSE"
             pooled_column = "PooledMSE"
