@@ -409,11 +409,10 @@ def main() -> int:
                 ss_tot = ((valid["v_h"] - valid["v_h"].mean()) ** 2).sum()
                 if ss_tot == 0:
                     r2_v = 1.0 if ss_res == 0 else 0.0
-                    ss_res_total += ss_res
                 else:
-                    r2_v = 1 - (ss_res / ss_tot)
                     ss_res_total += ss_res
                     ss_tot_total += ss_tot
+                    r2_v = 1 - (ss_res / ss_tot)
                 fit_metrics.append({"Variable": var_name, "Table": table_name, "R2": r2_v})
             else:
                 mse_v = squared_errors.mean()
