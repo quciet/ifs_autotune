@@ -17,6 +17,13 @@ dependencies = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 
+# Keep editable installs resilient by discovering real packages on disk.
+# We intentionally do not list app/tests because those directories do not exist.
+# Declaring non-existent package directories causes `pip install -e .` to fail.
 [tool.setuptools]
-packages = ["app", "optimization", "tools", "tests"]
 py-modules = ["combine_var_hist", "dataset_utils", "extract_compare", "log_ifs_version", "ml_driver", "model_setup", "prepare_coeff_param", "run_ifs", "validate_ifs"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["optimization*"]
+exclude = ["*.egg-info", "*.egg-info.*"]
