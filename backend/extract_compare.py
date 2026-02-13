@@ -220,14 +220,6 @@ def main() -> int:
         fit_metric = str(fit_metric_value).strip().lower() if fit_metric_value is not None else ""
         if not fit_metric:
             fit_metric = "mse"
-        elif fit_metric not in {"mse", "r2"}:
-            log(
-                "warn",
-                "Unknown fit_metric in ifs_version; defaulting to mse",
-                ifs_id=ifs_id,
-                fit_metric=fit_metric,
-            )
-            fit_metric = "mse"
 
         if not row or not row[0]:
             log("error", "No output_set found in model_input for this model_id", model_id=model_id)
@@ -401,8 +393,6 @@ def main() -> int:
                 fit_metrics.append({"Variable": var_name, "Table": table_name, metric_label: None})
                 continue
 
-            squared_errors = (valid["v"] - valid["v_h"]) ** 2
-
             if fit_metric == "r2":
                 if not {"1", "0"}.issubset(valid.columns):
                     log(
@@ -437,7 +427,20 @@ def main() -> int:
                     else None
                 )
                 fit_metrics.append({"Variable": var_name, "Table": table_name, "R2": r2_v})
+            elif fit_metric == "mse":
+                squared_errors = (valid["v"] - valid["v_h"]) ** 2
+                mse_v = squared_errors.mean()
+                total_sq_error += squared_errors.sum()
+                total_count += len(squared_errors)
+                fit_metrics.append({"Variable": var_name, "Table": table_name, "MSE": mse_v})
             else:
+                log(
+                    "warn",
+                    "Unknown fit_metric in ifs_version; defaulting to mse",
+                    ifs_id=ifs_id,
+                    fit_metric=fit_metric,
+                )
+                squared_errors = (valid["v"] - valid["v_h"]) ** 2
                 mse_v = squared_errors.mean()
                 total_sq_error += squared_errors.sum()
                 total_count += len(squared_errors)
@@ -449,7 +452,17 @@ def main() -> int:
             pooled_metric = 1 - pooled_r2 if pooled_r2 is not None else None
             metric_column = "R2"
             pooled_column = "PooledR2Loss"
+        elif fit_metric == "mse":
+            pooled_metric = total_sq_error / total_count if total_count > 0 else None
+            metric_column = "MSE"
+            pooled_column = "PooledMSE"
         else:
+            log(
+                "warn",
+                "Unknown fit_metric in ifs_version; defaulting to mse",
+                ifs_id=ifs_id,
+                fit_metric=fit_metric,
+            )
             pooled_metric = total_sq_error / total_count if total_count > 0 else None
             metric_column = "MSE"
             pooled_column = "PooledMSE"
