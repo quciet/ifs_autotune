@@ -74,6 +74,12 @@ def write_fit_json(
     return path
 
 
+def format_metric(value: float | None) -> str:
+    if value is None:
+        return "None"
+    return f"{value:.3e}" if abs(value) < 1e-3 else f"{value:.6f}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Extract IFs output variables and compare with historical data",
@@ -491,14 +497,11 @@ def main() -> int:
                     (ifs_id, model_id, json.dumps(metric_map), pooled_metric),
                 )
 
-        if pooled_metric is not None:
-            log(
-                "success",
-                f"Pooled {pooled_column} across variables: {pooled_metric:.6f}",
-                file=str(metrics_path),
-            )
-        else:
-            log("success", f"Pooled {pooled_column} across variables: None", file=str(metrics_path))
+        log(
+            "success",
+            f"Pooled {pooled_column} across variables: {format_metric(pooled_metric)}",
+            file=str(metrics_path),
+        )
 
         emit_stage_response(
             "success",
