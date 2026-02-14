@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.invoke('select-input-file', { defaultPath }),
   getDefaultOutputDir: () => ipcRenderer.invoke('get-default-output-dir'),
   getDefaultInputFile: () => ipcRenderer.invoke('get-default-input-file'),
+  getMLJobStatus: () => ipcRenderer.invoke('ml:jobStatus'),
   invoke: (channel, data) => ipcRenderer.invoke(channel, data),
   onMLProgress: (callback) => {
     const subscription = (_event, line) => {

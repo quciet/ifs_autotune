@@ -25,6 +25,16 @@ type View = "validate" | "tune";
 
 type StatusLevel = "info" | "success" | "error";
 
+type MLJobStatus = {
+  running: boolean;
+  startedAt: number | null;
+  pid: number | null;
+  progress: { done?: number; total?: number; text?: string } | null;
+  lastUpdateAt: number | null;
+  exitCode: number | null;
+  error: string | null;
+};
+
 type LogStatus = ApiStatus | "info";
 
 type LogEntry = {
@@ -41,6 +51,8 @@ type TuneIFsPageProps = {
   baseYear?: number | null;
   outputDirectory: string | null;
   requestOutputDirectory: () => Promise<string | null>;
+  initialMLJobRunning?: boolean;
+  initialMLJobProgress?: string | null;
 };
 
 function calculateProgressPercentage(
@@ -76,6 +88,8 @@ function TuneIFsPage({
   baseYear,
   outputDirectory,
   requestOutputDirectory,
+  initialMLJobRunning,
+  initialMLJobProgress,
 }: TuneIFsPageProps) {
   const DEFAULT_END_YEAR = 2050;
   const MAX_END_YEAR = 2150;
@@ -83,7 +97,7 @@ function TuneIFsPage({
 
   const [endYearInput, setEndYearInput] = useState("2050");
   const [endYear, setEndYear] = useState<number>(DEFAULT_END_YEAR);
-  const [running, setRunning] = useState(false);
+  const [running, setRunning] = useState(Boolean(initialMLJobRunning));
   const [modelSetupRunning, setModelSetupRunning] = useState(false);
   const [modelSetupResult, setModelSetupResult] =
     useState<ModelSetupData | null>(null);
@@ -183,6 +197,19 @@ function TuneIFsPage({
     baseYearRef.current = normalized;
     setEffectiveBaseYear(normalized);
   }, [baseYear]);
+
+  useEffect(() => {
+    if (!initialMLJobRunning) {
+      return;
+    }
+
+    setRunning(true);
+    setStatusMessage("Re-attached to running ML Optimization job.");
+    setStatusLevel("info");
+    if (initialMLJobProgress) {
+      setCurrentModelProgress(initialMLJobProgress);
+    }
+  }, [initialMLJobRunning, initialMLJobProgress]);
 
   useEffect(() => {
     setStatusMessage("Waiting to start.");
@@ -471,6 +498,8 @@ function TuneIFsPage({
     updateStageStatus("ml_driver", "info", "Starting ML Optimization run...");
     setRunning(true);
 
+    let shouldKeepRunning = false;
+
     try {
       appendLog("ml_driver", "info", "Submitting ML Optimization run request.");
 
@@ -486,6 +515,20 @@ function TuneIFsPage({
         endYear: clampedEndYear,
         inputFilePath: validatedInputPath,
       });
+
+      if (
+        response &&
+        typeof response === "object" &&
+        "alreadyRunning" in response &&
+        (response as { alreadyRunning?: unknown }).alreadyRunning === true
+      ) {
+        shouldKeepRunning = true;
+        setError(null);
+        setRunResult(null);
+        setStatusMessage("[ml_driver] Re-attached to running ML Optimization job.");
+        setStatusLevel("info");
+        return;
+      }
 
       const exitCode =
         response && typeof response === "object" && "code" in response
@@ -530,7 +573,9 @@ function TuneIFsPage({
       setRunResult(null);
       updateStageStatus(stage, "error", message);
     } finally {
-      setRunning(false);
+      if (!shouldKeepRunning) {
+        setRunning(false);
+      }
     }
   };
 
@@ -749,6 +794,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("validate");
+  const [mlJobStatus, setMLJobStatus] = useState<MLJobStatus | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [nativeFolderPickerAvailable, setNativeFolderPickerAvailable] =
     useState<boolean>(() =>
@@ -765,6 +811,41 @@ function App() {
       setNativeFolderPickerAvailable(Boolean(window.electron?.selectFolder));
       setNativeFilePickerAvailable(Boolean(window.electron?.selectFile));
     }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const electron = window.electron;
+    if (!electron?.getMLJobStatus) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const loadMLJobStatus = async () => {
+      try {
+        const status = await electron.getMLJobStatus();
+        if (!isMounted) {
+          return;
+        }
+
+        setMLJobStatus(status);
+        if (status?.running) {
+          setView("tune");
+        }
+      } catch (err) {
+        console.warn("Unable to load ML job status:", err);
+      }
+    };
+
+    loadMLJobStatus();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -876,7 +957,9 @@ function App() {
           setResult(null);
           setLastValidatedIfsFolder(null);
         }
-        setView("validate");
+        if (!mlJobStatus?.running) {
+          setView("validate");
+        }
       }
     } catch (err) {
       setError("Unable to open the folder picker. Please try again.");
@@ -1325,9 +1408,13 @@ function App() {
         </>
       )}
 
-      {view === "tune" && result?.valid && (
+      {view === "tune" && (result?.valid || mlJobStatus?.running) && (
         <TuneIFsPage
-          onBack={() => setView("validate")}
+          onBack={() => {
+            if (!mlJobStatus?.running) {
+              setView("validate");
+            }
+          }}
           validatedPath={
             lastValidatedIfsFolder ?? ifsFolderPath?.trim() ?? ""
           }
@@ -1337,10 +1424,12 @@ function App() {
           baseYear={result?.base_year}
           outputDirectory={outputDirectory}
           requestOutputDirectory={requestOutputDirectory}
+          initialMLJobRunning={Boolean(mlJobStatus?.running)}
+          initialMLJobProgress={mlJobStatus?.progress?.text ?? null}
         />
       )}
 
-      {view === "tune" && !result?.valid && (
+      {view === "tune" && !result?.valid && !mlJobStatus?.running && (
         <div className="alert alert-error">
           <p className="alert-message">
             Validation is required before tuning IFs. Please return to the

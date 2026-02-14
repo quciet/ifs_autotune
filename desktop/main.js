@@ -44,6 +44,36 @@ let mainWindow = null;
 let lastValidatedPath = null;
 let lastBaseYear = null;
 
+// Keep ML job state in the Electron main process so renderer reloads/crashes
+// can re-attach to running work without restarting the Python process.
+const mlJobState = {
+  running: false,
+  startedAt: null,
+  pid: null,
+  progress: null,
+  lastUpdateAt: null,
+  exitCode: null,
+  error: null,
+};
+
+const getSafeMLJobState = () => ({
+  running: mlJobState.running,
+  startedAt: mlJobState.startedAt,
+  pid: mlJobState.pid,
+  progress: mlJobState.progress,
+  lastUpdateAt: mlJobState.lastUpdateAt,
+  exitCode: mlJobState.exitCode,
+  error: mlJobState.error,
+});
+
+const sendToRenderer = (channel, payload) => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send(channel, payload);
+};
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -737,7 +767,15 @@ function launchIFsRun(payload) {
 }
 
 ipcMain.handle('run-ifs', async (_event, payload) => launchIFsRun(payload));
-ipcMain.handle("run-ml", async (event, args) => {
+ipcMain.handle("run-ml", async (_event, args) => {
+  if (mlJobState.running) {
+    return {
+      code: null,
+      alreadyRunning: true,
+      job: getSafeMLJobState(),
+    };
+  }
+
   return new Promise((resolve, reject) => {
     try {
       const py = spawn(
@@ -768,31 +806,47 @@ ipcMain.handle("run-ml", async (event, args) => {
         }
       );
 
+      mlJobState.running = true;
+      mlJobState.startedAt = Date.now();
+      mlJobState.pid = py.pid ?? null;
+      mlJobState.progress = null;
+      mlJobState.lastUpdateAt = Date.now();
+      mlJobState.exitCode = null;
+      mlJobState.error = null;
+      console.log('[ML-JOB] started', getSafeMLJobState());
+
       let stdoutBuffer = '';
 
       const handleLine = (line) => {
         const trimmed = line.trim();
         if (!trimmed) return;
 
+        mlJobState.lastUpdateAt = Date.now();
         console.log("[ML-DRIVER]", trimmed);
 
-        // 1. ML Log (Bottom Panel): Explicit ML status tag
         if (trimmed.startsWith("[ML-STATUS]")) {
-          event.sender.send("ml-log", trimmed);
+          const progressMatch = trimmed.match(/\[(\d+)\/(\d+)\]/);
+          if (progressMatch) {
+            mlJobState.progress = {
+              done: Number.parseInt(progressMatch[1], 10),
+              total: Number.parseInt(progressMatch[2], 10),
+              text: `${progressMatch[1]}/${progressMatch[2]}`,
+            };
+          }
+
+          sendToRenderer("ml-log", trimmed);
           return;
         }
 
-        // 2. IFs Progress (Top Panel Bar): Lines starting with "Year "
         const yearMatch = trimmed.match(/^Year\s+(\d{1,4})/i);
         if (yearMatch) {
           const year = Number.parseInt(yearMatch[1], 10);
           if (Number.isFinite(year)) {
-            event.sender.send("ifs-progress", { year });
+            sendToRenderer("ifs-progress", { year });
           }
           return;
         }
 
-        // 3. Status Text (Top Panel Text): JSON messages and other text
         let statusMessage = trimmed;
         try {
           const parsed = JSON.parse(trimmed);
@@ -800,7 +854,6 @@ ipcMain.handle("run-ml", async (event, args) => {
             const parsedMessage =
               typeof parsed.message === "string" ? parsed.message.trim() : "";
             if (parsedMessage.length > 0) {
-              // Prefix with status if available
               statusMessage = `[${parsed.status || "log"}] ${parsedMessage}`;
             } else if (parsed.status) {
               statusMessage = `[${parsed.status}] ${trimmed}`;
@@ -810,8 +863,7 @@ ipcMain.handle("run-ml", async (event, args) => {
           // Not JSON, treat as raw text status update
         }
 
-        // Send to top panel status text
-        event.sender.send("model-setup-progress", statusMessage);
+        sendToRenderer("model-setup-progress", statusMessage);
       };
 
       py.stdout.on("data", (data) => {
@@ -824,21 +876,44 @@ ipcMain.handle("run-ml", async (event, args) => {
       py.stderr.on("data", (data) => {
         const text = data.toString().trim();
         if (text) {
+          mlJobState.lastUpdateAt = Date.now();
+          mlJobState.error = text;
           console.error("[ML-DRIVER-ERR]", text);
-          event.sender.send("ml-log", `[ERROR] ${text}`);
+          sendToRenderer("ml-log", `[ERROR] ${text}`);
         }
+      });
+
+      py.on('error', (error) => {
+        mlJobState.running = false;
+        mlJobState.lastUpdateAt = Date.now();
+        mlJobState.error = error?.message || 'Failed to execute ML driver.';
+        mlJobState.exitCode = null;
+        console.log('[ML-JOB] process error', getSafeMLJobState());
       });
 
       py.on("close", (code) => {
         if (stdoutBuffer.trim()) {
           handleLine(stdoutBuffer);
         }
+
+        mlJobState.running = false;
+        mlJobState.lastUpdateAt = Date.now();
+        mlJobState.exitCode = typeof code === 'number' ? code : null;
+        console.log('[ML-JOB] ended', getSafeMLJobState());
         resolve({ code });
       });
     } catch (err) {
+      mlJobState.running = false;
+      mlJobState.lastUpdateAt = Date.now();
+      mlJobState.error = err instanceof Error ? err.message : String(err);
+      mlJobState.exitCode = null;
       reject(err);
     }
   });
+});
+ipcMain.handle('ml:jobStatus', async () => {
+  console.log('[ML-JOB] job status requested by renderer');
+  return getSafeMLJobState();
 });
 ipcMain.handle('run_ifs', async (_event, payload) => {
   if (!payload || typeof payload !== 'object') {
