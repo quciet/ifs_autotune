@@ -84,18 +84,21 @@ if exist "desktop\package.json" (
 
 echo [6/6] Launching BIGPOPA ...
 if exist "frontend\package.json" (
-  echo Starting BIGPOPA Frontend window...
-  REM Use start /D to set working directory directly; this avoids fragile cd/quote parsing.
-  start "BIGPOPA Frontend" /D "%REPO_ROOT%\frontend" cmd /k npm run dev
+  echo Starting BIGPOPA Frontend in background ^(same console^) ...
+  REM Use start /b so Vite runs in the background without opening a new window; Electron runs in foreground to keep a single terminal workflow.
+  pushd "%REPO_ROOT%\frontend"
+  start /b "" npm run dev
+  popd
 ) else (
-  echo [WARN] frontend\package.json not found; frontend window was not started.
+  echo [WARN] frontend\package.json not found; frontend background process was not started.
 )
 
-echo Starting BIGPOPA Desktop window...
-REM Use start /D to set working directory directly; this avoids fragile cd/quote parsing.
-start "BIGPOPA Desktop" /D "%REPO_ROOT%\desktop" cmd /k npm run start:electron
+echo Starting BIGPOPA Desktop in foreground ^(same console^) ...
+pushd "%REPO_ROOT%\desktop"
+call npm run start:electron
+popd
 echo.
-echo BIGPOPA is launching. Keep opened windows running while using the app.
+echo BIGPOPA is launching in a single console. Keep this window running while using the app.
 echo Backend Python tools run from backend\.venv on demand from Electron.
 
 exit /b 0

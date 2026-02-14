@@ -95,15 +95,18 @@ if (Test-Path 'desktop\package.json') {
 
 Write-Host '[6/6] Launching BIGPOPA ...'
 if (Test-Path 'frontend\package.json') {
-  Write-Host 'Starting BIGPOPA Frontend window...'
-  # Use -WorkingDirectory instead of Set-Location in a child process to avoid fragile path/quoting issues.
-  Start-Process powershell -WorkingDirectory (Join-Path $repoRoot 'frontend') -ArgumentList '-NoExit', '-Command', 'npm run dev' -WindowStyle Normal
+  Write-Host 'Starting BIGPOPA Frontend in background (same console) ...'
+  # Start Vite in the background without opening a new window; run Electron in the foreground to keep a single-console workflow.
+  $frontendLog = Join-Path $repoRoot 'frontend\vite-dev.log'
+  $null = Start-Process npm -WorkingDirectory (Join-Path $repoRoot 'frontend') -ArgumentList 'run', 'dev' -RedirectStandardOutput $frontendLog -RedirectStandardError $frontendLog -PassThru
 } else {
-  Write-Host '[WARN] frontend\package.json not found; frontend window was not started.'
+  Write-Host '[WARN] frontend\package.json not found; frontend background process was not started.'
 }
 
-Write-Host 'Starting BIGPOPA Desktop window...'
-# Use -WorkingDirectory instead of Set-Location in a child process to avoid fragile path/quoting issues.
-Start-Process powershell -WorkingDirectory (Join-Path $repoRoot 'desktop') -ArgumentList '-NoExit', '-Command', 'npm run start:electron' -WindowStyle Normal
-Write-Host 'BIGPOPA is launching. Keep opened windows running while using the app.'
+Write-Host 'Starting BIGPOPA Desktop in foreground (same console) ...'
+Push-Location desktop
+npm run start:electron
+if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'Desktop launch failed.' }
+Pop-Location
+Write-Host 'BIGPOPA is launching in a single console. Keep this window running while using the app.'
 Write-Host 'Backend Python tools run from backend\.venv on demand from Electron.'
