@@ -165,6 +165,23 @@ const REQUIRED_INPUT_SHEETS = ['AnalFunc', 'TablFunc', 'IFsVar', 'DataDict'];
 
 const RUN_IFS_SCRIPT_NAMES = new Set(['run_ifs.py', 'ml_driver.py']);
 
+// Always run backend scripts with backend/.venv so Electron uses consistent, required dependencies.
+function getVenvPython() {
+  const repoRoot = path.join(__dirname, '..');
+  const pythonPath =
+    process.platform === 'win32'
+      ? path.join(repoRoot, 'backend', '.venv', 'Scripts', 'python.exe')
+      : path.join(repoRoot, 'backend', '.venv', 'bin', 'python');
+
+  if (!fs.existsSync(pythonPath)) {
+    throw new Error(
+      `Python virtual environment not found at ${pythonPath}. Please run scripts\\Run_BIGPOPA.bat to set up backend dependencies.`,
+    );
+  }
+
+  return pythonPath;
+}
+
 function runPythonScript(scriptName, args = []) {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(__dirname, '..', 'backend', scriptName);
@@ -248,7 +265,7 @@ function runPythonScript(scriptName, args = []) {
       emitRunIFsProgress(trimmed);
     };
 
-    const pythonProcess = spawn('python', pythonArgs, processOptions);
+    const pythonProcess = spawn(getVenvPython(), pythonArgs, processOptions);
 
     pythonProcess.stdout.on('data', (data) => {
       const text = data.toString();
@@ -595,7 +612,7 @@ function launchIFsRun(payload) {
 
     let pythonProcess;
     try {
-      pythonProcess = spawn('python', args, {
+      pythonProcess = spawn(getVenvPython(), args, {
         cwd: path.join(__dirname, '..'),
         windowsHide: true,
       });
@@ -724,7 +741,7 @@ ipcMain.handle("run-ml", async (event, args) => {
   return new Promise((resolve, reject) => {
     try {
       const py = spawn(
-        "python",
+        getVenvPython(),
         (() => {
           const baseArgs = [
             "-u",
