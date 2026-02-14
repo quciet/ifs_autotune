@@ -33,6 +33,15 @@ type MLJobStatus = {
   lastUpdateAt: number | null;
   exitCode: number | null;
   error: string | null;
+  ifsPath: string | null;
+  ifsValidated: boolean;
+  inputExcelPath: string | null;
+  outputDir: string | null;
+  runConfig: {
+    endYear?: number | string | null;
+    baseYear?: number | null;
+    initialModelId?: string | number | null;
+  } | null;
 };
 
 type LogStatus = ApiStatus | "info";
@@ -53,6 +62,7 @@ type TuneIFsPageProps = {
   requestOutputDirectory: () => Promise<string | null>;
   initialMLJobRunning?: boolean;
   initialMLJobProgress?: string | null;
+  initialRunConfig?: MLJobStatus["runConfig"];
 };
 
 function calculateProgressPercentage(
@@ -90,13 +100,19 @@ function TuneIFsPage({
   requestOutputDirectory,
   initialMLJobRunning,
   initialMLJobProgress,
+  initialRunConfig,
 }: TuneIFsPageProps) {
   const DEFAULT_END_YEAR = 2050;
   const MAX_END_YEAR = 2150;
   const FALLBACK_MIN_END_YEAR = 1900;
 
-  const [endYearInput, setEndYearInput] = useState("2050");
-  const [endYear, setEndYear] = useState<number>(DEFAULT_END_YEAR);
+  const initialEndYear = Number(initialRunConfig?.endYear);
+  const normalizedInitialEndYear =
+    Number.isFinite(initialEndYear) && initialEndYear > 0
+      ? initialEndYear
+      : DEFAULT_END_YEAR;
+  const [endYearInput, setEndYearInput] = useState(String(normalizedInitialEndYear));
+  const [endYear, setEndYear] = useState<number>(normalizedInitialEndYear);
   const [running, setRunning] = useState(Boolean(initialMLJobRunning));
   const [modelSetupRunning, setModelSetupRunning] = useState(false);
   const [modelSetupResult, setModelSetupResult] =
@@ -114,7 +130,7 @@ function TuneIFsPage({
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
   );
   const baseYearRef = useRef<number | null>(baseYear ?? null);
-  const targetEndYearRef = useRef<number | null>(DEFAULT_END_YEAR);
+  const targetEndYearRef = useRef<number | null>(normalizedInitialEndYear);
   const parameterRef = useRef<Record<string, unknown>>({});
   const coefficientRef = useRef<Record<string, unknown>>({});
   const paramDimensionRef = useRef<Record<string, unknown>>({});
@@ -833,7 +849,21 @@ function App() {
         }
 
         setMLJobStatus(status);
-        if (status?.running) {
+        if (status?.ifsPath) {
+          setIfsFolderPath(status.ifsPath);
+        }
+        if (status?.outputDir) {
+          setOutputDirectory(status.outputDir);
+        }
+        if (status?.inputExcelPath) {
+          setInputFilePath(status.inputExcelPath);
+        }
+        if (status?.ifsValidated) {
+          setLastValidatedIfsFolder(status.ifsPath ?? null);
+          setLastValidatedOutputDirectory(status.outputDir ?? null);
+          setLastValidatedInputFile(status.inputExcelPath ?? null);
+        }
+        if (status?.ifsValidated && status?.running) {
           setView("tune");
         }
       } catch (err) {
@@ -1408,7 +1438,7 @@ function App() {
         </>
       )}
 
-      {view === "tune" && (result?.valid || mlJobStatus?.running) && (
+      {view === "tune" && (result?.valid || mlJobStatus?.running || mlJobStatus?.ifsValidated) && (
         <TuneIFsPage
           onBack={() => {
             if (!mlJobStatus?.running) {
@@ -1421,15 +1451,16 @@ function App() {
           validatedInputPath={
             lastValidatedInputFile ?? inputFilePath?.trim() ?? ""
           }
-          baseYear={result?.base_year}
-          outputDirectory={outputDirectory}
+          baseYear={result?.base_year ?? mlJobStatus?.runConfig?.baseYear ?? null}
+          outputDirectory={outputDirectory ?? mlJobStatus?.outputDir ?? null}
           requestOutputDirectory={requestOutputDirectory}
           initialMLJobRunning={Boolean(mlJobStatus?.running)}
           initialMLJobProgress={mlJobStatus?.progress?.text ?? null}
+          initialRunConfig={mlJobStatus?.runConfig ?? null}
         />
       )}
 
-      {view === "tune" && !result?.valid && !mlJobStatus?.running && (
+      {view === "tune" && !result?.valid && !mlJobStatus?.running && !mlJobStatus?.ifsValidated && (
         <div className="alert alert-error">
           <p className="alert-message">
             Validation is required before tuning IFs. Please return to the

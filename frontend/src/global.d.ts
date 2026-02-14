@@ -18,6 +18,15 @@ declare global {
         lastUpdateAt: number | null;
         exitCode: number | null;
         error: string | null;
+        ifsPath: string | null;
+        ifsValidated: boolean;
+        inputExcelPath: string | null;
+        outputDir: string | null;
+        runConfig: {
+          endYear?: number | string | null;
+          baseYear?: number | null;
+          initialModelId?: string | number | null;
+        } | null;
       }>;
       invoke: <T = unknown, R = unknown>(channel: string, data?: T) => Promise<R>;
       onMLProgress: (callback: (line: string) => void) => () => void;
