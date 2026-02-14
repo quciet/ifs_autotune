@@ -63,7 +63,7 @@ if exist "frontend\package.json" (
   )
   popd
 ) else (
-  echo [4/6] No frontend\package.json found; skipping frontend dependency install.
+  echo [4/6] frontend\package.json not found; skipping frontend dependency install and frontend launch.
 )
 
 if exist "desktop\package.json" (
@@ -77,21 +77,26 @@ if exist "desktop\package.json" (
   )
   popd
 ) else (
-  echo [5/6] No desktop\package.json found; skipping desktop dependency install.
+  echo [ERROR] desktop\package.json not found.
+  echo Ensure the desktop directory exists and contains package.json, then re-run this script.
+  exit /b 1
 )
 
 echo [6/6] Launching BIGPOPA ...
-if exist "desktop\package.json" (
-  echo Starting frontend and desktop windows...
-  start "BIGPOPA Frontend" cmd /k "cd /d \"%REPO_ROOT%\frontend\" && npm run dev"
-  start "BIGPOPA Desktop" cmd /k "cd /d \"%REPO_ROOT%\desktop\" && npm run start:electron"
-  echo.
-  echo BIGPOPA is launching. Keep both windows open while using the app.
-  echo Backend Python tools run from backend\.venv on demand from Electron.
+if exist "frontend\package.json" (
+  echo Starting BIGPOPA Frontend window...
+  REM Use start /D to set working directory directly; this avoids fragile cd/quote parsing.
+  start "BIGPOPA Frontend" /D "%REPO_ROOT%\frontend" cmd /k npm run dev
 ) else (
-  echo [ERROR] desktop\package.json not found. Cannot launch Electron app.
-  exit /b 1
+  echo [WARN] frontend\package.json not found; frontend window was not started.
 )
+
+echo Starting BIGPOPA Desktop window...
+REM Use start /D to set working directory directly; this avoids fragile cd/quote parsing.
+start "BIGPOPA Desktop" /D "%REPO_ROOT%\desktop" cmd /k npm run start:electron
+echo.
+echo BIGPOPA is launching. Keep opened windows running while using the app.
+echo Backend Python tools run from backend\.venv on demand from Electron.
 
 exit /b 0
 

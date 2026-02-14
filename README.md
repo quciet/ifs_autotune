@@ -4,44 +4,52 @@ Local-first desktop application for automating and optimizing IFs model runs.
 Runs fully offline: React/Electron frontend + Python backend, with Electron acting as the bridge.
 
 ---
-## Quickstart (Windows, one command)
+## Quick Start (Windows, recommended)
 
-### Prerequisites
-- Git
-- Python **3.11 or newer**
-- Node.js LTS (npm is included)
-
-### Clone + run
+### 1) Clone the repository
 ```bash
-git clone https://github.com/<your-org>/ifs_autotune.git
-cd ifs_autotune
+git clone <repo-url>
+cd BIGPOPA\ifs_autotune
+```
+
+### 2) Install prerequisites
+- Python **3.11 or newer**
+- Node.js LTS (includes `npm`)
+
+### 3) Launch BIGPOPA (double-click)
+- In File Explorer, double-click `scripts\Run_BIGPOPA.bat`.
+- Or from terminal:
+```bat
 scripts\Run_BIGPOPA.bat
 ```
 
-That single command will:
-- create `backend\.venv` (if missing),
-- install backend/frontend/desktop dependencies,
-- launch BIGPOPA.
+The launcher is idempotent and safe to run multiple times. It will:
+- verify Python 3.11+ and npm are installed,
+- create `backend\.venv` only if missing,
+- install/update backend, frontend, and desktop dependencies,
+- launch frontend (`npm run dev`, when `frontend\package.json` exists) and desktop (`npm run start:electron`).
 
-> `backend\.venv` is **REQUIRED** for this project and is automatically created on first run.
+> `backend\.venv` is **required** for this project and is automatically created on first run.
 
 ### Optional PowerShell launcher
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\Run_BIGPOPA.ps1
 ```
 
-### Troubleshooting
-- **Port already in use (usually 5173):** close old Node/Electron windows and run `scripts\Run_BIGPOPA.bat` again.
-- **`npm` not found:** install Node.js LTS, reopen terminal, and run again.
-- **`pip install -e backend` fails:** delete stale egg-info and retry:
+### Troubleshooting launch failures
+- **Python not found / wrong version**: install Python 3.11+ and relaunch.
+- **npm not found**: install Node.js LTS, reopen terminal, and relaunch.
+- **`desktop\package.json` missing**: make sure you are in the correct repo and that the `desktop` folder is present.
+- **Frontend does not open**: if `frontend\package.json` is missing, backend + desktop can still launch; restore frontend files to enable UI dev server launch.
+- **Backend install error** (`pip install -e backend`):
   ```bat
   rmdir /s /q backend\bigpopa_backend.egg-info
   scripts\Run_BIGPOPA.bat
   ```
 
-## Alternative: existing development workflow
+## Manual Run (advanced users)
 
-If you prefer the original manual dev flow, it is still supported.
+If you prefer to run each service manually, this workflow is still supported.
 
 1. Install backend deps in the required project venv:
    ```bash
