@@ -49,22 +49,57 @@ let lastBaseYear = null;
 const mlJobState = {
   running: false,
   startedAt: null,
+  lastUpdateAt: null,
   pid: null,
   progress: null,
-  lastUpdateAt: null,
   exitCode: null,
   error: null,
+  ifsPath: null,
+  ifsValidated: false,
+  inputExcelPath: null,
+  outputDir: null,
+  runConfig: null,
 };
 
 const getSafeMLJobState = () => ({
   running: mlJobState.running,
   startedAt: mlJobState.startedAt,
+  lastUpdateAt: mlJobState.lastUpdateAt,
   pid: mlJobState.pid,
   progress: mlJobState.progress,
-  lastUpdateAt: mlJobState.lastUpdateAt,
   exitCode: mlJobState.exitCode,
   error: mlJobState.error,
+  ifsPath: mlJobState.ifsPath,
+  ifsValidated: mlJobState.ifsValidated,
+  inputExcelPath: mlJobState.inputExcelPath,
+  outputDir: mlJobState.outputDir,
+  runConfig: mlJobState.runConfig,
 });
+
+const updateMLJobContext = ({ ifsPath, ifsValidated, inputExcelPath, outputDir, runConfig }) => {
+  if (typeof ifsPath === 'string') {
+    const trimmed = ifsPath.trim();
+    mlJobState.ifsPath = trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (typeof ifsValidated === 'boolean') {
+    mlJobState.ifsValidated = ifsValidated;
+  }
+
+  if (typeof inputExcelPath === 'string') {
+    const trimmed = inputExcelPath.trim();
+    mlJobState.inputExcelPath = trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (typeof outputDir === 'string') {
+    const trimmed = outputDir.trim();
+    mlJobState.outputDir = trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (runConfig && typeof runConfig === 'object') {
+    mlJobState.runConfig = { ...runConfig };
+  }
+};
 
 const sendToRenderer = (channel, payload) => {
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -469,6 +504,16 @@ function ensurePathChecks(payload, normalized) {
 ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
   const normalized = normalizeValidationPayload(rawPayload);
   const fallbackResponse = createFallbackValidation(normalized, ['Python error']);
+  updateMLJobContext({
+    ifsPath: normalized.ifsPath ?? '',
+    ifsValidated: false,
+    inputExcelPath: normalized.inputFilePath ?? '',
+    outputDir: normalized.outputPath ?? '',
+  });
+  console.log('[ml] validation updated', {
+    ifsPath: mlJobState.ifsPath,
+    ifsValidated: mlJobState.ifsValidated,
+  });
 
   if (!normalized.ifsPath) {
     lastValidatedPath = null;
@@ -524,15 +569,44 @@ ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
         lastBaseYear = Number.isFinite(candidateBaseYear)
           ? candidateBaseYear
           : null;
+        updateMLJobContext({
+          ifsPath: lastValidatedPath ?? normalized.ifsPath ?? '',
+          ifsValidated: true,
+          inputExcelPath: normalized.inputFilePath ?? '',
+          outputDir: normalized.outputPath ?? '',
+          runConfig: {
+            baseYear: lastBaseYear,
+          },
+        });
       } else {
         lastValidatedPath = null;
         lastBaseYear = null;
+        updateMLJobContext({
+          ifsPath: normalized.ifsPath ?? '',
+          ifsValidated: false,
+          inputExcelPath: normalized.inputFilePath ?? '',
+          outputDir: normalized.outputPath ?? '',
+        });
       }
     }
+    console.log('[ml] validation updated', {
+      ifsPath: mlJobState.ifsPath,
+      ifsValidated: mlJobState.ifsValidated,
+    });
     return result;
   } catch (error) {
     lastValidatedPath = null;
     lastBaseYear = null;
+    updateMLJobContext({
+      ifsPath: normalized.ifsPath ?? '',
+      ifsValidated: false,
+      inputExcelPath: normalized.inputFilePath ?? '',
+      outputDir: normalized.outputPath ?? '',
+    });
+    console.log('[ml] validation updated', {
+      ifsPath: mlJobState.ifsPath,
+      ifsValidated: mlJobState.ifsValidated,
+    });
     return ensurePathChecks(fallbackResponse, normalized);
   }
 });
@@ -808,12 +882,23 @@ ipcMain.handle("run-ml", async (_event, args) => {
 
       mlJobState.running = true;
       mlJobState.startedAt = Date.now();
+      mlJobState.lastUpdateAt = Date.now();
       mlJobState.pid = py.pid ?? null;
       mlJobState.progress = null;
-      mlJobState.lastUpdateAt = Date.now();
       mlJobState.exitCode = null;
       mlJobState.error = null;
-      console.log('[ML-JOB] started', getSafeMLJobState());
+      updateMLJobContext({
+        ifsPath: args.ifsRoot,
+        ifsValidated: true,
+        inputExcelPath: args.inputFilePath ?? '',
+        outputDir: args.outputFolder ?? '',
+        runConfig: {
+          endYear: args.endYear,
+          baseYear: args.baseYear ?? null,
+          initialModelId: args.initialModelId ?? null,
+        },
+      });
+      console.log(`[ml] started pid=${mlJobState.pid ?? 'unknown'}`);
 
       let stdoutBuffer = '';
 
@@ -888,7 +973,7 @@ ipcMain.handle("run-ml", async (_event, args) => {
         mlJobState.lastUpdateAt = Date.now();
         mlJobState.error = error?.message || 'Failed to execute ML driver.';
         mlJobState.exitCode = null;
-        console.log('[ML-JOB] process error', getSafeMLJobState());
+        console.log('[ml] exited code=null');
       });
 
       py.on("close", (code) => {
@@ -899,7 +984,7 @@ ipcMain.handle("run-ml", async (_event, args) => {
         mlJobState.running = false;
         mlJobState.lastUpdateAt = Date.now();
         mlJobState.exitCode = typeof code === 'number' ? code : null;
-        console.log('[ML-JOB] ended', getSafeMLJobState());
+        console.log(`[ml] exited code=${mlJobState.exitCode ?? 'null'}`);
         resolve({ code });
       });
     } catch (err) {
@@ -912,7 +997,7 @@ ipcMain.handle("run-ml", async (_event, args) => {
   });
 });
 ipcMain.handle('ml:jobStatus', async () => {
-  console.log('[ML-JOB] job status requested by renderer');
+  console.log('[ml] jobStatus requested');
   return getSafeMLJobState();
 });
 ipcMain.handle('run_ifs', async (_event, payload) => {
