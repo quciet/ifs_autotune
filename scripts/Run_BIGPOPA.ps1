@@ -79,6 +79,8 @@ if (Test-Path 'frontend\package.json') {
   npm install
   if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'Frontend npm install failed.' }
   Pop-Location
+} else {
+  Write-Host '[4/6] frontend\package.json not found; skipping frontend dependency install and frontend launch.'
 }
 
 if (Test-Path 'desktop\package.json') {
@@ -87,14 +89,21 @@ if (Test-Path 'desktop\package.json') {
   npm install
   if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'Desktop npm install failed.' }
   Pop-Location
-}
-
-if (-not (Test-Path 'desktop\package.json')) {
-  throw 'desktop\package.json not found. Cannot launch Electron app.'
+} else {
+  throw 'desktop\package.json not found. Ensure the desktop directory exists and contains package.json, then retry.'
 }
 
 Write-Host '[6/6] Launching BIGPOPA ...'
-Start-Process powershell -ArgumentList '-NoExit', '-Command', "Set-Location '$repoRoot\frontend'; npm run dev"
-Start-Process powershell -ArgumentList '-NoExit', '-Command', "Set-Location '$repoRoot\desktop'; npm run start:electron"
-Write-Host 'BIGPOPA is launching. Keep both windows open while using the app.'
+if (Test-Path 'frontend\package.json') {
+  Write-Host 'Starting BIGPOPA Frontend window...'
+  # Use -WorkingDirectory instead of Set-Location in a child process to avoid fragile path/quoting issues.
+  Start-Process powershell -WorkingDirectory (Join-Path $repoRoot 'frontend') -ArgumentList '-NoExit', '-Command', 'npm run dev' -WindowStyle Normal
+} else {
+  Write-Host '[WARN] frontend\package.json not found; frontend window was not started.'
+}
+
+Write-Host 'Starting BIGPOPA Desktop window...'
+# Use -WorkingDirectory instead of Set-Location in a child process to avoid fragile path/quoting issues.
+Start-Process powershell -WorkingDirectory (Join-Path $repoRoot 'desktop') -ArgumentList '-NoExit', '-Command', 'npm run start:electron' -WindowStyle Normal
+Write-Host 'BIGPOPA is launching. Keep opened windows running while using the app.'
 Write-Host 'Backend Python tools run from backend\.venv on demand from Electron.'
