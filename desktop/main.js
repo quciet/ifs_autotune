@@ -142,6 +142,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   ensureAppFolders();
+  console.log(`[py] using: ${getVenvPython()}`);
   createWindow();
 
   app.on('activate', () => {
@@ -230,30 +231,42 @@ const REQUIRED_INPUT_SHEETS = ['AnalFunc', 'TablFunc', 'IFsVar', 'DataDict'];
 
 const RUN_IFS_SCRIPT_NAMES = new Set(['run_ifs.py', 'ml_driver.py']);
 
+const getRepoRoot = () => path.join(__dirname, '..');
+const getBackendDir = () => path.join(getRepoRoot(), 'backend');
+
 // Always run backend scripts with backend/.venv so Electron uses consistent, required dependencies.
 function getVenvPython() {
-  const repoRoot = path.join(__dirname, '..');
-  const pythonPath =
+  const venvPython =
     process.platform === 'win32'
-      ? path.join(repoRoot, 'backend', '.venv', 'Scripts', 'python.exe')
-      : path.join(repoRoot, 'backend', '.venv', 'bin', 'python');
+      ? path.join(getBackendDir(), '.venv', 'Scripts', 'python.exe')
+      : path.join(getBackendDir(), '.venv', 'bin', 'python');
 
-  if (!fs.existsSync(pythonPath)) {
-    throw new Error(
-      `Python virtual environment not found at ${pythonPath}. Please run scripts\\Run_BIGPOPA.bat to set up backend dependencies.`,
-    );
+  if (fs.existsSync(venvPython)) {
+    return venvPython;
   }
 
-  return pythonPath;
+  const envPython = process.env.BIGPOPA_PYTHON;
+  if (typeof envPython === 'string' && envPython.trim().length > 0) {
+    return envPython.trim();
+  }
+
+  console.warn('[py] WARNING: backend\\.venv not found; falling back to system python');
+  return 'python';
+}
+
+function spawnPython(args, options = {}) {
+  const pythonExe = getVenvPython();
+  console.log(`[py] using: ${pythonExe}`);
+  return spawn(pythonExe, args, options);
 }
 
 function runPythonScript(scriptName, args = []) {
   return new Promise((resolve, reject) => {
-    const scriptPath = path.join(__dirname, '..', 'backend', scriptName);
+    const scriptPath = path.join(getBackendDir(), scriptName);
     const pythonArgs = ['-u', scriptPath, ...args];
 
     const processOptions = {
-      cwd: path.join(__dirname, '..'),
+      cwd: getRepoRoot(),
       windowsHide: true,
       shell: false,
       env: {
@@ -330,7 +343,7 @@ function runPythonScript(scriptName, args = []) {
       emitRunIFsProgress(trimmed);
     };
 
-    const pythonProcess = spawn(getVenvPython(), pythonArgs, processOptions);
+    const pythonProcess = spawnPython(pythonArgs, processOptions);
 
     pythonProcess.stdout.on('data', (data) => {
       const text = data.toString();
@@ -500,6 +513,13 @@ function ensurePathChecks(payload, normalized) {
 
   return payload;
 }
+
+
+ipcMain.handle('debug:pythonPath', async () => {
+  const pythonExe = getVenvPython();
+  console.log(`[py] using: ${pythonExe}`);
+  return pythonExe;
+});
 
 ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
   const normalized = normalizeValidationPayload(rawPayload);
@@ -716,8 +736,8 @@ function launchIFsRun(payload) {
 
     let pythonProcess;
     try {
-      pythonProcess = spawn(getVenvPython(), args, {
-        cwd: path.join(__dirname, '..'),
+      pythonProcess = spawnPython(args, {
+        cwd: getRepoRoot(),
         windowsHide: true,
       });
     } catch (error) {
@@ -852,12 +872,11 @@ ipcMain.handle("run-ml", async (_event, args) => {
 
   return new Promise((resolve, reject) => {
     try {
-      const py = spawn(
-        getVenvPython(),
+      const py = spawnPython(
         (() => {
           const baseArgs = [
             "-u",
-            path.join(__dirname, "..", "backend", "ml_driver.py"),
+            path.join(getBackendDir(), "ml_driver.py"),
             "--ifs-root", args.ifsRoot,
             "--end-year", args.endYear,
             "--output-folder", args.outputFolder,
@@ -873,6 +892,7 @@ ipcMain.handle("run-ml", async (_event, args) => {
         })(),
         {
           shell: true,
+          cwd: getRepoRoot(),
           env: {
             ...process.env,
             PYTHONUNBUFFERED: "1",
