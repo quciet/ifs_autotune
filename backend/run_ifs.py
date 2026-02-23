@@ -123,6 +123,16 @@ def main(argv: list[str] | None = None) -> int:
                     (model_id,),
                 )
                 row = cursor.fetchone()
+                cursor.execute(
+                    """
+                    SELECT ifs_static_id
+                    FROM ifs_version
+                    WHERE ifs_id = ?
+                    LIMIT 1
+                    """,
+                    (ifs_id,),
+                )
+                static_row = cursor.fetchone()
         except sqlite3.Error as exc:
             emit_stage_response(
                 "error",
@@ -172,6 +182,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
+        if static_row is None or static_row[0] is None:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                "Unable to resolve ifs_static_id for Working.sce parameter policy.",
+                {"ifs_id": ifs_id},
+            )
+            return 1
+
         try:
             # Apply model configuration to IFs Working.sce and Working.run.db
             apply_config_to_ifs_files(
@@ -180,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
                 input_coef=input_coef,
                 base_year=args.base_year,
                 end_year=args.end_year,
+                bigpopa_db_path=bigpopa_db_path,
+                ifs_static_id=int(static_row[0]),
             )
         except Exception as exc:
             emit_stage_response(
