@@ -26,7 +26,7 @@ from log_ifs_version import log_version_metadata
 
 import pandas as pd
 
-from backend.common_sce_utils import build_custom_parts, parse_dimension_flag
+from common_sce_utils import build_custom_parts, parse_dimension_flag
 
 
 def _round_numbers(obj: Any, places: int = 6) -> Any:
