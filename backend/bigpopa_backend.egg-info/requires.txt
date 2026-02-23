@@ -1,9 +1,0 @@
-pydantic
-pydantic-settings
-pytest
-httpx
-pandas
-openpyxl
-numpy
-scikit-learn
-torch
