@@ -24,9 +24,9 @@ import pandas as pd
 sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from backend import dataset_utils
-from backend.model_setup import canonical_config, hash_model_id
-from backend.optimization.active_learning import active_learning_loop
+import dataset_utils
+from model_setup import canonical_config, hash_model_id
+from optimization.active_learning import active_learning_loop
 
 
 # ---------------------------------------------------------------------------

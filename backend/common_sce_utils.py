@@ -50,13 +50,14 @@ def build_custom_parts(
 
     if dim_flag not in (0, 1):
         return None
-    if years_count <= 0:
+    years_total = int(years_count)
+    if years_total <= 0:
         return None
 
     value_str = f"{float(value):.6f}".rstrip("0").rstrip(".")
     if not value_str:
         value_str = "0"
-    repeated_values = [value_str] * years_count
+    repeated_values = [value_str] * years_total
 
     parts: List[str] = ["CUSTOM", param_name]
     if dim_flag == 1:

@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from backend.prepare_coeff_param import apply_config_to_ifs_files
+from prepare_coeff_param import apply_config_to_ifs_files
 
 
 # Emit a structured response for Electron consumption.
