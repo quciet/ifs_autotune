@@ -26,6 +26,8 @@ from log_ifs_version import log_version_metadata
 
 import pandas as pd
 
+from backend.common_sce_utils import build_custom_parts, parse_dimension_flag
+
 
 def _round_numbers(obj: Any, places: int = 6) -> Any:
     if isinstance(obj, float):
@@ -477,8 +479,46 @@ def create_working_sce(ifs_root: Path) -> Path:
     return sce_path
 
 
+def _load_param_dimension_map(
+    bigpopa_db_path: Path | None,
+    ifs_static_id: int | None,
+    param_names: Iterable[str],
+) -> Dict[str, Any]:
+    if bigpopa_db_path is None or ifs_static_id is None:
+        return {}
+
+    names = [str(name).strip() for name in param_names if isinstance(name, str) and name.strip()]
+    if not names:
+        return {}
+
+    dimension_map: Dict[str, Any] = {}
+    conn = sqlite3.connect(str(bigpopa_db_path))
+    try:
+        cursor = conn.cursor()
+        for name in names:
+            cursor.execute(
+                """
+                SELECT param_type
+                FROM parameter
+                WHERE ifs_static_id = ?
+                  AND LOWER(param_name) = LOWER(?)
+                LIMIT 1
+                """,
+                (ifs_static_id, name),
+            )
+            row = cursor.fetchone()
+            dimension_map[name.lower()] = row[0] if row else None
+    finally:
+        conn.close()
+    return dimension_map
+
+
 def add_from_startingpoint(
-    ifs_root: Path, excel_path: Path, ifsv_df: pd.DataFrame | None = None
+    ifs_root: Path,
+    excel_path: Path,
+    ifsv_df: pd.DataFrame | None = None,
+    bigpopa_db_path: Path | None = None,
+    ifs_static_id: int | None = None,
 ) -> Tuple[int, Dict[str, float]]:
     sce_path = ifs_root / "Scenario" / "Working.sce"
     input_param_used: Dict[str, float] = {}
@@ -512,6 +552,14 @@ def add_from_startingpoint(
     lines_to_append: List[str] = []
     appended = 0
 
+    if "Variable" in df.columns:
+        param_names = [str(value).strip() for value in df["Variable"].tolist()]
+    elif "Name" in df.columns:
+        param_names = [str(value).strip() for value in df["Name"].tolist()]
+    else:
+        param_names = []
+    db_dimension_map = _load_param_dimension_map(bigpopa_db_path, ifs_static_id, param_names)
+
     for _, row in df.iterrows():
         switch_value = row.get("Switch")
         if not _is_enabled(switch_value):
@@ -521,11 +569,16 @@ def add_from_startingpoint(
         if not isinstance(variable, str) or not variable.strip():
             continue
 
+        # Policy for Writing Working.sce:
+        # DIMENSION1 == 1 -> include "World"
+        # DIMENSION1 == 0 -> exclude "World"
+        # else -> skip parameter.
+        # NOTE: bigpopa.db.parameter.param_type is TEXT and may be values like
+        # "1", "1.0", "0.0", "", NULL, etc., so always parse via helper.
         dimension_raw = row.get("Dimension1")
-        try:
-            dimension_value = int(dimension_raw)
-        except (TypeError, ValueError):
-            dimension_value = None
+        if dimension_raw is None and variable:
+            dimension_raw = db_dimension_map.get(variable.strip().lower())
+        dimension_value = parse_dimension_flag(dimension_raw)
 
         minimum = _normalize_number(row.get("Minimum"))
         maximum = _normalize_number(row.get("Maximum"))
@@ -536,19 +589,12 @@ def add_from_startingpoint(
         if math.isnan(random_value):
             continue
 
-        value_str = f"{random_value:.6f}".rstrip("0").rstrip(".")
-        if not value_str:
-            value_str = "0"
-
-        repeated_values = [value_str] * value_count
+        parts = build_custom_parts(variable.strip(), dimension_value, value_count, random_value)
+        if parts is None:
+            continue
 
         # record the actual randomized value for logging later
         input_param_used[variable.strip()] = random_value
-
-        if dimension_value == 1:
-            parts = ["CUSTOM", variable.strip(), "World", *repeated_values]
-        else:
-            parts = ["CUSTOM", variable.strip(), *repeated_values]
 
         lines_to_append.append(",".join(parts))
         appended += 1
