@@ -123,6 +123,13 @@ def _normalize_text(value: Any) -> Optional[str]:
     return text or None
 
 
+def _normalize_lookup_key(value: Any) -> Optional[str]:
+    text = _normalize_text(value)
+    if text is None:
+        return None
+    return text.casefold()
+
+
 def _prepare_parameter_rows(ifs_static_id: int, frame: pd.DataFrame) -> list[tuple[Any, ...]]:
     rows: list[tuple[Any, ...]] = []
     for _, record in frame.iterrows():
@@ -209,19 +216,55 @@ def _populate_real_data(
         )
 
     with sqlite3.connect(str(ifsvar_db)) as conn:
-        parameter_metadata = pd.read_sql_query(
-            "SELECT NAME, DIMENSION1, MINIMUM, MAXIMUM FROM IFSVAR", conn
+        try:
+            parameter_catalog = pd.read_sql_query(
+                "SELECT NAME, DIMENSION1, MINIMUM, MAXIMUM FROM IFSVAR", conn
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Unable to load IFSVAR catalog columns NAME, DIMENSION1, MINIMUM, MAXIMUM"
+            ) from exc
+
+    gp_map: dict[str, Any] = {}
+    for _, row in parameter_values.iterrows():
+        key = _normalize_lookup_key(row.get("ParameterName"))
+        if key is None:
+            continue
+        gp_map[key] = row.get("Value")
+
+    records: list[dict[str, Any]] = []
+    matched = 0
+    for _, row in parameter_catalog.iterrows():
+        canonical_name = row.get("NAME")
+        key = _normalize_lookup_key(canonical_name)
+        value = gp_map.get(key) if key is not None else None
+        if value is not None and str(value).strip() != "":
+            matched += 1
+        else:
+            value = row.get("MINIMUM")
+
+        records.append(
+            {
+                "ParameterName": canonical_name,
+                "Value": value,
+                "DIMENSION1": row.get("DIMENSION1"),
+                "MINIMUM": row.get("MINIMUM"),
+                "MAXIMUM": row.get("MAXIMUM"),
+            }
         )
 
-    merged_parameters = pd.merge(
-        parameter_values,
-        parameter_metadata,
-        how="left",
-        left_on="ParameterName",
-        right_on="NAME",
+    n_catalog = len(records)
+    gp_total = len(parameter_values)
+    print(
+        "[ifs_static] "
+        f"IFSVAR params={n_catalog} "
+        f"GlobalParameters={gp_total} "
+        f"matched={matched} "
+        f"fallback_to_minimum={n_catalog - matched}"
     )
 
-    parameter_rows = _prepare_parameter_rows(ifs_static_id, merged_parameters)
+    parameter_frame = pd.DataFrame.from_records(records)
+    parameter_rows = _prepare_parameter_rows(ifs_static_id, parameter_frame)
     if parameter_rows:
         cursor.executemany(
             """
@@ -298,21 +341,6 @@ def log_version_metadata(
 
         if row:
             ifs_static_id = int(row[0])
-            cursor.execute(
-                "SELECT COUNT(*) FROM parameter WHERE ifs_static_id = ?",
-                (ifs_static_id,),
-            )
-            param_row = cursor.fetchone()
-            if param_row and param_row[0] is not None:
-                num_parameters = int(param_row[0])
-
-            cursor.execute(
-                "SELECT COUNT(*) FROM coefficient WHERE ifs_static_id = ?",
-                (ifs_static_id,),
-            )
-            coeff_row = cursor.fetchone()
-            if coeff_row and coeff_row[0] is not None:
-                num_coefficients = int(coeff_row[0])
         else:
             cursor.execute(
                 """
@@ -322,9 +350,15 @@ def log_version_metadata(
                 (version_number, base_year),
             )
             ifs_static_id = int(cursor.lastrowid)
-            num_parameters, num_coefficients = _populate_real_data(
-                cursor, ifs_static_id, ifs_root
-            )
+
+        # Always overwrite static rows to prevent stale or partial parameter/coefficient layers
+        # when rerunning the same IFs version/base year combination.
+        cursor.execute("DELETE FROM parameter WHERE ifs_static_id = ?", (ifs_static_id,))
+        cursor.execute("DELETE FROM coefficient WHERE ifs_static_id = ?", (ifs_static_id,))
+
+        # Parameter defaults use GlobalParameters when available (case-insensitive lookup)
+        # and fall back to the IFSVAR.MINIMUM catalog value when missing.
+        num_parameters, num_coefficients = _populate_real_data(cursor, ifs_static_id, ifs_root)
 
         cursor.execute(
             """
