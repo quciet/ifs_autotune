@@ -8,14 +8,6 @@ prepare_coeff_param.py
 pyproject.toml
 run_ifs.py
 validate_ifs.py
-app/__init__.py
-app/ifscheck.py
-app/main.py
-app/metrics.py
-app/runner.py
-app/settings.py
-app/storage/__init__.py
-app/storage/db.py
 bigpopa_backend.egg-info/PKG-INFO
 bigpopa_backend.egg-info/SOURCES.txt
 bigpopa_backend.egg-info/dependency_links.txt
@@ -27,5 +19,3 @@ optimization/active_learning.py
 optimization/ensemble_training.py
 optimization/surrogate_models.py
 optimization/utils.py
-tests/test_health.py
-tests/test_run_stub.py

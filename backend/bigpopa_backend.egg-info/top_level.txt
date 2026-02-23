@@ -1,4 +1,3 @@
-app
 combine_var_hist
 dataset_utils
 extract_compare
@@ -8,6 +7,4 @@ model_setup
 optimization
 prepare_coeff_param
 run_ifs
-tests
-tools
 validate_ifs

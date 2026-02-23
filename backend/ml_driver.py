@@ -340,7 +340,7 @@ def _load_user_bounds(
         except Exception:
             return pd.DataFrame()
 
-    for _, row in _read_sheet("IfsVar").iterrows():
+    for _, row in _read_sheet("IFsVar").iterrows():
         if not _switch_is_on(row.get("Switch")):
             continue
         name = str(row.get("Name") or "").strip()
