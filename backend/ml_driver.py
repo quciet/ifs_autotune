@@ -562,10 +562,10 @@ def _run_model(
             cursor.execute(
                 """
                 INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                VALUES (?, ?, 'ifs model failed', NULL, ?)
+                VALUES (?, ?, 'failed', NULL, ?)
                 ON CONFLICT(model_id) DO UPDATE SET
                     ifs_id=excluded.ifs_id,
-                    model_status='ifs model failed',
+                    model_status='failed',
                     fit_var=NULL,
                     fit_pooled=excluded.fit_pooled
                 """,

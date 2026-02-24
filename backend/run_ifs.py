@@ -80,6 +80,23 @@ def build_command(args: argparse.Namespace) -> List[str]:
     return command
 
 
+def _upsert_model_failed(conn: sqlite3.Connection, ifs_id: int, model_id: str) -> None:
+    with conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
+            VALUES (?, ?, 'failed', NULL, NULL)
+            ON CONFLICT(model_id) DO UPDATE SET
+                ifs_id=excluded.ifs_id,
+                model_status='failed',
+                fit_var=NULL,
+                fit_pooled=NULL
+            """,
+            (ifs_id, model_id),
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -242,20 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         return_code = process.wait()
 
         if return_code != 0:
-            with conn_bp:
-                cursor = conn_bp.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                    VALUES (?, ?, 'ifs model failed', NULL, NULL)
-                    ON CONFLICT(model_id) DO UPDATE SET
-                        ifs_id=excluded.ifs_id,
-                        model_status='ifs model failed',
-                        fit_var=NULL,
-                        fit_pooled=NULL
-                    """,
-                    (ifs_id, model_id),
-                )
+            _upsert_model_failed(conn_bp, ifs_id, model_id)
 
             emit_stage_response(
                 "error",
@@ -371,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
             input_file_path = os.path.join(output_dir, "StartingPointTable.xlsx")
 
             if not os.path.exists(model_db_path):
+                _upsert_model_failed(conn_bp, ifs_id, model_id)
                 emit_stage_response(
                     "error",
                     "extract_compare",
@@ -401,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
                             {"bigpopa_db": bigpopa_db_path, "output_set_size": found_pairs},
                         )
                     else:
+                        _upsert_model_failed(conn_bp, ifs_id, model_id)
                         emit_stage_response(
                             "error",
                             "extract_compare",
@@ -409,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         return 1
             except sqlite3.Error as exc:
+                _upsert_model_failed(conn_bp, ifs_id, model_id)
                 emit_stage_response(
                     "error",
                     "extract_compare",
@@ -417,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             except Exception as exc:
+                _upsert_model_failed(conn_bp, ifs_id, model_id)
                 emit_stage_response(
                     "error",
                     "extract_compare",
@@ -452,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
                 {"model_id": model_id, "ifs_id": ifs_id, "model_folder": payload["model_folder"]},
             )
         except subprocess.CalledProcessError as exc:
+            _upsert_model_failed(conn_bp, ifs_id, model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",
@@ -460,6 +469,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         except Exception as exc:
+            _upsert_model_failed(conn_bp, ifs_id, model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",
