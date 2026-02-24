@@ -29,6 +29,9 @@ from model_setup import canonical_config, hash_model_id
 from optimization.active_learning import active_learning_loop
 
 
+FAIL_Y: float = float(os.getenv("BIGPOPA_FAIL_Y", "1e6"))
+
+
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
@@ -554,7 +557,25 @@ def _run_model(
 
     process = subprocess.run(command, capture_output=False, text=True, env=env)
     if process.returncode != 0:
-        raise RuntimeError(f"run_ifs.py failed with exit code {process.returncode}")
+        with sqlite3.connect(bigpopa_db) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
+                VALUES (?, ?, 'ifs model failed', NULL, ?)
+                ON CONFLICT(model_id) DO UPDATE SET
+                    ifs_id=excluded.ifs_id,
+                    model_status='ifs model failed',
+                    fit_var=NULL,
+                    fit_pooled=excluded.fit_pooled
+                """,
+                (ifs_id, model_id, FAIL_Y),
+            )
+        print(
+            f"IFs run failed for model_id={model_id} (return_code={process.returncode}); using FAIL_Y={FAIL_Y:.6f}",
+            flush=True,
+        )
+        return FAIL_Y, model_id
 
     with sqlite3.connect(bigpopa_db) as conn:
         cursor = conn.cursor()
