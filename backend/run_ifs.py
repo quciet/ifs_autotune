@@ -242,6 +242,21 @@ def main(argv: list[str] | None = None) -> int:
         return_code = process.wait()
 
         if return_code != 0:
+            with conn_bp:
+                cursor = conn_bp.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
+                    VALUES (?, ?, 'ifs model failed', NULL, NULL)
+                    ON CONFLICT(model_id) DO UPDATE SET
+                        ifs_id=excluded.ifs_id,
+                        model_status='ifs model failed',
+                        fit_var=NULL,
+                        fit_pooled=NULL
+                    """,
+                    (ifs_id, model_id),
+                )
+
             emit_stage_response(
                 "error",
                 "run_ifs",
