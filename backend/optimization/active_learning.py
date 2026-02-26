@@ -13,6 +13,27 @@ def _format_candidate(x: np.ndarray) -> str:
     return np.array2string(arr, precision=4, separator=", ")
 
 
+def format_percent_adaptive(pct: float | None) -> str:
+    """
+    Format percent values adaptively to avoid misleading rounding like 0.00%.
+    pct is already in percent units (e.g., 0.001 means 0.001%).
+    """
+    if pct is None:
+        return "N/A"
+    if pct == 0:
+        return "0%"
+
+    a = abs(pct)
+
+    if a >= 1:
+        return f"{pct:.2f}%"
+    if a >= 0.01:
+        return f"{pct:.3f}%"
+    if a >= 0.0001:
+        return f"{pct:.4f}%"
+    return f"{pct:.2e}%"
+
+
 def active_learning_loop(
     f,
     X_obs,
@@ -126,7 +147,8 @@ def active_learning_loop(
             if no_improve_counter >= patience:
                 print(
                     f"{ml_prefix}Stopping early: no improvement > "
-                    f"{min_improve_pct*100:.2f}% for {patience} consecutive iterations.",
+                    f"{format_percent_adaptive(min_improve_pct * 100)} for "
+                    f"{patience} consecutive iterations.",
                     flush=True,
                 )
                 break

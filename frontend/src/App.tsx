@@ -125,6 +125,8 @@ function TuneIFsPage({
   const [statusLevel, setStatusLevel] = useState<StatusLevel>("info");
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [mlLogEntries, setMLLogEntries] = useState<string[]>([]);
+  const ML_LOG_MAX_LINES = 300;
+  const AUTO_SCROLL_BOTTOM_EPS_PX = 24;
   const [currentModelProgress, setCurrentModelProgress] = useState<string | null>(null);
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
@@ -135,6 +137,8 @@ function TuneIFsPage({
   const coefficientRef = useRef<Record<string, unknown>>({});
   const paramDimensionRef = useRef<Record<string, unknown>>({});
   const logIdRef = useRef(0);
+  const mlConsoleBodyRef = useRef<HTMLDivElement | null>(null);
+  const mlAutoScrollRef = useRef(true);
 
   const appendLog = (stage: ApiStage, status: LogStatus, message: string) => {
     const normalized = typeof message === "string" ? message.trim() : "";
@@ -299,7 +303,12 @@ function TuneIFsPage({
     }
 
     const unsubscribe = subscribe((line: string) => {
-      setMLLogEntries((prev) => [...prev, line]);
+      setMLLogEntries((prev) => {
+        const next = [...prev, line];
+        return next.length > ML_LOG_MAX_LINES
+          ? next.slice(-ML_LOG_MAX_LINES)
+          : next;
+      });
 
       const match = line.match(/\[(\d+)\/(\d+)\]/);
       if (match) {
@@ -309,6 +318,15 @@ function TuneIFsPage({
 
     return () => unsubscribe?.();
   }, []);
+
+  useEffect(() => {
+    const el = mlConsoleBodyRef.current;
+    if (!el) return;
+
+    if (mlAutoScrollRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [mlLogEntries]);
 
   useEffect(() => {
     if (!window.electron?.on) {
@@ -343,6 +361,17 @@ function TuneIFsPage({
   const resetModelSetupState = () => {
     setModelSetupResult(null);
     setRunResult(null);
+  };
+
+  const handleMLScroll = () => {
+    const el = mlConsoleBodyRef.current;
+    if (!el) return;
+
+    const distanceFromBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight;
+
+    mlAutoScrollRef.current =
+      distanceFromBottom <= AUTO_SCROLL_BOTTOM_EPS_PX;
   };
 
   const handleEndYearInputChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -482,6 +511,7 @@ function TuneIFsPage({
     setProgressYear(null);
     setProgressPercent(0);
     setMLLogEntries([]);
+    mlAutoScrollRef.current = true;
     setCurrentModelProgress(null);
 
     const parsedEndYear = Number(endYearInput);
@@ -781,7 +811,11 @@ function TuneIFsPage({
 
       <div className="ml-console">
         <div className="ml-console-title">ML Optimization Log</div>
-        <div className="ml-console-body">
+        <div
+          className="ml-console-body"
+          ref={mlConsoleBodyRef}
+          onScroll={handleMLScroll}
+        >
           {mlLogEntries.length === 0 ? (
             <div className="progress-text">Waiting for ML output...</div>
           ) : (
