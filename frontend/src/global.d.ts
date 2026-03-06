@@ -1,6 +1,14 @@
 export {};
 
 declare global {
+  type MLTerminationReason = "completed" | "stopped_gracefully";
+
+  interface MLFinalResult {
+    best_model_id?: string | null;
+    best_fit_pooled?: number | null;
+    iterations?: number | null;
+  }
+
   interface Window {
     electron?: {
       selectFolder: (
@@ -22,11 +30,21 @@ declare global {
         ifsValidated: boolean;
         inputExcelPath: string | null;
         outputDir: string | null;
+        stopRequested: boolean;
+        stopAcknowledged: boolean;
+        finalResult: MLFinalResult | null;
+        terminationReason: MLTerminationReason | null;
         runConfig: {
           endYear?: number | string | null;
           baseYear?: number | null;
           initialModelId?: string | number | null;
         } | null;
+      }>;
+      requestMLStop: () => Promise<{
+        accepted: boolean;
+        alreadyRequested?: boolean;
+        stopRequested: boolean;
+        stopAcknowledged: boolean;
       }>;
       invoke: <T = unknown, R = unknown>(channel: string, data?: T) => Promise<R>;
       onMLProgress: (callback: (line: string) => void) => () => void;

@@ -25,6 +25,14 @@ type View = "validate" | "tune";
 
 type StatusLevel = "info" | "success" | "error";
 
+type MLTerminationReason = "completed" | "stopped_gracefully";
+
+type MLFinalResult = {
+  best_model_id?: string | null;
+  best_fit_pooled?: number | null;
+  iterations?: number | null;
+};
+
 type MLJobStatus = {
   running: boolean;
   startedAt: number | null;
@@ -37,6 +45,10 @@ type MLJobStatus = {
   ifsValidated: boolean;
   inputExcelPath: string | null;
   outputDir: string | null;
+  stopRequested: boolean;
+  stopAcknowledged: boolean;
+  finalResult: MLFinalResult | null;
+  terminationReason: MLTerminationReason | null;
   runConfig: {
     endYear?: number | string | null;
     baseYear?: number | null;
@@ -63,6 +75,10 @@ type TuneIFsPageProps = {
   initialMLJobRunning?: boolean;
   initialMLJobProgress?: string | null;
   initialRunConfig?: MLJobStatus["runConfig"];
+  initialStopRequested?: boolean;
+  initialStopAcknowledged?: boolean;
+  initialFinalResult?: MLFinalResult | null;
+  initialTerminationReason?: MLTerminationReason | null;
 };
 
 function calculateProgressPercentage(
@@ -101,6 +117,10 @@ function TuneIFsPage({
   initialMLJobRunning,
   initialMLJobProgress,
   initialRunConfig,
+  initialStopRequested,
+  initialStopAcknowledged,
+  initialFinalResult,
+  initialTerminationReason,
 }: TuneIFsPageProps) {
   const DEFAULT_END_YEAR = 2050;
   const MAX_END_YEAR = 2150;
@@ -111,15 +131,37 @@ function TuneIFsPage({
     Number.isFinite(initialEndYear) && initialEndYear > 0
       ? initialEndYear
       : DEFAULT_END_YEAR;
+  const initialRunResult = useMemo<MLDriverData | null>(() => {
+    if (!initialFinalResult) {
+      return null;
+    }
+
+    return {
+      ...initialFinalResult,
+      terminationReason: initialTerminationReason ?? null,
+      base_year:
+        typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
+      end_year: normalizedInitialEndYear,
+    };
+  }, [
+    baseYear,
+    initialFinalResult,
+    initialTerminationReason,
+    normalizedInitialEndYear,
+  ]);
   const [endYearInput, setEndYearInput] = useState(String(normalizedInitialEndYear));
   const [endYear, setEndYear] = useState<number>(normalizedInitialEndYear);
   const [running, setRunning] = useState(Boolean(initialMLJobRunning));
+  const [stopRequested, setStopRequested] = useState(Boolean(initialStopRequested));
+  const [stopAcknowledged, setStopAcknowledged] = useState(
+    Boolean(initialStopAcknowledged),
+  );
   const [modelSetupRunning, setModelSetupRunning] = useState(false);
   const [modelSetupResult, setModelSetupResult] =
     useState<ModelSetupData | null>(null);
   const [progressYear, setProgressYear] = useState<number | null>(null);
   const [progressPercent, setProgressPercent] = useState(0);
-  const [runResult, setRunResult] = useState<MLDriverData | null>(null);
+  const [runResult, setRunResult] = useState<MLDriverData | null>(initialRunResult);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("Waiting to start.");
   const [statusLevel, setStatusLevel] = useState<StatusLevel>("info");
@@ -232,16 +274,42 @@ function TuneIFsPage({
   }, [initialMLJobRunning, initialMLJobProgress]);
 
   useEffect(() => {
+    setStopRequested(Boolean(initialStopRequested));
+    setStopAcknowledged(Boolean(initialStopAcknowledged));
+  }, [initialStopAcknowledged, initialStopRequested]);
+
+  useEffect(() => {
+    if (!running && initialRunResult) {
+      const message =
+        initialTerminationReason === "stopped_gracefully"
+          ? "ML optimization stopped after the current run."
+          : "ML optimization completed successfully.";
+      setRunResult(initialRunResult);
+      setStatusMessage(`[ml_driver] ${message}`);
+      setStatusLevel("success");
+    }
+  }, [initialRunResult, initialTerminationReason, running]);
+
+  useEffect(() => {
     setStatusMessage("Waiting to start.");
     setStatusLevel("info");
     setModelSetupResult(null);
-    setRunResult(null);
+    setRunResult(initialRunResult);
+    setStopRequested(Boolean(initialStopRequested));
+    setStopAcknowledged(Boolean(initialStopAcknowledged));
     setLogEntries([]);
     logIdRef.current = 0;
     setProgressYear(null);
     setProgressPercent(0);
     setError(null);
-  }, [validatedPath, validatedInputPath, outputDirectory]);
+  }, [
+    validatedPath,
+    validatedInputPath,
+    outputDirectory,
+    initialRunResult,
+    initialStopAcknowledged,
+    initialStopRequested,
+  ]);
 
   useEffect(() => {
     setEndYear((current) => {
@@ -506,6 +574,45 @@ function TuneIFsPage({
   };
 
   const handleRunClick = async () => {
+    if (running) {
+      if (stopRequested) {
+        return;
+      }
+
+      if (!window.electron?.requestMLStop) {
+        const message = "Electron bridge is unavailable for graceful stop requests.";
+        updateStageStatus("ml_driver", "error", message);
+        setError(message);
+        return;
+      }
+
+      try {
+        appendLog("ml_driver", "info", "Requesting graceful stop after the current run.");
+        const stopResponse = await window.electron.requestMLStop();
+
+        if (!stopResponse.accepted && !stopResponse.alreadyRequested) {
+          throw new StageError(
+            "ml_driver",
+            "Unable to request graceful stop for the current ML Optimization run.",
+          );
+        }
+
+        setStopRequested(true);
+        setStopAcknowledged(Boolean(stopResponse.stopAcknowledged));
+        setStatusMessage(
+          "[ml_driver] Stop requested. The current run will finish before ML Optimization stops.",
+        );
+        setStatusLevel("info");
+        setError(null);
+      } catch (err) {
+        const { stage, message } = resolveStageError(err, "ml_driver");
+        setError(message);
+        updateStageStatus(stage, "error", message);
+      }
+
+      return;
+    }
+
     setError(null);
     setRunResult(null);
     setProgressYear(null);
@@ -513,6 +620,8 @@ function TuneIFsPage({
     setMLLogEntries([]);
     mlAutoScrollRef.current = true;
     setCurrentModelProgress(null);
+    setStopRequested(false);
+    setStopAcknowledged(false);
 
     const parsedEndYear = Number(endYearInput);
     if (!Number.isFinite(parsedEndYear) || parsedEndYear <= 0) {
@@ -568,18 +677,52 @@ function TuneIFsPage({
         "alreadyRunning" in response &&
         (response as { alreadyRunning?: unknown }).alreadyRunning === true
       ) {
+        const runningResponse = response as {
+          alreadyRunning: true;
+          job?: MLJobStatus;
+        };
         shouldKeepRunning = true;
         setError(null);
         setRunResult(null);
-        setStatusMessage("[ml_driver] Re-attached to running ML Optimization job.");
+        setStopRequested(Boolean(runningResponse.job?.stopRequested));
+        setStopAcknowledged(Boolean(runningResponse.job?.stopAcknowledged));
+        setStatusMessage(
+          runningResponse.job?.stopRequested
+            ? "[ml_driver] Re-attached to running ML Optimization job. Stop has already been requested."
+            : "[ml_driver] Re-attached to running ML Optimization job.",
+        );
         setStatusLevel("info");
         return;
       }
 
-      const exitCode =
-        response && typeof response === "object" && "code" in response
-          ? (response as { code: unknown }).code
-          : null;
+      if (!response || typeof response !== "object") {
+        throw new StageError(
+          "ml_driver",
+          "Received an unexpected response from ML Optimization.",
+        );
+      }
+
+      const typedResponse = response as {
+        status?: unknown;
+        message?: unknown;
+        data?: MLDriverData;
+      };
+
+      if (typedResponse.status !== "success" || !typedResponse.data) {
+        throw new StageError(
+          "ml_driver",
+          typeof typedResponse.message === "string"
+            ? typedResponse.message
+            : "ML Optimization did not return a success payload.",
+        );
+      }
+
+      const nextRunResult: MLDriverData = {
+        ...typedResponse.data,
+        base_year: typedResponse.data.base_year ?? baseYearRef.current ?? null,
+        end_year: typedResponse.data.end_year ?? clampedEndYear,
+      };
+      const exitCode = nextRunResult.code ?? null;
 
       if (typeof exitCode !== "number") {
         throw new StageError(
@@ -596,18 +739,14 @@ function TuneIFsPage({
       }
 
       setError(null);
+      setRunResult(nextRunResult);
+      setStopRequested(false);
+      setStopAcknowledged(false);
 
       const successMessage = resolveSuccessMessage(
         "ml_driver",
-        "ML optimization completed successfully.",
+        typedResponse.message,
       );
-
-      const nextRunResult: MLDriverData = {
-        base_year: baseYearRef.current ?? undefined,
-        end_year: clampedEndYear,
-      };
-
-      setRunResult(nextRunResult);
       updateStageStatus("ml_driver", "success", successMessage);
 
       setProgressYear(clampedEndYear);
@@ -617,6 +756,8 @@ function TuneIFsPage({
       const { stage, message } = resolveStageError(err, "ml_driver");
       setError(message);
       setRunResult(null);
+      setStopRequested(false);
+      setStopAcknowledged(false);
       updateStageStatus(stage, "error", message);
     } finally {
       if (!shouldKeepRunning) {
@@ -630,11 +771,15 @@ function TuneIFsPage({
   const runProgressLabel = running
     ? progressYear != null
       ? currentModelProgress
-        ? `Running ML Optimization… Model ${currentModelProgress}, current year of run: ${progressYear}`
-        : `Running ML Optimization… current year of run: ${progressYear}`
+        ? `Running ML Optimization... Model ${currentModelProgress}, current year of run: ${progressYear}`
+        : `Running ML Optimization... current year of run: ${progressYear}`
       : currentModelProgress
-      ? `Running ML Optimization… Model ${currentModelProgress}`
-      : "Running ML Optimization…"
+      ? `Running ML Optimization... Model ${currentModelProgress}`
+      : stopRequested
+      ? stopAcknowledged
+        ? "Stopping after current run..."
+        : "Stop requested. Finishing current run..."
+      : "Running ML Optimization..."
     : runResult
     ? null
     : progressYear != null
@@ -645,6 +790,14 @@ function TuneIFsPage({
     runResult && typeof runResult.w_gdp === "number"
       ? runResult.w_gdp.toLocaleString(undefined, { maximumFractionDigits: 2 })
       : null;
+  const runButtonDisabled =
+    modelSetupRunning ||
+    (running ? stopRequested : !outputDirectory || !modelSetupResult);
+  const runButtonLabel = running
+    ? stopRequested
+      ? "Stopping after current run..."
+      : "Running… Click to stop after current run"
+    : "Run ML Optimization";
 
   return (
     <section className="tune-container">
@@ -708,14 +861,9 @@ function TuneIFsPage({
           type="button"
           className="button"
           onClick={handleRunClick}
-          disabled={
-            running ||
-            modelSetupRunning ||
-            !outputDirectory ||
-            !modelSetupResult
-          }
+          disabled={runButtonDisabled}
         >
-          {running ? "Running..." : "Run ML Optimization"}
+          {runButtonLabel}
         </button>
         <button
           type="button"
@@ -897,7 +1045,7 @@ function App() {
           setLastValidatedOutputDirectory(status.outputDir ?? null);
           setLastValidatedInputFile(status.inputExcelPath ?? null);
         }
-        if (status?.ifsValidated && status?.running) {
+        if (status?.ifsValidated && (status?.running || status?.finalResult)) {
           setView("tune");
         }
       } catch (err) {
@@ -987,7 +1135,7 @@ function App() {
         if (typeof defaultFile === "string" && defaultFile.trim().length > 0) {
           updateIfUninitialized(defaultFile.trim());
         } else {
-          console.warn("Default input path was empty — check Electron handler.");
+          console.warn("Default input path was empty - check Electron handler.");
         }
       } catch (err) {
         console.error("Failed to load default input file:", err);
@@ -1329,7 +1477,7 @@ function App() {
             <section className="results">
               <h2>Validation Results</h2>
               <div className={result.valid ? "status success" : "status error"}>
-                {result.valid ? "Valid ✅" : "Invalid ❌"}
+                {result.valid ? "Valid" : "Invalid"}
               </div>
               {result.base_year != null && (
                 <div className="base-year">Base year: {result.base_year}</div>
@@ -1424,7 +1572,7 @@ function App() {
                                 present ? "present" : "missing"
                               }`}
                             >
-                              {name} {present ? "✓" : "✗"}
+                              {name} {present ? "[x]" : "[ ]"}
                             </span>
                           ))}
                         </span>
@@ -1446,7 +1594,7 @@ function App() {
                         key={item.file}
                         className={item.exists ? "item success" : "item error"}
                       >
-                        <span className="icon">{item.exists ? "✅" : "❌"}</span>
+                        <span className="icon">{item.exists ? "OK" : "X"}</span>
                         <span>{item.file}</span>
                       </li>
                     ))}
@@ -1460,7 +1608,7 @@ function App() {
                   <ul>
                     {missingFiles.map((file) => (
                       <li key={file} className="item error">
-                        <span className="icon">❌</span>
+                        <span className="icon">X</span>
                         <span>{file}</span>
                       </li>
                     ))}
@@ -1491,6 +1639,10 @@ function App() {
           initialMLJobRunning={Boolean(mlJobStatus?.running)}
           initialMLJobProgress={mlJobStatus?.progress?.text ?? null}
           initialRunConfig={mlJobStatus?.runConfig ?? null}
+          initialStopRequested={mlJobStatus?.stopRequested ?? false}
+          initialStopAcknowledged={mlJobStatus?.stopAcknowledged ?? false}
+          initialFinalResult={mlJobStatus?.finalResult ?? null}
+          initialTerminationReason={mlJobStatus?.terminationReason ?? null}
         />
       )}
 

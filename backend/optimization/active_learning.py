@@ -50,6 +50,7 @@ def active_learning_loop(
     patience: int = 10,
     min_improve_pct: float | None = 0.01,
     nn_config: dict | None = None,
+    should_stop=None,
 ):
     """Active-learning optimization loop using ensemble-based surrogates."""
 
@@ -73,15 +74,24 @@ def active_learning_loop(
     kappas = np.linspace(kappa_start, kappa_end, n_iters)
     history = []
     no_improve_counter = 0
+    stop_honored = False
 
     best_y_prev = float(np.min(Y_obs))
     ml_prefix = "[ML-STATUS] "
     print(
-        f"{ml_prefix}Starting active learning run — initial best_y = {best_y_prev:.4f}",
+        f"{ml_prefix}Starting active learning run - initial best_y = {best_y_prev:.4f}",
         flush=True,
     )
 
     for t in range(n_iters):
+        if should_stop is not None and should_stop():
+            print(
+                f"{ml_prefix}Graceful stop acknowledged; stopping before the next candidate.",
+                flush=True,
+            )
+            stop_honored = True
+            break
+
         models = train_ensemble(
             X_obs,
             Y_obs,
@@ -138,6 +148,14 @@ def active_learning_loop(
             flush=True,
         )
 
+        if should_stop is not None and should_stop():
+            print(
+                f"{ml_prefix}Graceful stop acknowledged; stopping after the current evaluation.",
+                flush=True,
+            )
+            stop_honored = True
+            break
+
         if min_improve_pct is not None:
             rel_change = abs(best_y_curr - best_y_prev) / (abs(best_y_prev) + 1e-8)
             if rel_change < min_improve_pct:
@@ -154,4 +172,4 @@ def active_learning_loop(
                 break
         best_y_prev = best_y_curr
 
-    return X_obs, Y_obs, np.array(history, dtype=object), results_cache
+    return X_obs, Y_obs, np.array(history, dtype=object), results_cache, stop_honored

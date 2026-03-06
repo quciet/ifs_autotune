@@ -66,9 +66,11 @@ export type RunIFsData = {
 };
 
 export type MLDriverData = {
+  code?: number | null;
   best_model_id?: string | null;
   best_fit_pooled?: number | null;
   iterations?: number | null;
+  terminationReason?: "completed" | "stopped_gracefully" | null;
   ifs_id?: number;
   model_id?: string;
   run_folder?: string;
@@ -262,7 +264,7 @@ export async function runML({
   const normalizedIfsId = Number(ifsId);
 
   if (!normalizedModelId || !Number.isFinite(normalizedIfsId)) {
-    throw new Error("Missing modelId or ifsId — runML cannot proceed.");
+    throw new Error("Missing modelId or ifsId - runML cannot proceed.");
   }
 
   try {

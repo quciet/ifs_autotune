@@ -24,7 +24,7 @@ const ensureAppFolders = () => {
 
   const defaultInputFile = path.join(inputDir, DEFAULT_INPUT_FILE_NAME);
   if (!fs.existsSync(defaultInputFile)) {
-    console.warn('⚠️ No default input file found at:', defaultInputFile);
+    console.warn('WARNING: No default input file found at:', defaultInputFile);
   }
 };
 
@@ -58,6 +58,10 @@ const mlJobState = {
   ifsValidated: false,
   inputExcelPath: null,
   outputDir: null,
+  stopRequested: false,
+  stopAcknowledged: false,
+  finalResult: null,
+  terminationReason: null,
   runConfig: null,
 };
 
@@ -73,6 +77,10 @@ const getSafeMLJobState = () => ({
   ifsValidated: mlJobState.ifsValidated,
   inputExcelPath: mlJobState.inputExcelPath,
   outputDir: mlJobState.outputDir,
+  stopRequested: mlJobState.stopRequested,
+  stopAcknowledged: mlJobState.stopAcknowledged,
+  finalResult: mlJobState.finalResult,
+  terminationReason: mlJobState.terminationReason,
   runConfig: mlJobState.runConfig,
 });
 
@@ -107,6 +115,85 @@ const sendToRenderer = (channel, payload) => {
   }
 
   mainWindow.webContents.send(channel, payload);
+};
+
+let currentMLProcess = null;
+let currentMLStopFile = null;
+let currentMLFinalPayload = null;
+
+const normalizeTerminationReason = (value) => {
+  if (value === 'completed' || value === 'stopped_gracefully') {
+    return value;
+  }
+
+  return null;
+};
+
+const cleanupCurrentMLStopFile = () => {
+  if (!currentMLStopFile) {
+    return;
+  }
+
+  try {
+    if (fs.existsSync(currentMLStopFile)) {
+      fs.unlinkSync(currentMLStopFile);
+    }
+  } catch (error) {
+    console.warn('[ml] unable to remove stop file:', error);
+  }
+
+  currentMLStopFile = null;
+};
+
+const buildMLDriverResolvePayload = ({ code, parsedPayload, fallbackBaseYear, fallbackEndYear }) => {
+  const parsedData =
+    parsedPayload && parsedPayload.data && typeof parsedPayload.data === 'object'
+      ? parsedPayload.data
+      : {};
+  const terminationReason = normalizeTerminationReason(parsedData.terminationReason);
+  const fallbackMessage =
+    terminationReason === 'stopped_gracefully'
+      ? 'ML optimization stopped after the current run.'
+      : code === 0
+      ? 'ML optimization completed successfully.'
+      : `ML optimization exited with code ${code}.`;
+
+  return {
+    status: 'success',
+    stage: 'ml_driver',
+    message:
+      parsedPayload && typeof parsedPayload.message === 'string' && parsedPayload.message.trim().length > 0
+        ? parsedPayload.message
+        : fallbackMessage,
+    data: {
+      code: typeof code === 'number' ? code : null,
+      best_model_id:
+        typeof parsedData.best_model_id === 'string' && parsedData.best_model_id.trim().length > 0
+          ? parsedData.best_model_id
+          : null,
+      best_fit_pooled:
+        typeof parsedData.best_fit_pooled === 'number' && Number.isFinite(parsedData.best_fit_pooled)
+          ? parsedData.best_fit_pooled
+          : null,
+      iterations:
+        typeof parsedData.iterations === 'number' && Number.isFinite(parsedData.iterations)
+          ? parsedData.iterations
+          : null,
+      terminationReason,
+      base_year:
+        typeof parsedData.base_year === 'number' && Number.isFinite(parsedData.base_year)
+          ? parsedData.base_year
+          : typeof fallbackBaseYear === 'number' && Number.isFinite(fallbackBaseYear)
+          ? fallbackBaseYear
+          : null,
+      end_year:
+        typeof parsedData.end_year === 'number' && Number.isFinite(parsedData.end_year)
+          ? parsedData.end_year
+          : typeof fallbackEndYear === 'number' && Number.isFinite(fallbackEndYear)
+          ? fallbackEndYear
+          : null,
+    },
+  };
 };
 
 function createWindow() {
@@ -221,7 +308,7 @@ ipcMain.handle('get-default-input-file', async () => {
   const defaultInputFile = path.join(inputDir, DEFAULT_INPUT_FILE_NAME);
 
   if (!fs.existsSync(defaultInputFile)) {
-    console.warn('⚠️ Default input file not found at:', defaultInputFile);
+    console.warn('WARNING: Default input file not found at:', defaultInputFile);
   }
 
   return defaultInputFile;
@@ -571,7 +658,7 @@ ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
       }
 
       console.log(
-        `[BIGPOPA] Checked internal tool at: ${parquetReaderPath} — exists=${parquetReaderExists}`
+        `[BIGPOPA] Checked internal tool at: ${parquetReaderPath} - exists=${parquetReaderExists}`
       );
     } catch (err) {
       console.warn('[BIGPOPA] Failed to verify ParquetReaderlite.exe:', err);
@@ -871,7 +958,36 @@ ipcMain.handle("run-ml", async (_event, args) => {
   }
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const resolveOnce = (value) => {
+      if (!settled) {
+        settled = true;
+        resolve(value);
+      }
+    };
+
+    const rejectOnce = (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    };
+
     try {
+      cleanupCurrentMLStopFile();
+      currentMLFinalPayload = null;
+
+      const stopFilePath = path.join(
+        args.outputFolder,
+        `.bigpopa-ml-stop-${Date.now()}.signal`,
+      );
+      currentMLStopFile = stopFilePath;
+
+      if (fs.existsSync(stopFilePath)) {
+        fs.unlinkSync(stopFilePath);
+      }
+
       const py = spawnPython(
         (() => {
           const baseArgs = [
@@ -882,10 +998,15 @@ ipcMain.handle("run-ml", async (_event, args) => {
             "--output-folder", args.outputFolder,
             "--initial-model-id", args.initialModelId,
             "--bigpopa-db", path.join(args.outputFolder, "bigpopa.db"),
+            "--stop-file", stopFilePath,
           ];
 
           if (args.inputFilePath) {
             baseArgs.push("--starting-point-table", args.inputFilePath);
+          }
+
+          if (args.baseYear != null) {
+            baseArgs.push("--base-year", String(args.baseYear));
           }
 
           return baseArgs;
@@ -900,6 +1021,7 @@ ipcMain.handle("run-ml", async (_event, args) => {
         }
       );
 
+      currentMLProcess = py;
       mlJobState.running = true;
       mlJobState.startedAt = Date.now();
       mlJobState.lastUpdateAt = Date.now();
@@ -907,6 +1029,10 @@ ipcMain.handle("run-ml", async (_event, args) => {
       mlJobState.progress = null;
       mlJobState.exitCode = null;
       mlJobState.error = null;
+      mlJobState.stopRequested = false;
+      mlJobState.stopAcknowledged = false;
+      mlJobState.finalResult = null;
+      mlJobState.terminationReason = null;
       updateMLJobContext({
         ifsPath: args.ifsRoot,
         ifsValidated: true,
@@ -939,6 +1065,10 @@ ipcMain.handle("run-ml", async (_event, args) => {
             };
           }
 
+          if (trimmed.toLowerCase().includes('graceful stop acknowledged')) {
+            mlJobState.stopAcknowledged = true;
+          }
+
           sendToRenderer("ml-log", trimmed);
           return;
         }
@@ -956,6 +1086,28 @@ ipcMain.handle("run-ml", async (_event, args) => {
         try {
           const parsed = JSON.parse(trimmed);
           if (parsed && typeof parsed === "object") {
+            if (parsed.stage === 'ml_driver' && parsed.status === 'success') {
+              currentMLFinalPayload = parsed;
+
+              const finalData = parsed.data && typeof parsed.data === 'object' ? parsed.data : {};
+              mlJobState.finalResult = {
+                best_model_id:
+                  typeof finalData.best_model_id === 'string' ? finalData.best_model_id : null,
+                best_fit_pooled:
+                  typeof finalData.best_fit_pooled === 'number' ? finalData.best_fit_pooled : null,
+                iterations:
+                  typeof finalData.iterations === 'number' ? finalData.iterations : null,
+              };
+              mlJobState.terminationReason = normalizeTerminationReason(finalData.terminationReason);
+            }
+
+            if (parsed.stage === 'ml_driver' && parsed.status === 'error') {
+              mlJobState.error =
+                typeof parsed.message === 'string' && parsed.message.trim().length > 0
+                  ? parsed.message
+                  : mlJobState.error;
+            }
+
             const parsedMessage =
               typeof parsed.message === "string" ? parsed.message.trim() : "";
             if (parsedMessage.length > 0) {
@@ -989,11 +1141,14 @@ ipcMain.handle("run-ml", async (_event, args) => {
       });
 
       py.on('error', (error) => {
+        currentMLProcess = null;
         mlJobState.running = false;
         mlJobState.lastUpdateAt = Date.now();
         mlJobState.error = error?.message || 'Failed to execute ML driver.';
         mlJobState.exitCode = null;
         console.log('[ml] exited code=null');
+        cleanupCurrentMLStopFile();
+        rejectOnce(error);
       });
 
       py.on("close", (code) => {
@@ -1001,20 +1156,77 @@ ipcMain.handle("run-ml", async (_event, args) => {
           handleLine(stdoutBuffer);
         }
 
+        currentMLProcess = null;
         mlJobState.running = false;
         mlJobState.lastUpdateAt = Date.now();
         mlJobState.exitCode = typeof code === 'number' ? code : null;
+
+        const resolvedPayload = buildMLDriverResolvePayload({
+          code,
+          parsedPayload: currentMLFinalPayload,
+          fallbackBaseYear: args.baseYear ?? null,
+          fallbackEndYear: args.endYear ?? null,
+        });
+        mlJobState.finalResult =
+          resolvedPayload.data.best_model_id ||
+          resolvedPayload.data.best_fit_pooled != null ||
+          resolvedPayload.data.iterations != null
+            ? {
+                best_model_id: resolvedPayload.data.best_model_id,
+                best_fit_pooled: resolvedPayload.data.best_fit_pooled,
+                iterations: resolvedPayload.data.iterations,
+              }
+            : null;
+        mlJobState.terminationReason = resolvedPayload.data.terminationReason;
+
         console.log(`[ml] exited code=${mlJobState.exitCode ?? 'null'}`);
-        resolve({ code });
+        cleanupCurrentMLStopFile();
+        resolveOnce(resolvedPayload);
       });
     } catch (err) {
+      currentMLProcess = null;
       mlJobState.running = false;
       mlJobState.lastUpdateAt = Date.now();
       mlJobState.error = err instanceof Error ? err.message : String(err);
       mlJobState.exitCode = null;
-      reject(err);
+      cleanupCurrentMLStopFile();
+      rejectOnce(err);
     }
   });
+});
+ipcMain.handle('ml:requestStop', async () => {
+  if (!mlJobState.running || !currentMLProcess || !currentMLStopFile) {
+    return {
+      accepted: false,
+      alreadyRequested: false,
+      stopRequested: mlJobState.stopRequested,
+      stopAcknowledged: mlJobState.stopAcknowledged,
+    };
+  }
+
+  if (mlJobState.stopRequested) {
+    return {
+      accepted: false,
+      alreadyRequested: true,
+      stopRequested: true,
+      stopAcknowledged: mlJobState.stopAcknowledged,
+    };
+  }
+
+  fs.writeFileSync(
+    currentMLStopFile,
+    JSON.stringify({ requestedAt: new Date().toISOString() }),
+    'utf8',
+  );
+  mlJobState.stopRequested = true;
+  mlJobState.lastUpdateAt = Date.now();
+
+  return {
+    accepted: true,
+    alreadyRequested: false,
+    stopRequested: true,
+    stopAcknowledged: mlJobState.stopAcknowledged,
+  };
 });
 ipcMain.handle('ml:jobStatus', async () => {
   console.log('[ml] jobStatus requested');

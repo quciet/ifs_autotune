@@ -50,6 +50,17 @@ def emit_stage_response(status: str, stage: str, message: str, data: Dict[str, o
     sys.stdout.flush()
 
 
+
+def stop_requested(stop_file: Path | None) -> bool:
+    if stop_file is None:
+        return False
+
+    try:
+        return stop_file.exists()
+    except OSError:
+        return False
+
+
 # --- Flattening helpers ----------------------------------------------------
 
 
@@ -382,7 +393,7 @@ def _load_ml_settings(starting_point_table: Path):
       min_convergence_pct = percent number (0.01 = 0.01%)
 
     min_convergence_pct is converted to a fraction for active_learning_loop:
-      Example: Excel 0.01 → 0.01% → 0.0001
+      Example: Excel 0.01 -> 0.01% -> 0.0001
     """
     default_n_sample = 200
     default_n_max_iteration = 30
@@ -437,7 +448,7 @@ def _load_ml_settings(starting_point_table: Path):
 
         elif parameter == "min_convergence_pct":
             # User enters percentages (0.01 = 0.01%).
-            # Convert percent → fraction for ML loop.
+            # Convert percent -> fraction for ML loop.
             min_convergence_pct = float(numeric_value) / 100.0
 
     return (
@@ -491,7 +502,7 @@ def _run_model(
         )
         row = cur.fetchone()
         if row and row[0] is not None:
-            # Found previously evaluated model — reuse stored fit_pooled
+            # Found previously evaluated model - reuse stored fit_pooled
             fit_val = float(row[0])
             point = np.round(flatten_inputs(param_values, coef_values), 6)
             point_text = _format_point_for_log(point)
@@ -626,10 +637,16 @@ def main(argv: list[str] | None = None) -> int:
         dest="starting_point_table",
         help="Path to the user-provided StartingPointTable.xlsx",
     )
+    parser.add_argument(
+        "--stop-file",
+        dest="stop_file",
+        help="Path to a sentinel file requesting graceful stop after the current run",
+    )
 
     args = parser.parse_args(argv)
     args.output_folder = os.path.abspath(args.output_folder)
     args.ifs_root = os.path.abspath(args.ifs_root)
+    stop_file = Path(args.stop_file).expanduser().resolve() if args.stop_file else None
 
     bigpopa_db = Path(args.bigpopa_db) if args.bigpopa_db else Path(args.output_folder) / "bigpopa.db"
 
@@ -749,29 +766,39 @@ def main(argv: list[str] | None = None) -> int:
             vector_to_model_id[tuple(np.round(np.atleast_1d(x_vector), 6))] = model_id
             return fit_val
 
-        X_obs_arr, Y_obs_arr, history, results_cache = active_learning_loop(
+        X_obs_arr, Y_obs_arr, history, results_cache, stop_honored = active_learning_loop(
             f=callback,
             X_obs=np.asarray(X_obs),
             Y_obs=np.asarray(Y_obs),
             X_grid=X_grid,
             n_iters=n_max_iteration,
-            patience=n_convergence,              # new
-            min_improve_pct=min_convergence_pct, # new (fraction, not percent)
+            patience=n_convergence,
+            min_improve_pct=min_convergence_pct,
+            should_stop=lambda: stop_requested(stop_file),
         )
 
         best_index = int(np.argmin(Y_obs_arr))
         best_vector = tuple(np.round(np.atleast_1d(X_obs_arr[best_index]), 6))
         best_fit = float(Y_obs_arr[best_index])
         best_model_id = vector_to_model_id.get(best_vector)
+        termination_reason = "stopped_gracefully" if stop_honored else "completed"
+        completion_message = (
+            "Active learning stopped after the current run."
+            if stop_honored
+            else "Active learning complete."
+        )
 
         emit_stage_response(
             "success",
             "ml_driver",
-            "Active learning complete.",
+            completion_message,
             {
                 "best_model_id": best_model_id,
                 "best_fit_pooled": best_fit,
                 "iterations": len(history),
+                "terminationReason": termination_reason,
+                "base_year": args.base_year,
+                "end_year": args.end_year,
             },
         )
         return 0
