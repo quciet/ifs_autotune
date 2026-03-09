@@ -97,6 +97,21 @@ def _upsert_model_failed(conn: sqlite3.Connection, ifs_id: int, model_id: str) -
         )
 
 
+
+def _refresh_dyadic_work_database(ifs_root: str) -> bool:
+    data_dir = os.path.join(os.path.abspath(ifs_root), "DATA")
+    runfiles_dir = os.path.join(os.path.abspath(ifs_root), "RUNFILES")
+    source_db = os.path.join(data_dir, "IFsForDyadic.db")
+    work_db = os.path.join(runfiles_dir, "ifsForDyadicWork.db")
+
+    if not os.path.exists(source_db):
+        return False
+
+    os.makedirs(runfiles_dir, exist_ok=True)
+    shutil.copy2(source_db, work_db)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -227,6 +242,28 @@ def main(argv: list[str] | None = None) -> int:
                 {"model_id": model_id},
             )
             return 1
+
+        try:
+            dyadic_refreshed = _refresh_dyadic_work_database(ifs_root)
+        except OSError as exc:
+            emit_stage_response(
+                "error",
+                "run_ifs",
+                f"Failed to refresh dyadic working database: {exc}",
+                {
+                    "source_db": os.path.join(ifs_root, "DATA", "IFsForDyadic.db"),
+                    "work_db": os.path.join(ifs_root, "RUNFILES", "ifsForDyadicWork.db"),
+                },
+            )
+            return 1
+
+        if dyadic_refreshed:
+            emit_stage_response(
+                "info",
+                "run_ifs",
+                "Refreshed dyadic working database before IFs launch.",
+                {"work_db": os.path.join(ifs_root, "RUNFILES", "ifsForDyadicWork.db")},
+            )
 
         try:
             process = subprocess.Popen(
