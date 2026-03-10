@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 import argparse
 import json
 import os
@@ -70,6 +70,11 @@ REQUIRED_PATHS = [
 ]
 
 REQUIRED_INPUT_SHEETS = ["AnalFunc", "TablFunc", "IFsVar", "DataDict"]
+OPTIONAL_GRID_COLUMNS = {
+    "IFsVar": ["Step", "LevelCount"],
+    "TablFunc": ["Step", "LevelCount"],
+    "AnalFunc": ["Step", "LevelCount"],
+}
 
 
 
@@ -207,6 +212,7 @@ def _check_input_file(raw_path: Optional[str]) -> Dict[str, object]:
         "message": message,
         "sheets": sheets,
         "missingSheets": missing_sheets,
+        "optionalGridColumns": OPTIONAL_GRID_COLUMNS,
     }
 
 
@@ -320,3 +326,4 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv))
+

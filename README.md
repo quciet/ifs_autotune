@@ -1,4 +1,4 @@
-# BIGPOPA (Desktop App)
+﻿# BIGPOPA (Desktop App)
 
 Local-first desktop application for automating and optimizing IFs model runs.  
 Runs fully offline: React/Electron frontend + Python backend, with Electron acting as the bridge.
@@ -82,7 +82,8 @@ BIGPOPA is a desktop tool for automating and optimizing International Futures (I
 
 ## Working Files
 
--   **`StartingPointTable.xlsx`**: This is the primary input file for configuring the model and the machine learning optimization. Users can define model parameters, coefficients, and other settings in the various sheets of this Excel workbook.
+-   **`StartingPointTable.xlsx`**: This is the primary input file for configuring the model and the machine learning optimization. Users can define model parameters, coefficients, and other settings in the various sheets of this Excel workbook. In `IFsVar`, `TablFunc`, and `AnalFunc`, the optional `Step` and `LevelCount` columns enable Cartesian grid sampling per row. If any enabled row uses those columns, BIGPOPA switches from the legacy random candidate pool to grid mode, and `n_sample` becomes the target upper bound for auto-filled levels on unspecified dimensions.
 -   **`bigpopa.db`**: This is a SQLite database that is created in the user-specified output directory. It stores all model configurations, run artifacts, and final results. It also functions as a cache, allowing the optimization loop to reuse results from previously evaluated model configurations, which significantly speeds up the process.
 
 ---
+

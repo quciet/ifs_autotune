@@ -1,4 +1,4 @@
-"""Active-learning orchestration layer for BIGPOPA.
+﻿"""Active-learning orchestration layer for BIGPOPA.
 
 This module sits between the Electron shell and the legacy ``run_ifs.py``
 runner. It coordinates the optimization loop and delegates all IFs execution
@@ -10,11 +10,14 @@ directly.
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import os
 import sqlite3
 import subprocess
 import sys
+from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -30,6 +33,29 @@ from optimization.active_learning import active_learning_loop
 
 
 FAIL_Y: float = float(os.getenv("BIGPOPA_FAIL_Y", "1e6"))
+
+@dataclass(frozen=True)
+class UserDimensionConfig:
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
+    level_count: int | None = None
+
+    @property
+    def has_grid_config(self) -> bool:
+        return self.step is not None or self.level_count is not None
+
+
+@dataclass(frozen=True)
+class SearchDimension:
+    key: tuple[str, ...]
+    display_name: str
+    kind: str
+    default: float
+    minimum: float
+    maximum: float
+    step: float | None = None
+    level_count: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -190,16 +216,16 @@ def _merge_with_template(template_param: dict, template_coef: dict, sample_param
     return params, coef_result
 
 
-def _build_search_ranges(
+def _build_search_space(
     conn: sqlite3.Connection,
     ifs_static_id: int,
     input_param: dict,
     input_coef: dict,
-    user_param_bounds: dict[str, tuple[float | None, float | None]],
-    user_coef_bounds: dict[tuple[str, str, str], tuple[float | None, float | None]],
-) -> List[Tuple[float, float]]:
+    user_param_configs: dict[str, UserDimensionConfig],
+    user_coef_configs: dict[tuple[str, str, str], UserDimensionConfig],
+) -> list[SearchDimension]:
     cursor = conn.cursor()
-    ranges: List[Tuple[float, float]] = []
+    search_space: list[SearchDimension] = []
 
     for param_name in sorted(input_param.keys()):
         cursor.execute(
@@ -226,7 +252,9 @@ def _build_search_ranges(
         else:
             fallback_min, fallback_max = -1.0, 1.0
 
-        user_min, user_max = user_param_bounds.get(param_name, (None, None))
+        user_config = user_param_configs.get(param_name, UserDimensionConfig())
+        user_min = user_config.minimum
+        user_max = user_config.maximum
         min_val = float(user_min) if user_min is not None else (
             float(param_min) if param_min is not None else float(fallback_min)
         )
@@ -240,7 +268,18 @@ def _build_search_ranges(
                 f"Warning: swapped bounds for parameter '{param_name}' because min ({original_min}) > max ({original_max})",
                 flush=True,
             )
-        ranges.append((min_val, max_val))
+        search_space.append(
+            SearchDimension(
+                key=("param", param_name),
+                display_name=f"parameter '{param_name}'",
+                kind="param",
+                default=default_val,
+                minimum=float(min_val),
+                maximum=float(max_val),
+                step=user_config.step,
+                level_count=user_config.level_count,
+            )
+        )
 
     for func in sorted(input_coef.keys()):
         for x_name in sorted(input_coef[func].keys()):
@@ -276,7 +315,9 @@ def _build_search_ranges(
                 else:
                     fallback_min, fallback_max = -1.0, 1.0
 
-                user_min, user_max = user_coef_bounds.get((func, x_name, beta), (None, None))
+                user_config = user_coef_configs.get((func, x_name, beta), UserDimensionConfig())
+                user_min = user_config.minimum
+                user_max = user_config.maximum
                 excel_fully_specified = user_min is not None and user_max is not None
 
                 min_val = float(user_min) if user_min is not None else (
@@ -304,8 +345,19 @@ def _build_search_ranges(
                         flush=True,
                     )
 
-                ranges.append((float(min_val), float(max_val)))
-    return ranges
+                search_space.append(
+                    SearchDimension(
+                        key=("coef", func, x_name, beta),
+                        display_name=f"coefficient '{func}/{x_name}/{beta}'",
+                        kind="coef",
+                        default=center,
+                        minimum=float(min_val),
+                        maximum=float(max_val),
+                        step=user_config.step,
+                        level_count=user_config.level_count,
+                    )
+                )
+    return search_space
 
 
 def _sample_grid(ranges: List[Tuple[float, float]], n_samples: int = 200) -> np.ndarray:
@@ -315,6 +367,109 @@ def _sample_grid(ranges: List[Tuple[float, float]], n_samples: int = 200) -> np.
         point = [rng.uniform(low, high) if low != high else low for low, high in ranges]
         samples.append(point)
     return np.asarray(samples, dtype=float)
+
+
+def _has_grid_configuration(search_space: list[SearchDimension]) -> bool:
+    return any(dimension.step is not None or dimension.level_count is not None for dimension in search_space)
+
+
+def _clip_to_bounds(value: float, low: float, high: float) -> float:
+    return min(max(float(value), float(low)), float(high))
+
+
+def _generate_levels_for_count(dimension: SearchDimension, level_count: int) -> np.ndarray:
+    if level_count < 1:
+        raise ValueError(f"Level count for {dimension.display_name} must be at least 1.")
+    if math.isclose(dimension.minimum, dimension.maximum):
+        return np.asarray([dimension.minimum], dtype=float)
+    if level_count == 1:
+        return np.asarray(
+            [_clip_to_bounds(dimension.default, dimension.minimum, dimension.maximum)],
+            dtype=float,
+        )
+    return np.linspace(dimension.minimum, dimension.maximum, num=level_count, dtype=float)
+
+
+def _generate_levels_for_step(dimension: SearchDimension, step: float) -> np.ndarray:
+    if step <= 0:
+        raise ValueError(f"Step for {dimension.display_name} must be greater than 0.")
+    if math.isclose(dimension.minimum, dimension.maximum):
+        return np.asarray([dimension.minimum], dtype=float)
+
+    values: list[float] = []
+    index = 0
+    tolerance = max(1e-12, abs(step) * 1e-12, abs(dimension.maximum) * 1e-12)
+    while True:
+        value = dimension.minimum + index * step
+        if value > dimension.maximum + tolerance:
+            break
+        values.append(_clip_to_bounds(value, dimension.minimum, dimension.maximum))
+        index += 1
+    return np.asarray(values, dtype=float)
+
+
+def _explicit_level_values(dimension: SearchDimension) -> np.ndarray | None:
+    if dimension.step is not None:
+        return _generate_levels_for_step(dimension, dimension.step)
+    if dimension.level_count is not None:
+        return _generate_levels_for_count(dimension, dimension.level_count)
+    return None
+
+
+def _infer_grid_level_counts(search_space: list[SearchDimension], n_samples: int) -> list[int]:
+    if n_samples < 1:
+        raise ValueError("n_sample must be at least 1 when grid mode is enabled.")
+
+    counts: list[int] = []
+    unspecified_indices: list[int] = []
+    explicit_product = 1
+
+    for index, dimension in enumerate(search_space):
+        explicit_values = _explicit_level_values(dimension)
+        if explicit_values is None:
+            counts.append(1)
+            unspecified_indices.append(index)
+            continue
+        explicit_count = int(len(explicit_values))
+        counts.append(explicit_count)
+        explicit_product *= explicit_count
+
+    if explicit_product > n_samples:
+        raise ValueError(
+            "Explicit grid settings produce "
+            f"{explicit_product} candidates, which exceeds n_sample={n_samples}."
+        )
+
+    total_candidates = explicit_product
+    while unspecified_indices:
+        next_index = min(
+            unspecified_indices,
+            key=lambda idx: (counts[idx], search_space[idx].key),
+        )
+        next_total = (total_candidates // counts[next_index]) * (counts[next_index] + 1)
+        if next_total > n_samples:
+            break
+        counts[next_index] += 1
+        total_candidates = next_total
+
+    return counts
+
+
+def _generate_candidate_grid(search_space: list[SearchDimension], n_samples: int) -> np.ndarray:
+    if not search_space:
+        return np.empty((n_samples, 0), dtype=float)
+
+    level_counts = _infer_grid_level_counts(search_space, n_samples)
+    level_values: list[np.ndarray] = []
+
+    for dimension, inferred_count in zip(search_space, level_counts):
+        explicit_values = _explicit_level_values(dimension)
+        if explicit_values is not None:
+            level_values.append(explicit_values)
+        else:
+            level_values.append(_generate_levels_for_count(dimension, inferred_count))
+
+    return np.asarray(list(product(*(values.tolist() for values in level_values))), dtype=float)
 
 
 def _switch_is_on(value: object) -> bool:
@@ -339,14 +494,45 @@ def _to_optional_float(value: object) -> float | None:
         return None
 
 
-def _load_user_bounds(
+def _cell_has_value(value: object) -> bool:
+    if value is None or pd.isna(value):
+        return False
+    if isinstance(value, str):
+        value = value.strip()
+        if not value or value.lower() in {"nan", "null"}:
+            return False
+    return True
+
+
+def _parse_config_float(value: object, *, field_name: str, label: str) -> float | None:
+    if not _cell_has_value(value):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} for {label} must be numeric.") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{field_name} for {label} must be finite.")
+    return parsed
+
+
+def _parse_config_int(value: object, *, field_name: str, label: str) -> int | None:
+    parsed = _parse_config_float(value, field_name=field_name, label=label)
+    if parsed is None:
+        return None
+    if not float(parsed).is_integer():
+        raise ValueError(f"{field_name} for {label} must be an integer.")
+    return int(parsed)
+
+
+def _load_user_search_configs(
     starting_point_table: Path,
-) -> tuple[dict[str, tuple[float | None, float | None]], dict[tuple[str, str, str], tuple[float | None, float | None]]]:
-    param_bounds: dict[str, tuple[float | None, float | None]] = {}
-    coef_bounds: dict[tuple[str, str, str], tuple[float | None, float | None]] = {}
+) -> tuple[dict[str, UserDimensionConfig], dict[tuple[str, str, str], UserDimensionConfig]]:
+    param_configs: dict[str, UserDimensionConfig] = {}
+    coef_configs: dict[tuple[str, str, str], UserDimensionConfig] = {}
 
     if not starting_point_table.exists():
-        return param_bounds, coef_bounds
+        return param_configs, coef_configs
 
     def _read_sheet(sheet_name: str) -> pd.DataFrame:
         try:
@@ -360,9 +546,18 @@ def _load_user_bounds(
         name = str(row.get("Name") or "").strip()
         if not name:
             continue
-        param_bounds[name] = (
-            _to_optional_float(row.get("Minimum")),
-            _to_optional_float(row.get("Maximum")),
+        label = f"parameter '{name}'"
+        step = _parse_config_float(row.get("Step"), field_name="Step", label=label)
+        if step is not None and step <= 0:
+            raise ValueError(f"Step for {label} must be greater than 0.")
+        level_count = _parse_config_int(row.get("LevelCount"), field_name="LevelCount", label=label)
+        if level_count is not None and level_count < 1:
+            raise ValueError(f"LevelCount for {label} must be at least 1.")
+        param_configs[name] = UserDimensionConfig(
+            minimum=_to_optional_float(row.get("Minimum")),
+            maximum=_to_optional_float(row.get("Maximum")),
+            step=step,
+            level_count=level_count,
         )
 
     for sheet_name in ("TablFunc", "AnalFunc"):
@@ -374,14 +569,21 @@ def _load_user_bounds(
             beta_name = str(row.get("Coefficient") or "").strip()
             if not function_name or not x_name or not beta_name:
                 continue
-            coef_bounds[(function_name, x_name, beta_name)] = (
-                _to_optional_float(row.get("Minimum")),
-                _to_optional_float(row.get("Maximum")),
+            label = f"coefficient '{function_name}/{x_name}/{beta_name}'"
+            step = _parse_config_float(row.get("Step"), field_name="Step", label=label)
+            if step is not None and step <= 0:
+                raise ValueError(f"Step for {label} must be greater than 0.")
+            level_count = _parse_config_int(row.get("LevelCount"), field_name="LevelCount", label=label)
+            if level_count is not None and level_count < 1:
+                raise ValueError(f"LevelCount for {label} must be at least 1.")
+            coef_configs[(function_name, x_name, beta_name)] = UserDimensionConfig(
+                minimum=_to_optional_float(row.get("Minimum")),
+                maximum=_to_optional_float(row.get("Maximum")),
+                step=step,
+                level_count=level_count,
             )
 
-    return param_bounds, coef_bounds
-
-
+    return param_configs, coef_configs
 def _load_ml_settings(starting_point_table: Path):
     """
     Read ML tab from StartingPointTable.xlsx.
@@ -705,15 +907,15 @@ def main(argv: list[str] | None = None) -> int:
                 },
             )
 
-    (
-        n_sample,
-        n_max_iteration,
-        n_convergence,
-        min_convergence_pct,
-    ) = _load_ml_settings(starting_point_table)
-    user_param_bounds, user_coef_bounds = _load_user_bounds(starting_point_table)
-
     try:
+        (
+            n_sample,
+            n_max_iteration,
+            n_convergence,
+            min_convergence_pct,
+        ) = _load_ml_settings(starting_point_table)
+        user_param_configs, user_coef_configs = _load_user_search_configs(starting_point_table)
+
         structure = dataset_utils.extract_structure_keys(input_param, input_coef, output_set)
         samples = dataset_utils.load_compatible_training_samples(
             str(bigpopa_db), structure, dataset_id
@@ -741,15 +943,21 @@ def main(argv: list[str] | None = None) -> int:
         initial_vec = flatten_inputs(param_template, coef_template)
         vector_to_model_id.setdefault(tuple(np.round(initial_vec, 6)), initial_model_id)
 
-        ranges = _build_search_ranges(
+        search_space = _build_search_space(
             conn,
             ifs_static_id,
             param_template,
             coef_template,
-            user_param_bounds,
-            user_coef_bounds,
+            user_param_configs,
+            user_coef_configs,
         )
-        X_grid = _sample_grid(ranges, n_samples=n_sample)
+        if _has_grid_configuration(search_space):
+            X_grid = _generate_candidate_grid(search_space, n_samples=n_sample)
+        else:
+            X_grid = _sample_grid(
+                [(dimension.minimum, dimension.maximum) for dimension in search_space],
+                n_samples=n_sample,
+            )
 
         def callback(x_vector: np.ndarray | float):
             param_values, coef_values = unflatten_vector(x_vector, param_template, coef_template)
