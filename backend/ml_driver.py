@@ -1,4 +1,4 @@
-﻿"""Active-learning orchestration layer for BIGPOPA.
+"""Active-learning orchestration layer for BIGPOPA.
 
 This module sits between the Electron shell and the legacy ``run_ifs.py``
 runner. It coordinates the optimization loop and delegates all IFs execution
@@ -362,6 +362,18 @@ def _build_search_space(
 
 def _sample_grid(ranges: List[Tuple[float, float]], n_samples: int = 200) -> np.ndarray:
     rng = np.random.default_rng(0)
+    return _sample_ranges(ranges, n_samples=n_samples, rng=rng)
+
+
+def _sample_ranges(
+    ranges: List[Tuple[float, float]],
+    *,
+    n_samples: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if not ranges:
+        return np.empty((n_samples, 0), dtype=float)
+
     samples = []
     for _ in range(n_samples):
         point = [rng.uniform(low, high) if low != high else low for low, high in ranges]
@@ -470,6 +482,63 @@ def _generate_candidate_grid(search_space: list[SearchDimension], n_samples: int
             level_values.append(_generate_levels_for_count(dimension, inferred_count))
 
     return np.asarray(list(product(*(values.tolist() for values in level_values))), dtype=float)
+
+
+def _split_search_space(
+    search_space: list[SearchDimension],
+) -> tuple[list[tuple[int, SearchDimension]], list[tuple[int, SearchDimension]]]:
+    explicit_dimensions: list[tuple[int, SearchDimension]] = []
+    free_dimensions: list[tuple[int, SearchDimension]] = []
+
+    for index, dimension in enumerate(search_space):
+        if _explicit_level_values(dimension) is None:
+            free_dimensions.append((index, dimension))
+        else:
+            explicit_dimensions.append((index, dimension))
+
+    return explicit_dimensions, free_dimensions
+
+
+def _generate_hybrid_candidate_grid(search_space: list[SearchDimension], n_samples: int) -> np.ndarray:
+    if not search_space:
+        return np.empty((n_samples, 0), dtype=float)
+
+    explicit_dimensions, free_dimensions = _split_search_space(search_space)
+    if not explicit_dimensions:
+        return _sample_grid(
+            [(dimension.minimum, dimension.maximum) for dimension in search_space],
+            n_samples=n_samples,
+        )
+    if not free_dimensions:
+        return _generate_candidate_grid(search_space, n_samples=n_samples)
+
+    explicit_search_space = [dimension for _, dimension in explicit_dimensions]
+    explicit_grid = _generate_candidate_grid(explicit_search_space, n_samples=n_samples)
+    explicit_count = explicit_grid.shape[0]
+    if explicit_count > n_samples:
+        raise ValueError(
+            "Explicit grid settings produce "
+            f"{explicit_count} candidates, which exceeds n_sample={n_samples}."
+        )
+
+    base_count, remainder = divmod(n_samples, explicit_count)
+    free_ranges = [(dimension.minimum, dimension.maximum) for _, dimension in free_dimensions]
+    rng = np.random.default_rng(0)
+    rows: list[np.ndarray] = []
+    total_dimensions = len(search_space)
+
+    for combo_index, explicit_values in enumerate(explicit_grid):
+        sample_count = base_count + (1 if combo_index < remainder else 0)
+        free_samples = _sample_ranges(free_ranges, n_samples=sample_count, rng=rng)
+        for free_values in free_samples:
+            row = np.empty(total_dimensions, dtype=float)
+            for value, (dimension_index, _) in zip(explicit_values, explicit_dimensions):
+                row[dimension_index] = value
+            for value, (dimension_index, _) in zip(free_values, free_dimensions):
+                row[dimension_index] = value
+            rows.append(row)
+
+    return np.asarray(rows, dtype=float)
 
 
 def _switch_is_on(value: object) -> bool:
@@ -952,7 +1021,11 @@ def main(argv: list[str] | None = None) -> int:
             user_coef_configs,
         )
         if _has_grid_configuration(search_space):
-            X_grid = _generate_candidate_grid(search_space, n_samples=n_sample)
+            explicit_dimensions, free_dimensions = _split_search_space(search_space)
+            if explicit_dimensions and free_dimensions:
+                X_grid = _generate_hybrid_candidate_grid(search_space, n_samples=n_sample)
+            else:
+                X_grid = _generate_candidate_grid(search_space, n_samples=n_sample)
         else:
             X_grid = _sample_grid(
                 [(dimension.minimum, dimension.maximum) for dimension in search_space],
