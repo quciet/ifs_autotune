@@ -310,6 +310,11 @@ function TuneIFsPage({
   const [modelSetupRunning, setModelSetupRunning] = useState(false);
   const [modelSetupResult, setModelSetupResult] =
     useState<ModelSetupData | null>(null);
+  const [progressHistoryModelId, setProgressHistoryModelId] = useState<string | null>(
+    typeof initialRunConfig?.initialModelId === "string"
+      ? initialRunConfig.initialModelId
+      : null,
+  );
   const [progressYear, setProgressYear] = useState<number | null>(null);
   const [progressPercent, setProgressPercent] = useState(0);
   const [runResult, setRunResult] = useState<MLDriverData | null>(initialRunResult);
@@ -449,6 +454,11 @@ function TuneIFsPage({
     setStatusMessage("Waiting to start.");
     setStatusLevel("info");
     setModelSetupResult(null);
+    setProgressHistoryModelId(
+      typeof initialRunConfig?.initialModelId === "string"
+        ? initialRunConfig.initialModelId
+        : null,
+    );
     setRunResult(initialRunResult);
     setStopRequested(Boolean(initialStopRequested));
     setStopAcknowledged(Boolean(initialStopAcknowledged));
@@ -582,7 +592,7 @@ function TuneIFsPage({
   }, []);
 
   useEffect(() => {
-    if (!isProgressModalOpen || !outputDirectory) {
+    if (!isProgressModalOpen || !outputDirectory || !progressHistoryModelId) {
       return;
     }
 
@@ -595,7 +605,7 @@ function TuneIFsPage({
       }
 
       try {
-        const trials = await getMLProgressHistory(outputDirectory);
+        const trials = await getMLProgressHistory(outputDirectory, progressHistoryModelId);
         if (cancelled) {
           return;
         }
@@ -625,10 +635,11 @@ function TuneIFsPage({
         window.clearInterval(intervalId);
       }
     };
-  }, [isProgressModalOpen, outputDirectory, running]);
+  }, [isProgressModalOpen, outputDirectory, progressHistoryModelId, running]);
 
   const resetModelSetupState = () => {
     setModelSetupResult(null);
+    setProgressHistoryModelId(null);
     setRunResult(null);
   };
 
@@ -758,6 +769,7 @@ function TuneIFsPage({
       });
 
       setModelSetupResult(response.data);
+      setProgressHistoryModelId(response.data.model_id);
       const successMessage = resolveSuccessMessage(
         response.stage,
         response.message,
@@ -941,6 +953,9 @@ function TuneIFsPage({
 
       setError(null);
       setRunResult(nextRunResult);
+      if (typeof nextRunResult.model_id === "string" && nextRunResult.model_id.trim().length > 0) {
+        setProgressHistoryModelId(nextRunResult.model_id);
+      }
       setStopRequested(false);
       setStopAcknowledged(false);
 
@@ -969,7 +984,9 @@ function TuneIFsPage({
 
   const handleOpenProgressModal = () => {
     setIsProgressModalOpen(true);
-    setProgressHistoryError(null);
+    setProgressHistoryError(
+      progressHistoryModelId ? null : "Run model setup first so progress can be scoped to a dataset.",
+    );
   };
 
   const displayPercent = Math.min(100, Math.max(0, progressPercent));
@@ -1083,7 +1100,7 @@ function TuneIFsPage({
           type="button"
           className="button secondary"
           onClick={handleOpenProgressModal}
-          disabled={!outputDirectory}
+          disabled={!outputDirectory || !progressHistoryModelId}
         >
           View ML Progress
         </button>

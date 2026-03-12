@@ -8,6 +8,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
+sys.path.append(str(Path(__file__).resolve().parents[2]))
+
 from model_setup import ensure_bigpopa_schema
 
 

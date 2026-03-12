@@ -1,4 +1,8 @@
-"""Read lightweight ML progress history from bigpopa.db."""
+"""Read lightweight ML progress history from bigpopa.db.
+
+Progress cohorts follow the same exact ``dataset_id`` grouping used by
+surrogate-model training sample selection.
+"""
 
 from __future__ import annotations
 
@@ -27,6 +31,11 @@ def emit_response(status: str, stage: str, message: str, data: dict[str, Any]) -
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read ML progress history")
     parser.add_argument("--bigpopa-db", required=True, help="Path to bigpopa.db")
+    parser.add_argument(
+        "--model-id",
+        required=True,
+        help="Model id used to resolve the dataset_id cohort for progress history.",
+    )
     args = parser.parse_args(argv)
 
     db_path = Path(args.bigpopa_db).expanduser().resolve()
@@ -65,20 +74,42 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
+        dataset_row = cursor.execute(
+            "SELECT dataset_id FROM model_input WHERE model_id = ? LIMIT 1",
+            (args.model_id,),
+        ).fetchone()
+        if not dataset_row:
+            emit_response(
+                "success",
+                "ml_progress",
+                "The selected model was not found in model_input.",
+                {"dataset_id": None, "trials": []},
+            )
+            return 0
+
+        dataset_id = dataset_row[0]
         rows = cursor.execute(
             """
             SELECT
-                model_id,
-                model_status,
-                fit_pooled,
-                trial_index,
-                batch_index,
-                started_at_utc,
-                completed_at_utc
-            FROM model_output
-            WHERE trial_index IS NOT NULL
-            ORDER BY trial_index ASC, completed_at_utc ASC, model_id ASC
+                mo.model_id,
+                mo.model_status,
+                mo.fit_pooled,
+                mo.trial_index,
+                mo.batch_index,
+                mo.started_at_utc,
+                mo.completed_at_utc,
+                mi.dataset_id
+            FROM model_output mo
+            JOIN model_input mi ON mi.model_id = mo.model_id
+            WHERE mo.trial_index IS NOT NULL
+              AND (
+                (? IS NULL AND mi.dataset_id IS NULL)
+                OR mi.dataset_id = ?
+              )
+            ORDER BY mo.trial_index ASC, mi.rowid ASC, mo.rowid ASC, mo.model_id ASC
             """
+            ,
+            (dataset_id, dataset_id),
         ).fetchall()
 
         trials = [
@@ -90,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
                 "batch_index": row[4],
                 "started_at_utc": row[5],
                 "completed_at_utc": row[6],
+                "dataset_id": row[7],
             }
             for row in rows
         ]
@@ -98,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             "success",
             "ml_progress",
             "Loaded ML progress history.",
-            {"trials": trials},
+            {"dataset_id": dataset_id, "trials": trials},
         )
         return 0
     except sqlite3.Error as exc:

@@ -1237,6 +1237,13 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
     typeof payload?.outputDir === "string" && payload.outputDir.trim().length > 0
       ? payload.outputDir.trim()
       : mlJobState.outputDir;
+  const modelId =
+    typeof payload?.modelId === "string" && payload.modelId.trim().length > 0
+      ? payload.modelId.trim()
+      : typeof mlJobState.runConfig?.initialModelId === "string" &&
+        mlJobState.runConfig.initialModelId.trim().length > 0
+      ? mlJobState.runConfig.initialModelId.trim()
+      : null;
 
   if (!outputDir) {
     return {
@@ -1247,9 +1254,20 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
     };
   }
 
+  if (!modelId) {
+    return {
+      status: "success",
+      stage: "ml_progress",
+      message: "No model is available yet to resolve ML progress history.",
+      data: { trials: [] },
+    };
+  }
+
   return runPythonScript("ml_progress.py", [
     "--bigpopa-db",
     path.join(outputDir, "bigpopa.db"),
+    "--model-id",
+    modelId,
   ]);
 });
 ipcMain.handle('run_ifs', async (_event, payload) => {

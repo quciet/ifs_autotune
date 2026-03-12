@@ -89,6 +89,7 @@ export type MLProgressTrial = {
   batch_index: number | null;
   started_at_utc: string | null;
   completed_at_utc: string | null;
+  dataset_id?: string | null;
 };
 
 type RawStageResponse = {
@@ -332,13 +333,17 @@ export function subscribeToIFsProgress(
 
 export async function getMLProgressHistory(
   outputDir?: string | null,
+  modelId?: string | null,
 ): Promise<MLProgressTrial[]> {
   if (!window.electron?.getMLProgressHistory) {
     return [];
   }
 
   try {
-    const response = await window.electron.getMLProgressHistory(outputDir ?? null);
+    const response = await window.electron.getMLProgressHistory(
+      outputDir ?? null,
+      modelId ?? null,
+    );
     const trials = response?.data?.trials;
     return Array.isArray(trials) ? (trials as MLProgressTrial[]) : [];
   } catch {

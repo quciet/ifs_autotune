@@ -17,6 +17,7 @@ declare global {
     batch_index: number | null;
     started_at_utc: string | null;
     completed_at_utc: string | null;
+    dataset_id?: string | null;
   }
 
   interface Window {
@@ -52,11 +53,13 @@ declare global {
       }>;
       getMLProgressHistory: (
         outputDir?: string | null,
+        modelId?: string | null,
       ) => Promise<{
         status?: string;
         stage?: string;
         message?: string;
         data?: {
+          dataset_id?: string | null;
           trials?: MLProgressTrial[];
         };
       }>;

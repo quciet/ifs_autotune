@@ -54,9 +54,7 @@ def ensure_working_startingpointtable():
 # 2. IMPORT validate_ifs_folder() CONTENTS HERE
 ####################################################
 
-# >>> COPY THE ENTIRE validate_ifs_folder() FUNCTION
-# >>> FROM backend/app/ifscheck.py AND PASTE IT HERE VERBATIM.
-# >>> DO NOT CHANGE LOGIC.
+# Validation logic now lives directly in this module.
 
 
 REQUIRED_PATHS = [
