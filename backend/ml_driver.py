@@ -216,6 +216,20 @@ def _upsert_model_output_tracking(
     )
 
 
+def _repair_model_output_batch_indexes(conn: sqlite3.Connection) -> int:
+    cursor = conn.cursor()
+    ensure_model_output_tracking_columns(cursor)
+    cursor.execute(
+        """
+        UPDATE model_output
+        SET batch_index = 1
+        WHERE trial_index IS NOT NULL
+          AND (batch_index IS NULL OR batch_index != 1)
+        """
+    )
+    return int(cursor.rowcount or 0)
+
+
 def _load_model_by_id(
     conn: sqlite3.Connection, has_dataset_id: bool, model_id: str
 ) -> Tuple[int, str, dict, dict, dict, str | None]:
@@ -1104,6 +1118,13 @@ def main(argv: list[str] | None = None) -> int:
             str(bigpopa_db), structure, dataset_id
         )
 
+        repaired_rows = _repair_model_output_batch_indexes(conn)
+        if repaired_rows:
+            print(
+                f"Normalized batch_index to 1 for {repaired_rows} tracked model_output rows.",
+                flush=True,
+            )
+
         param_template = input_param
         coef_template = input_coef
 
@@ -1162,7 +1183,7 @@ def main(argv: list[str] | None = None) -> int:
                 bigpopa_db=bigpopa_db,
                 dataset_id_supported=dataset_id_supported,
                 trial_index=trial_index,
-                batch_index=trial_index,
+                batch_index=1,
             )
             vector_to_model_id[tuple(np.round(np.atleast_1d(x_vector), 6))] = model_id
             return fit_val
@@ -1198,6 +1219,7 @@ def main(argv: list[str] | None = None) -> int:
                 "best_fit_pooled": best_fit,
                 "iterations": len(history),
                 "terminationReason": termination_reason,
+                "dataset_id": dataset_id,
                 "base_year": args.base_year,
                 "end_year": args.end_year,
             },

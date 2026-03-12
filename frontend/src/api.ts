@@ -52,6 +52,20 @@ export class StageError extends Error {
 export type ModelSetupData = {
   ifs_id: number;
   model_id: string;
+  dataset_id: string | null;
+  dataset_warning?: string | null;
+  dataset_diagnostics?: {
+    reference_model_id?: string | null;
+    reference_dataset_id?: string | null;
+    current_param_count?: number;
+    reference_param_count?: number;
+    parameter_keys_added?: string[];
+    parameter_keys_removed?: string[];
+    coefficient_keys_added?: string[];
+    coefficient_keys_removed?: string[];
+    output_keys_added?: string[];
+    output_keys_removed?: string[];
+  } | null;
 };
 
 export type RunIFsData = {
@@ -71,6 +85,7 @@ export type MLDriverData = {
   best_fit_pooled?: number | null;
   iterations?: number | null;
   terminationReason?: "completed" | "stopped_gracefully" | null;
+  dataset_id?: string | null;
   ifs_id?: number;
   model_id?: string;
   run_folder?: string;
@@ -85,11 +100,17 @@ export type MLProgressTrial = {
   model_id: string | null;
   model_status: string | null;
   fit_pooled: number | null;
+  fit_missing?: boolean | null;
   trial_index: number | null;
   batch_index: number | null;
   started_at_utc: string | null;
   completed_at_utc: string | null;
   dataset_id?: string | null;
+};
+
+export type MLProgressHistoryData = {
+  dataset_id: string | null;
+  trials: MLProgressTrial[];
 };
 
 type RawStageResponse = {
@@ -333,20 +354,35 @@ export function subscribeToIFsProgress(
 
 export async function getMLProgressHistory(
   outputDir?: string | null,
+  datasetId?: string | null,
   modelId?: string | null,
-): Promise<MLProgressTrial[]> {
+): Promise<MLProgressHistoryData> {
   if (!window.electron?.getMLProgressHistory) {
-    return [];
+    return {
+      dataset_id: datasetId ?? null,
+      trials: [],
+    };
   }
 
   try {
     const response = await window.electron.getMLProgressHistory(
       outputDir ?? null,
+      datasetId ?? null,
       modelId ?? null,
     );
+    const responseDatasetId =
+      typeof response?.data?.dataset_id === "string" || response?.data?.dataset_id === null
+        ? response.data.dataset_id
+        : datasetId ?? null;
     const trials = response?.data?.trials;
-    return Array.isArray(trials) ? (trials as MLProgressTrial[]) : [];
+    return {
+      dataset_id: responseDatasetId,
+      trials: Array.isArray(trials) ? (trials as MLProgressTrial[]) : [],
+    };
   } catch {
-    return [];
+    return {
+      dataset_id: datasetId ?? null,
+      trials: [],
+    };
   }
 }

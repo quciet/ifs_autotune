@@ -20,7 +20,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from dataset_utils import compute_dataset_id
+from dataset_utils import compute_dataset_id, extract_structure_keys
 
 from log_ifs_version import log_version_metadata
 
@@ -102,7 +102,162 @@ def ensure_model_output_tracking_columns(cursor: sqlite3.Cursor) -> None:
 
 
 def _row_enabled(value: Any) -> bool:
-    return str(value).strip().lower() in {"1", "true", "on", "yes"}
+    if value is None:
+        return False
+    if isinstance(value, (int, float)):
+        try:
+            return float(value) == 1.0
+        except (TypeError, ValueError):
+            return False
+
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "on", "yes"}:
+        return True
+
+    try:
+        return float(normalized) == 1.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _resolve_row_name(
+    row: Dict[str, Any] | pd.Series,
+    candidates: Iterable[str] = ("Name", "Variable", "Name/Variable"),
+) -> str | None:
+    for candidate in candidates:
+        raw = row.get(candidate)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def extract_enabled_ifsv_names(ifsv_df: pd.DataFrame) -> List[str]:
+    if ifsv_df.empty:
+        return []
+
+    enabled: Dict[str, str] = {}
+    for _, row in ifsv_df.iterrows():
+        if not _row_enabled(row.get("Switch", "0")):
+            continue
+        name = _resolve_row_name(row)
+        if not name:
+            continue
+        enabled.setdefault(name.casefold(), name)
+    return [enabled[key] for key in sorted(enabled.keys())]
+
+
+def build_input_param_from_defaults(
+    cursor: sqlite3.Cursor, ifs_static_id: int, enabled_param_names: Iterable[str]
+) -> Dict[str, float]:
+    input_param: Dict[str, float] = {}
+    for param_name in enabled_param_names:
+        cursor.execute(
+            """
+            SELECT param_default
+            FROM parameter
+            WHERE ifs_static_id = ?
+              AND LOWER(param_name) = LOWER(?)
+            LIMIT 1
+            """,
+            (ifs_static_id, param_name),
+        )
+        row = cursor.fetchone()
+        if row and row[0] is not None:
+            input_param[param_name] = float(row[0])
+            continue
+        raise ValueError(
+            f"Parameter '{param_name}' was selected in IFsVar "
+            f"but no matching entry was found in bigpopa.db.parameter."
+        )
+    return input_param
+
+
+def extract_enabled_output_set(data_dict_df: pd.DataFrame) -> Dict[str, str]:
+    output_set: Dict[str, str] = {}
+    if data_dict_df.empty:
+        return output_set
+
+    for _, row in data_dict_df.iterrows():
+        if not _row_enabled(row.get("Switch", "0")):
+            continue
+        variable = row.get("Variable")
+        table = row.get("Table")
+        if pd.notna(variable) and pd.notna(table):
+            output_set[str(variable).strip()] = str(table).strip()
+    return output_set
+
+
+def diagnose_structure_drift(
+    cursor: sqlite3.Cursor,
+    ifs_id: int,
+    input_param: Dict[str, Any],
+    input_coef: Dict[str, Any],
+    output_set: Dict[str, Any],
+) -> Dict[str, Any] | None:
+    row = cursor.execute(
+        """
+        SELECT model_id, dataset_id, input_param, input_coef, output_set
+        FROM model_input
+        WHERE ifs_id = ?
+        ORDER BY rowid DESC
+        LIMIT 1
+        """,
+        (ifs_id,),
+    ).fetchone()
+    if not row:
+        return None
+
+    reference_model_id, reference_dataset_id, ip_raw, ic_raw, os_raw = row
+    try:
+        reference_input_param = json.loads(ip_raw)
+        reference_input_coef = json.loads(ic_raw)
+        reference_output_set = json.loads(os_raw)
+    except Exception:
+        return None
+
+    current_param_keys, current_coef_keys, current_output_keys = extract_structure_keys(
+        input_param, input_coef, output_set
+    )
+    reference_param_keys, reference_coef_keys, reference_output_keys = extract_structure_keys(
+        reference_input_param, reference_input_coef, reference_output_set
+    )
+
+    if (
+        current_param_keys == reference_param_keys
+        and current_coef_keys == reference_coef_keys
+        and current_output_keys == reference_output_keys
+    ):
+        return None
+
+    return {
+        "reference_model_id": reference_model_id,
+        "reference_dataset_id": reference_dataset_id,
+        "current_param_count": len(current_param_keys),
+        "reference_param_count": len(reference_param_keys),
+        "parameter_keys_added": sorted(current_param_keys - reference_param_keys),
+        "parameter_keys_removed": sorted(reference_param_keys - current_param_keys),
+        "coefficient_keys_added": sorted(current_coef_keys - reference_coef_keys),
+        "coefficient_keys_removed": sorted(reference_coef_keys - current_coef_keys),
+        "output_keys_added": sorted(current_output_keys - reference_output_keys),
+        "output_keys_removed": sorted(reference_output_keys - current_output_keys),
+    }
+
+
+def format_structure_drift_warning(diagnostics: Dict[str, Any]) -> str:
+    added = diagnostics.get("parameter_keys_added") or []
+    removed = diagnostics.get("parameter_keys_removed") or []
+    changes: List[str] = []
+    if added:
+        changes.append(f"added parameters: {', '.join(added)}")
+    if removed:
+        changes.append(f"removed parameters: {', '.join(removed)}")
+    if not changes:
+        changes.append("the selected structural keys changed")
+    return (
+        "This setup differs from the latest stored dataset for the same IFs record; "
+        + "; ".join(changes)
+        + "."
+    )
 
 
 def _load_ml_text_settings(starting_point_table: Path) -> Tuple[str, str]:
@@ -142,12 +297,7 @@ def build_input_param_from_startingpoint(ifsv_df: pd.DataFrame) -> Dict[str, Any
     for _, row in ifsv_df.iterrows():
         if not _row_enabled(row.get("Switch", "0")):
             continue
-        name = None
-        for candidate in ("Name/Variable", "Name", "Variable"):
-            raw = row.get(candidate)
-            if isinstance(raw, str) and raw.strip():
-                name = raw.strip()
-                break
+        name = _resolve_row_name(row, ("Name/Variable", "Name", "Variable"))
         if not name:
             continue
         value = None
@@ -200,12 +350,7 @@ def build_output_set_from_ifsvartab(ifsv_df: pd.DataFrame) -> Dict[str, Any]:
     for _, row in ifsv_df.iterrows():
         if not _row_enabled(row.get("Switch", "0")):
             continue
-        name = None
-        for candidate in ("Name/Variable", "Name", "Variable"):
-            raw = row.get(candidate)
-            if isinstance(raw, str) and raw.strip():
-                name = raw.strip()
-                break
+        name = _resolve_row_name(row, ("Name/Variable", "Name", "Variable"))
         if not name:
             continue
         hist_table = row.get("HistTable") or row.get("Table")
@@ -933,44 +1078,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         # ---------------------------
 
         # Verify required IFsVar structure
-        if "Switch" not in ifsv_df.columns or "Name" not in ifsv_df.columns:
+        if "Switch" not in ifsv_df.columns or not any(
+            column in ifsv_df.columns for column in ("Name", "Variable", "Name/Variable")
+        ):
             raise ValueError(
-                "IFsVar sheet must contain columns 'Switch' and 'Name'. "
-                "These identifiers are fixed and must not be changed."
+                "IFsVar sheet must contain a 'Switch' column and at least one "
+                "parameter-name column: 'Name', 'Variable', or 'Name/Variable'."
             )
 
-        # Select only parameters where Switch == 1
-        selected_rows = ifsv_df[ifsv_df["Switch"] == 1].copy()
-
-        input_param = {}
-
-        if len(selected_rows) > 0:
-            enabled_param_names = (
-                selected_rows["Name"]
-                .astype(str)
-                .str.strip()
-                .tolist()
-            )
-
-            for param_name in enabled_param_names:
-                cursor.execute(
-                    """
-                    SELECT param_default
-                    FROM parameter
-                    WHERE ifs_static_id = ?
-                      AND LOWER(param_name) = LOWER(?)
-                    LIMIT 1
-                    """,
-                    (ifs_static_id, param_name),
-                )
-                row = cursor.fetchone()
-                if row and row[0] is not None:
-                    input_param[param_name] = float(row[0])
-                else:
-                    raise ValueError(
-                        f"Parameter '{param_name}' was selected in IFsVar "
-                        f"but no matching entry was found in bigpopa.db.parameter."
-                    )
+        enabled_param_names = extract_enabled_ifsv_names(ifsv_df)
+        input_param = build_input_param_from_defaults(
+            cursor, int(ifs_static_id), enabled_param_names
+        )
 
         for func_name, x_map in input_coef.items():
             for x_var, coef_map in x_map.items():
@@ -1005,12 +1124,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Extract output_set mapping (Variable → Table) from DataDict sheet
     try:
         data_dict_df = pd.read_excel(input_path, sheet_name="DataDict", engine="openpyxl")
-        enabled_dd = data_dict_df[data_dict_df["Switch"] == 1]
-        output_set_used = {
-            str(row["Variable"]).strip(): str(row["Table"]).strip()
-            for _, row in enabled_dd.iterrows()
-            if pd.notna(row.get("Variable")) and pd.notna(row.get("Table"))
-        }
+        output_set_used = extract_enabled_output_set(data_dict_df)
     except Exception:
         output_set_used = {}
 
@@ -1029,10 +1143,27 @@ def main(argv: Optional[list[str]] = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     inserted = 0
+    dataset_diagnostics: Dict[str, Any] | None = None
+    dataset_warning: str | None = None
     conn_bp = sqlite3.connect(str(bigpopa_db_path))
     try:
         cur_bp = conn_bp.cursor()
         ensure_bigpopa_schema(cur_bp)
+        dataset_diagnostics = diagnose_structure_drift(
+            cur_bp,
+            int(ifs_id),
+            input_param,
+            input_coef,
+            output_set,
+        )
+        if dataset_diagnostics:
+            dataset_warning = format_structure_drift_warning(dataset_diagnostics)
+            log(
+                "warn",
+                "Model setup structure differs from the latest stored dataset for the same IFs record",
+                warning=dataset_warning,
+                **dataset_diagnostics,
+            )
         # Insert configuration row if it does not already exist.
         cur_bp.execute(
             """
@@ -1097,7 +1228,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         "success",
         "model_setup",
         "Model setup completed; configuration stored in database.",
-        {"ifs_id": ifs_id, "model_id": model_id},
+        {
+            "ifs_id": ifs_id,
+            "model_id": model_id,
+            "dataset_id": dataset_id,
+            "dataset_warning": dataset_warning,
+            "dataset_diagnostics": dataset_diagnostics,
+        },
     )
     return 0 if extract_return in (None, 0) else int(extract_return)
 

@@ -27,6 +27,8 @@ type View = "validate" | "tune";
 
 type StatusLevel = "info" | "success" | "error";
 
+type LowerPanelView = "log" | "progress";
+
 type MLTerminationReason = "completed" | "stopped_gracefully";
 
 type MLFinalResult = {
@@ -55,6 +57,7 @@ type MLJobStatus = {
     endYear?: number | string | null;
     baseYear?: number | null;
     initialModelId?: string | number | null;
+    datasetId?: string | null;
   } | null;
 };
 
@@ -86,8 +89,9 @@ type TuneIFsPageProps = {
 type ChartPoint = {
   trialIndex: number;
   batchIndex: number | null;
-  fitPooled: number;
-  bestSoFar: number;
+  fitPooled: number | null;
+  fitMissing: boolean;
+  bestSoFar: number | null;
   completedAtUtc: string | null;
   modelId: string | null;
   modelStatus: string | null;
@@ -96,25 +100,34 @@ type ChartPoint = {
 function normalizeProgressTrials(trials: MLProgressTrial[]): ChartPoint[] {
   const sorted = [...trials]
     .filter(
-      (trial): trial is MLProgressTrial & { trial_index: number; fit_pooled: number } =>
+      (trial): trial is MLProgressTrial & { trial_index: number } =>
         typeof trial.trial_index === "number" &&
         Number.isFinite(trial.trial_index) &&
-        typeof trial.fit_pooled === "number" &&
-        Number.isFinite(trial.fit_pooled),
+        trial.trial_index >= 0,
     )
     .sort((left, right) => left.trial_index - right.trial_index);
 
-  let bestSoFar = Number.POSITIVE_INFINITY;
+  let bestSoFar: number | null = null;
 
   return sorted.map((trial) => {
-    bestSoFar = Math.min(bestSoFar, trial.fit_pooled);
+    const fitPooled =
+      typeof trial.fit_pooled === "number" && Number.isFinite(trial.fit_pooled)
+        ? trial.fit_pooled
+        : null;
+    const fitMissing = Boolean(trial.fit_missing) || fitPooled == null;
+
+    if (fitPooled != null) {
+      bestSoFar = bestSoFar == null ? fitPooled : Math.min(bestSoFar, fitPooled);
+    }
+
     return {
       trialIndex: trial.trial_index,
       batchIndex:
         typeof trial.batch_index === "number" && Number.isFinite(trial.batch_index)
           ? trial.batch_index
           : null,
-      fitPooled: trial.fit_pooled,
+      fitPooled,
+      fitMissing,
       bestSoFar,
       completedAtUtc: trial.completed_at_utc ?? null,
       modelId: trial.model_id ?? null,
@@ -132,9 +145,52 @@ function formatUtcTimestamp(value: string | null): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
+function formatFitValue(value: number | null, fitMissing = false): string {
+  if (fitMissing || value == null) {
+    return "Missing";
+  }
+
+  return value.toFixed(4);
+}
+
+function percentile(values: number[], quantile: number): number {
+  if (values.length === 0) {
+    return Number.NaN;
+  }
+
+  const sorted = [...values].sort((left, right) => left - right);
+  const clampedQuantile = Math.min(1, Math.max(0, quantile));
+  const index = (sorted.length - 1) * clampedQuantile;
+  const lowerIndex = Math.floor(index);
+  const upperIndex = Math.ceil(index);
+
+  if (lowerIndex === upperIndex) {
+    return sorted[lowerIndex];
+  }
+
+  const weight = index - lowerIndex;
+  return sorted[lowerIndex] * (1 - weight) + sorted[upperIndex] * weight;
+}
+
 function MLProgressChart({ points }: { points: ChartPoint[] }) {
-  if (points.length === 0) {
-    return <div className="progress-text">No completed trials to display yet.</div>;
+  const fitValues = points.flatMap((point) =>
+    typeof point.fitPooled === "number" && Number.isFinite(point.fitPooled)
+      ? [point.fitPooled]
+      : [],
+  );
+  const plottedValues = points.flatMap((point) => {
+    const values: number[] = [];
+    if (typeof point.fitPooled === "number" && Number.isFinite(point.fitPooled)) {
+      values.push(point.fitPooled);
+    }
+    if (typeof point.bestSoFar === "number" && Number.isFinite(point.bestSoFar)) {
+      values.push(point.bestSoFar);
+    }
+    return values;
+  });
+
+  if (points.length === 0 || plottedValues.length === 0) {
+    return <div className="progress-text">No successful completed trials to plot yet.</div>;
   }
 
   const width = 760;
@@ -144,30 +200,50 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
   const plotHeight = height - padding.top - padding.bottom;
   const xMin = Math.min(...points.map((point) => point.trialIndex));
   const xMax = Math.max(...points.map((point) => point.trialIndex));
-  const yMin = Math.min(...points.map((point) => Math.min(point.fitPooled, point.bestSoFar)));
-  const yMax = Math.max(...points.map((point) => Math.max(point.fitPooled, point.bestSoFar)));
-  const xRange = Math.max(1, xMax - xMin);
-  const yRange = Math.max(1e-9, yMax - yMin);
+  const xRangeActual = Math.max(1, xMax - xMin);
+  const xRightPadding = Math.max(8, xRangeActual * 0.03);
+  const xDisplayMax = xMax + xRightPadding;
+  const yMin = Math.min(...plottedValues);
+  const q1 = percentile(fitValues, 0.25);
+  const q3 = percentile(fitValues, 0.75);
+  const iqr =
+    Number.isFinite(q1) && Number.isFinite(q3) ? Math.max(0, q3 - q1) : 0;
+  const yCapBaseCandidate =
+    Number.isFinite(q3) && Number.isFinite(iqr)
+      ? q3 + 1.5 * iqr
+      : Number.NaN;
+  const yCapBase =
+    Number.isFinite(yCapBaseCandidate) && yCapBaseCandidate >= yMin
+      ? yCapBaseCandidate
+      : Math.max(...fitValues);
+  const displaySpanBase = Math.max(yCapBase - yMin, Math.abs(yCapBase), 1e-9);
+  const yBottomPadding = displaySpanBase * 0.05;
+  const yHeadroom = displaySpanBase * 0.05;
+  const yMinDisplay = yMin - yBottomPadding;
+  const yMaxDisplay = yCapBase + yHeadroom;
+  const hasOutliers = fitValues.some((value) => value > yCapBase);
+  const xRange = Math.max(1, xDisplayMax - xMin);
+  const yRange = Math.max(1e-9, yMaxDisplay - yMinDisplay);
 
   const xFor = (trialIndex: number) =>
     padding.left + ((trialIndex - xMin) / xRange) * plotWidth;
   const yFor = (value: number) =>
-    padding.top + plotHeight - ((value - yMin) / yRange) * plotHeight;
+    padding.top + plotHeight - ((value - yMinDisplay) / yRange) * plotHeight;
 
-  const fitPath = points
-    .map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(point.trialIndex)} ${yFor(point.fitPooled)}`)
-    .join(" ");
-  const bestPath = points
-    .map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(point.trialIndex)} ${yFor(point.bestSoFar)}`)
-    .join(" ");
-
-  const yTicks = Array.from({ length: 5 }, (_, index) => yMin + (yRange * index) / 4);
+  const yTicks = Array.from(
+    { length: 5 },
+    (_, index) => yMinDisplay + ((yMaxDisplay - yMinDisplay) * index) / 4,
+  );
   const xTicks = points.length <= 6
     ? points.map((point) => point.trialIndex)
-    : Array.from({ length: 6 }, (_, index) => Math.round(xMin + (xRange * index) / 5));
+    : Array.from({ length: 6 }, (_, index) => Math.round(xMin + (xRangeActual * index) / 5));
 
   return (
     <div className="ml-progress-chart-shell">
+      <div className="chart-note">
+        Showing an adaptive IQR-capped y-axis for readability
+        {hasOutliers ? ` at ${yCapBase.toFixed(4)}` : ""}.
+      </div>
       <svg
         className="ml-progress-chart"
         viewBox={`0 0 ${width} ${height}`}
@@ -197,16 +273,39 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
             </g>
           );
         })}
-        <path d={bestPath} className="chart-line chart-line-best" />
-        <path d={fitPath} className="chart-line chart-line-fit" />
         {points.map((point) => {
+          if (point.bestSoFar == null) {
+            return null;
+          }
+
           const x = xFor(point.trialIndex);
-          const y = yFor(point.fitPooled);
+          const y = yFor(Math.min(point.bestSoFar, yCapBase));
+          return (
+            <g key={`best-point-${point.trialIndex}`}>
+              <circle cx={x} cy={y} r={2} className="chart-point chart-point-best" />
+            </g>
+          );
+        })}
+        {points.map((point) => {
+          if (point.fitPooled == null) {
+            return null;
+          }
+
+          const x = xFor(point.trialIndex);
+          const isOutlier = point.fitPooled > yCapBase;
+          const y = yFor(isOutlier ? yCapBase : point.fitPooled);
           return (
             <g key={`point-${point.trialIndex}`}>
-              <circle cx={x} cy={y} r={4} className="chart-point" />
+              {isOutlier ? (
+                <polygon
+                  points={`${x},${y - 4} ${x - 3.5},${y + 2} ${x + 3.5},${y + 2}`}
+                  className="chart-outlier"
+                />
+              ) : (
+                <circle cx={x} cy={y} r={2.5} className="chart-point" />
+              )}
               <title>
-                {`Trial ${point.trialIndex}\nFit ${point.fitPooled.toFixed(4)}\nBest ${point.bestSoFar.toFixed(4)}\nBatch ${point.batchIndex ?? "N/A"}\n${formatUtcTimestamp(point.completedAtUtc)}`}
+                {`Trial ${point.trialIndex}\nFit ${formatFitValue(point.fitPooled, point.fitMissing)}${isOutlier ? " (above displayed range)" : ""}\nBest ${formatFitValue(point.bestSoFar)}\nStatus ${point.modelStatus ?? "unknown"}\nBatch ${point.batchIndex ?? "N/A"}\n${formatUtcTimestamp(point.completedAtUtc)}`}
               </title>
             </g>
           );
@@ -221,12 +320,15 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
           className="chart-title"
           transform={`rotate(-90 18 ${height / 2})`}
         >
-          Final Fit Metric
+          Final Fit Metric (Adaptive Capped View)
         </text>
       </svg>
       <div className="chart-legend">
         <span className="legend-item"><span className="legend-swatch fit" /> Trial fit</span>
         <span className="legend-item"><span className="legend-swatch best" /> Best so far</span>
+        {hasOutliers ? (
+          <span className="legend-item"><span className="legend-swatch outlier" /> Above displayed range</span>
+        ) : null}
       </div>
     </div>
   );
@@ -310,6 +412,9 @@ function TuneIFsPage({
   const [modelSetupRunning, setModelSetupRunning] = useState(false);
   const [modelSetupResult, setModelSetupResult] =
     useState<ModelSetupData | null>(null);
+  const [progressDatasetId, setProgressDatasetId] = useState<string | null>(
+    typeof initialRunConfig?.datasetId === "string" ? initialRunConfig.datasetId : null,
+  );
   const [progressHistoryModelId, setProgressHistoryModelId] = useState<string | null>(
     typeof initialRunConfig?.initialModelId === "string"
       ? initialRunConfig.initialModelId
@@ -326,7 +431,7 @@ function TuneIFsPage({
   const ML_LOG_MAX_LINES = 300;
   const AUTO_SCROLL_BOTTOM_EPS_PX = 24;
   const [currentModelProgress, setCurrentModelProgress] = useState<string | null>(null);
-  const [isProgressModalOpen, setIsProgressModalOpen] = useState(false);
+  const [lowerPanelView, setLowerPanelView] = useState<LowerPanelView>("log");
   const [progressTrials, setProgressTrials] = useState<ChartPoint[]>([]);
   const [progressHistoryLoading, setProgressHistoryLoading] = useState(false);
   const [progressHistoryError, setProgressHistoryError] = useState<string | null>(null);
@@ -454,6 +559,11 @@ function TuneIFsPage({
     setStatusMessage("Waiting to start.");
     setStatusLevel("info");
     setModelSetupResult(null);
+    setProgressDatasetId(
+      typeof initialRunConfig?.datasetId === "string"
+        ? initialRunConfig.datasetId
+        : null,
+    );
     setProgressHistoryModelId(
       typeof initialRunConfig?.initialModelId === "string"
         ? initialRunConfig.initialModelId
@@ -467,6 +577,7 @@ function TuneIFsPage({
     setProgressYear(null);
     setProgressPercent(0);
     setError(null);
+    setLowerPanelView("log");
   }, [
     validatedPath,
     validatedInputPath,
@@ -592,7 +703,23 @@ function TuneIFsPage({
   }, []);
 
   useEffect(() => {
-    if (!isProgressModalOpen || !outputDirectory || !progressHistoryModelId) {
+    if (lowerPanelView !== "progress") {
+      return;
+    }
+
+    if (!outputDirectory) {
+      setProgressTrials([]);
+      setProgressHistoryLoading(false);
+      setProgressHistoryError("Choose an output folder to view ML progress.");
+      return;
+    }
+
+    if (!progressDatasetId) {
+      setProgressTrials([]);
+      setProgressHistoryLoading(false);
+      setProgressHistoryError(
+        "Run model setup first so progress can be scoped to a dataset.",
+      );
       return;
     }
 
@@ -605,11 +732,22 @@ function TuneIFsPage({
       }
 
       try {
-        const trials = await getMLProgressHistory(outputDirectory, progressHistoryModelId);
+        const history = await getMLProgressHistory(
+          outputDirectory,
+          progressDatasetId,
+          progressHistoryModelId,
+        );
         if (cancelled) {
           return;
         }
-        setProgressTrials(normalizeProgressTrials(trials));
+        if (
+          typeof history.dataset_id === "string" &&
+          history.dataset_id.trim().length > 0 &&
+          history.dataset_id !== progressDatasetId
+        ) {
+          setProgressDatasetId(history.dataset_id);
+        }
+        setProgressTrials(normalizeProgressTrials(history.trials));
         setProgressHistoryError(null);
       } catch (error) {
         if (cancelled) {
@@ -635,10 +773,11 @@ function TuneIFsPage({
         window.clearInterval(intervalId);
       }
     };
-  }, [isProgressModalOpen, outputDirectory, progressHistoryModelId, running]);
+  }, [lowerPanelView, outputDirectory, progressDatasetId, progressHistoryModelId, running]);
 
   const resetModelSetupState = () => {
     setModelSetupResult(null);
+    setProgressDatasetId(null);
     setProgressHistoryModelId(null);
     setRunResult(null);
   };
@@ -769,12 +908,22 @@ function TuneIFsPage({
       });
 
       setModelSetupResult(response.data);
+      setProgressDatasetId(response.data.dataset_id);
       setProgressHistoryModelId(response.data.model_id);
       const successMessage = resolveSuccessMessage(
         response.stage,
         response.message,
       );
-      updateStageStatus(response.stage, "success", successMessage);
+      const datasetWarning =
+        typeof response.data.dataset_warning === "string" &&
+        response.data.dataset_warning.trim().length > 0
+          ? response.data.dataset_warning.trim()
+          : null;
+      updateStageStatus(
+        response.stage,
+        "success",
+        datasetWarning ? `${successMessage} ${datasetWarning}` : successMessage,
+      );
       setError(null);
     } catch (err) {
       const { stage, message } = resolveStageError(err, "model_setup");
@@ -877,6 +1026,7 @@ function TuneIFsPage({
 
       const response = await window.electron.invoke("run-ml", {
         initialModelId: modelSetupResult.model_id,
+        datasetId: modelSetupResult.dataset_id,
         ifsRoot: validatedPath,
         outputFolder: outputDirectory,
         baseYear: baseYearRef.current,
@@ -953,6 +1103,12 @@ function TuneIFsPage({
 
       setError(null);
       setRunResult(nextRunResult);
+      if (
+        typeof nextRunResult.dataset_id === "string" &&
+        nextRunResult.dataset_id.trim().length > 0
+      ) {
+        setProgressDatasetId(nextRunResult.dataset_id);
+      }
       if (typeof nextRunResult.model_id === "string" && nextRunResult.model_id.trim().length > 0) {
         setProgressHistoryModelId(nextRunResult.model_id);
       }
@@ -982,11 +1138,15 @@ function TuneIFsPage({
     }
   };
 
-  const handleOpenProgressModal = () => {
-    setIsProgressModalOpen(true);
-    setProgressHistoryError(
-      progressHistoryModelId ? null : "Run model setup first so progress can be scoped to a dataset.",
-    );
+  const handleLowerPanelViewChange = (nextView: LowerPanelView) => {
+    setLowerPanelView(nextView);
+    if (nextView === "progress") {
+      setProgressHistoryError(
+        progressDatasetId
+          ? null
+          : "Run model setup first so progress can be scoped to a dataset.",
+      );
+    }
   };
 
   const displayPercent = Math.min(100, Math.max(0, progressPercent));
@@ -1021,6 +1181,13 @@ function TuneIFsPage({
       ? "Stopping after current run..."
       : "Running… Click to stop after current run"
     : "Run ML Optimization";
+  const latestBestFit =
+    [...progressTrials]
+      .reverse()
+      .find((point) => typeof point.bestSoFar === "number")?.bestSoFar ?? null;
+  const progressEmptyMessage = progressDatasetId
+    ? `No runs found for dataset ${progressDatasetId} yet. Previous runs will appear here when they share this exact dataset.`
+    : "No runs found for the current dataset yet.";
 
   return (
     <section className="tune-container">
@@ -1071,7 +1238,7 @@ function TuneIFsPage({
         </div>
       </div>
 
-      <div className="tune-actions five-buttons">
+      <div className="tune-actions four-buttons">
         <button
           type="button"
           className="button"
@@ -1095,14 +1262,6 @@ function TuneIFsPage({
           disabled={running || modelSetupRunning}
         >
           Change output folder
-        </button>
-        <button
-          type="button"
-          className="button secondary"
-          onClick={handleOpenProgressModal}
-          disabled={!outputDirectory || !progressHistoryModelId}
-        >
-          View ML Progress
         </button>
         <button
           type="button"
@@ -1188,33 +1347,50 @@ function TuneIFsPage({
 
       </div>
 
-      <div className="ml-console">
-        <div className="ml-console-title">ML Optimization Log</div>
-        <div
-          className="ml-console-body"
-          ref={mlConsoleBodyRef}
-          onScroll={handleMLScroll}
-        >
-          {mlLogEntries.length === 0 ? (
-            <div className="progress-text">Waiting for ML output...</div>
-          ) : (
-            mlLogEntries.map((entry, index) => (
-              <div key={`${index}-${entry.slice(0, 12)}`}>{entry}</div>
-            ))
-          )}
+      <div className="ml-lower-panel">
+        <div className="ml-lower-panel-header">
+          <div className="ml-panel-tabs" role="tablist" aria-label="ML lower panel views">
+            <button
+              type="button"
+              role="tab"
+              className={`ml-panel-tab ${lowerPanelView === "log" ? "active" : ""}`}
+              aria-selected={lowerPanelView === "log"}
+              onClick={() => handleLowerPanelViewChange("log")}
+            >
+              ML Optimization Log
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={`ml-panel-tab ${lowerPanelView === "progress" ? "active" : ""}`}
+              aria-selected={lowerPanelView === "progress"}
+              onClick={() => handleLowerPanelViewChange("progress")}
+              disabled={!outputDirectory}
+              title={!outputDirectory ? "Choose an output folder to view ML progress." : undefined}
+            >
+              ML Progress
+            </button>
+          </div>
         </div>
-      </div>
 
-      {isProgressModalOpen && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setIsProgressModalOpen(false)}
-        >
-          <div
-            className="modal-content ml-progress-modal"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h3 className="modal-title">ML Progress</h3>
+        {lowerPanelView === "log" ? (
+          <div className="ml-console">
+            <div
+              className="ml-console-body"
+              ref={mlConsoleBodyRef}
+              onScroll={handleMLScroll}
+            >
+              {mlLogEntries.length === 0 ? (
+                <div className="progress-text">Waiting for ML output...</div>
+              ) : (
+                mlLogEntries.map((entry, index) => (
+                  <div key={`${index}-${entry.slice(0, 12)}`}>{entry}</div>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="ml-progress-panel">
             <p className="modal-subtitle">
               This is read-only and refreshes live while ML Optimization keeps running.
             </p>
@@ -1224,45 +1400,29 @@ function TuneIFsPage({
               </span>
               <span>
                 <strong>Latest best:</strong>{" "}
-                {progressTrials.length > 0
-                  ? progressTrials[progressTrials.length - 1].bestSoFar.toFixed(4)
-                  : "N/A"}
+                {latestBestFit != null ? latestBestFit.toFixed(4) : "N/A"}
               </span>
             </div>
             {progressHistoryLoading ? (
               <div className="progress-text">Loading ML progress history...</div>
             ) : progressHistoryError ? (
               <div className="progress-text error">{progressHistoryError}</div>
+            ) : progressTrials.length === 0 ? (
+              <div className="progress-text">
+                {progressDatasetId ? (
+                  <>
+                    <strong>Dataset ID:</strong> {progressDatasetId}
+                    <br />
+                  </>
+                ) : null}
+                {progressEmptyMessage}
+              </div>
             ) : (
               <MLProgressChart points={progressTrials} />
             )}
-            {progressTrials.length > 0 && (
-              <div className="ml-progress-table">
-                <div className="ml-progress-table-title">Recent trials</div>
-                <div className="ml-progress-table-body">
-                  {progressTrials.slice(-8).reverse().map((point) => (
-                    <div key={`trial-row-${point.trialIndex}`} className="ml-progress-row">
-                      <span>#{point.trialIndex}</span>
-                      <span>{point.fitPooled.toFixed(4)}</span>
-                      <span>{point.batchIndex ?? "N/A"}</span>
-                      <span>{formatUtcTimestamp(point.completedAtUtc)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-            <div className="modal-actions">
-              <button
-                type="button"
-                className="button secondary"
-                onClick={() => setIsProgressModalOpen(false)}
-              >
-                Close
-              </button>
-            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
     </section>
   );

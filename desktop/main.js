@@ -192,6 +192,10 @@ const buildMLDriverResolvePayload = ({ code, parsedPayload, fallbackBaseYear, fa
           : typeof fallbackEndYear === 'number' && Number.isFinite(fallbackEndYear)
           ? fallbackEndYear
           : null,
+      dataset_id:
+        typeof parsedData.dataset_id === 'string' && parsedData.dataset_id.trim().length > 0
+          ? parsedData.dataset_id.trim()
+          : null,
     },
   };
 };
@@ -1042,6 +1046,10 @@ ipcMain.handle("run-ml", async (_event, args) => {
           endYear: args.endYear,
           baseYear: args.baseYear ?? null,
           initialModelId: args.initialModelId ?? null,
+          datasetId:
+            typeof args.datasetId === 'string' && args.datasetId.trim().length > 0
+              ? args.datasetId.trim()
+              : null,
         },
       });
       console.log(`[ml] started pid=${mlJobState.pid ?? 'unknown'}`);
@@ -1237,6 +1245,13 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
     typeof payload?.outputDir === "string" && payload.outputDir.trim().length > 0
       ? payload.outputDir.trim()
       : mlJobState.outputDir;
+  const datasetId =
+    typeof payload?.datasetId === "string" && payload.datasetId.trim().length > 0
+      ? payload.datasetId.trim()
+      : typeof mlJobState.runConfig?.datasetId === "string" &&
+        mlJobState.runConfig.datasetId.trim().length > 0
+      ? mlJobState.runConfig.datasetId.trim()
+      : null;
   const modelId =
     typeof payload?.modelId === "string" && payload.modelId.trim().length > 0
       ? payload.modelId.trim()
@@ -1250,25 +1265,31 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
       status: "success",
       stage: "ml_progress",
       message: "No output directory selected.",
-      data: { trials: [] },
+      data: { dataset_id: datasetId, trials: [] },
     };
   }
 
-  if (!modelId) {
+  if (!datasetId && !modelId) {
     return {
       status: "success",
       stage: "ml_progress",
-      message: "No model is available yet to resolve ML progress history.",
-      data: { trials: [] },
+      message: "No dataset is available yet to resolve ML progress history.",
+      data: { dataset_id: null, trials: [] },
     };
   }
 
-  return runPythonScript("ml_progress.py", [
+  const args = [
     "--bigpopa-db",
     path.join(outputDir, "bigpopa.db"),
-    "--model-id",
-    modelId,
-  ]);
+  ];
+
+  if (datasetId) {
+    args.push("--dataset-id", datasetId);
+  } else if (modelId) {
+    args.push("--model-id", modelId);
+  }
+
+  return runPythonScript("ml_progress.py", args);
 });
 ipcMain.handle('run_ifs', async (_event, payload) => {
   if (!payload || typeof payload !== 'object') {

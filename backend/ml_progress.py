@@ -14,6 +14,63 @@ from pathlib import Path
 from typing import Any
 
 
+def repair_model_output_batch_indexes(conn: sqlite3.Connection) -> int:
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(model_output)")
+    columns = {row[1] for row in cursor.fetchall()}
+    if not {"trial_index", "batch_index"}.issubset(columns):
+        return 0
+
+    cursor.execute(
+        """
+        UPDATE model_output
+        SET batch_index = 1
+        WHERE trial_index IS NOT NULL
+          AND (batch_index IS NULL OR batch_index != 1)
+        """
+    )
+    return int(cursor.rowcount or 0)
+
+
+def resolve_dataset_id(
+    cursor: sqlite3.Cursor,
+    dataset_id_arg: str | None,
+    model_id_arg: str | None,
+) -> str | None:
+    if dataset_id_arg is not None:
+        return dataset_id_arg
+
+    if not model_id_arg:
+        raise ValueError("Either --dataset-id or --model-id is required.")
+
+    dataset_row = cursor.execute(
+        "SELECT dataset_id FROM model_input WHERE model_id = ? LIMIT 1",
+        (model_id_arg,),
+    ).fetchone()
+    if not dataset_row:
+        raise LookupError("The selected model was not found in model_input.")
+
+    return dataset_row[0]
+
+
+def normalize_trial_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    model_status = row[1]
+    fit_missing = model_status == "failed"
+    fit_pooled = None if fit_missing else row[2]
+
+    return {
+        "model_id": row[0],
+        "model_status": model_status,
+        "fit_pooled": fit_pooled,
+        "fit_missing": fit_missing,
+        "trial_index": row[3],
+        "batch_index": row[4],
+        "started_at_utc": row[5],
+        "completed_at_utc": row[6],
+        "dataset_id": row[7],
+    }
+
+
 def emit_response(status: str, stage: str, message: str, data: dict[str, Any]) -> None:
     print(
         json.dumps(
@@ -32,8 +89,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read ML progress history")
     parser.add_argument("--bigpopa-db", required=True, help="Path to bigpopa.db")
     parser.add_argument(
+        "--dataset-id",
+        required=False,
+        help="Dataset id used to scope progress history explicitly.",
+    )
+    parser.add_argument(
         "--model-id",
-        required=True,
+        required=False,
         help="Model id used to resolve the dataset_id cohort for progress history.",
     )
     args = parser.parse_args(argv)
@@ -74,11 +136,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
 
-        dataset_row = cursor.execute(
-            "SELECT dataset_id FROM model_input WHERE model_id = ? LIMIT 1",
-            (args.model_id,),
-        ).fetchone()
-        if not dataset_row:
+        repair_model_output_batch_indexes(conn)
+        try:
+            dataset_id = resolve_dataset_id(cursor, args.dataset_id, args.model_id)
+        except LookupError:
             emit_response(
                 "success",
                 "ml_progress",
@@ -86,8 +147,15 @@ def main(argv: list[str] | None = None) -> int:
                 {"dataset_id": None, "trials": []},
             )
             return 0
+        except ValueError as exc:
+            emit_response(
+                "error",
+                "ml_progress",
+                str(exc),
+                {"dataset_id": None, "trials": []},
+            )
+            return 1
 
-        dataset_id = dataset_row[0]
         rows = cursor.execute(
             """
             SELECT
@@ -112,19 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             (dataset_id, dataset_id),
         ).fetchall()
 
-        trials = [
-            {
-                "model_id": row[0],
-                "model_status": row[1],
-                "fit_pooled": row[2],
-                "trial_index": row[3],
-                "batch_index": row[4],
-                "started_at_utc": row[5],
-                "completed_at_utc": row[6],
-                "dataset_id": row[7],
-            }
-            for row in rows
-        ]
+        trials = [normalize_trial_row(row) for row in rows]
 
         emit_response(
             "success",

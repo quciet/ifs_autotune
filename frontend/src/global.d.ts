@@ -13,6 +13,7 @@ declare global {
     model_id: string | null;
     model_status: string | null;
     fit_pooled: number | null;
+    fit_missing?: boolean | null;
     trial_index: number | null;
     batch_index: number | null;
     started_at_utc: string | null;
@@ -49,10 +50,12 @@ declare global {
           endYear?: number | string | null;
           baseYear?: number | null;
           initialModelId?: string | number | null;
+          datasetId?: string | null;
         } | null;
       }>;
       getMLProgressHistory: (
         outputDir?: string | null,
+        datasetId?: string | null,
         modelId?: string | null,
       ) => Promise<{
         status?: string;
