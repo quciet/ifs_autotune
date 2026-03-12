@@ -1232,6 +1232,26 @@ ipcMain.handle('ml:jobStatus', async () => {
   console.log('[ml] jobStatus requested');
   return getSafeMLJobState();
 });
+ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
+  const outputDir =
+    typeof payload?.outputDir === "string" && payload.outputDir.trim().length > 0
+      ? payload.outputDir.trim()
+      : mlJobState.outputDir;
+
+  if (!outputDir) {
+    return {
+      status: "success",
+      stage: "ml_progress",
+      message: "No output directory selected.",
+      data: { trials: [] },
+    };
+  }
+
+  return runPythonScript("ml_progress.py", [
+    "--bigpopa-db",
+    path.join(outputDir, "bigpopa.db"),
+  ]);
+});
 ipcMain.handle('run_ifs', async (_event, payload) => {
   if (!payload || typeof payload !== 'object') {
     throw new Error('Invalid payload for run_ifs');

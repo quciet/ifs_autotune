@@ -83,6 +83,22 @@ def ensure_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
         )
         """
     )
+    ensure_model_output_tracking_columns(cursor)
+
+
+def ensure_model_output_tracking_columns(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("PRAGMA table_info(model_output)")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+    required_columns = {
+        "trial_index": "ALTER TABLE model_output ADD COLUMN trial_index INTEGER",
+        "batch_index": "ALTER TABLE model_output ADD COLUMN batch_index INTEGER",
+        "started_at_utc": "ALTER TABLE model_output ADD COLUMN started_at_utc TEXT",
+        "completed_at_utc": "ALTER TABLE model_output ADD COLUMN completed_at_utc TEXT",
+    }
+
+    for column_name, statement in required_columns.items():
+        if column_name not in existing_columns:
+            cursor.execute(statement)
 
 
 def _row_enabled(value: Any) -> bool:

@@ -479,6 +479,12 @@ body {
   gap: 0.75rem;
 }
 
+.tune-actions.five-buttons {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.75rem;
+}
+
 .progress-wrapper {
   margin-top: 1.5rem;
   background: #f7fafc;
@@ -623,6 +629,134 @@ body {
   font-weight: 500;
 }
 
+.ml-progress-modal {
+  width: min(920px, 100%);
+}
+
+.ml-progress-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  color: #2d3748;
+}
+
+.ml-progress-chart-shell {
+  border: 1px solid rgba(203, 213, 224, 0.7);
+  border-radius: 0.75rem;
+  background: #f8fafc;
+  padding: 1rem;
+}
+
+.ml-progress-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.chart-plot-bg {
+  fill: #ffffff;
+}
+
+.chart-grid-line {
+  stroke: rgba(148, 163, 184, 0.45);
+  stroke-width: 1;
+}
+
+.chart-grid-line-vertical {
+  stroke-dasharray: 3 4;
+}
+
+.chart-axis-label {
+  fill: #64748b;
+  font-size: 11px;
+}
+
+.chart-title {
+  fill: #1e293b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.chart-line {
+  fill: none;
+  stroke-width: 3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart-line-fit {
+  stroke: #2563eb;
+}
+
+.chart-line-best {
+  stroke: #dc2626;
+}
+
+.chart-point {
+  fill: #2563eb;
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  color: #334155;
+  font-size: 0.95rem;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.legend-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.legend-swatch.fit {
+  background: #2563eb;
+}
+
+.legend-swatch.best {
+  background: #dc2626;
+}
+
+.ml-progress-table {
+  margin-top: 1rem;
+  border: 1px solid rgba(203, 213, 224, 0.7);
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.ml-progress-table-title {
+  padding: 0.75rem 1rem;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-weight: 700;
+}
+
+.ml-progress-table-body {
+  background: #ffffff;
+}
+
+.ml-progress-row {
+  display: grid;
+  grid-template-columns: 88px 1fr 1fr 2fr;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
+  color: #334155;
+  font-size: 0.95rem;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -658,6 +792,14 @@ body {
   }
 
   .tune-actions.four-buttons {
+    grid-template-columns: 1fr;
+  }
+
+  .tune-actions.five-buttons {
+    grid-template-columns: 1fr;
+  }
+
+  .ml-progress-row {
     grid-template-columns: 1fr;
   }
 }

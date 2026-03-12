@@ -9,6 +9,16 @@ declare global {
     iterations?: number | null;
   }
 
+  interface MLProgressTrial {
+    model_id: string | null;
+    model_status: string | null;
+    fit_pooled: number | null;
+    trial_index: number | null;
+    batch_index: number | null;
+    started_at_utc: string | null;
+    completed_at_utc: string | null;
+  }
+
   interface Window {
     electron?: {
       selectFolder: (
@@ -39,6 +49,16 @@ declare global {
           baseYear?: number | null;
           initialModelId?: string | number | null;
         } | null;
+      }>;
+      getMLProgressHistory: (
+        outputDir?: string | null,
+      ) => Promise<{
+        status?: string;
+        stage?: string;
+        message?: string;
+        data?: {
+          trials?: MLProgressTrial[];
+        };
       }>;
       requestMLStop: () => Promise<{
         accepted: boolean;
