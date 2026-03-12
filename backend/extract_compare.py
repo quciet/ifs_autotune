@@ -12,6 +12,7 @@ from typing import Dict, List
 import pandas as pd
 
 from combine_var_hist import combine_var_hist
+from model_setup import ensure_bigpopa_schema
 
 
 def log(status: str, message: str, **kwargs) -> None:
@@ -30,36 +31,6 @@ def emit_stage_response(status: str, stage: str, message: str, data: Dict[str, o
         "data": data,
     }
     print(json.dumps(payload), flush=True)
-
-
-# Ensure BIGPOPA schema matches the hashed model workflow expectations.
-def ensure_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS model_input (
-            ifs_id INTEGER,
-            model_id TEXT PRIMARY KEY,
-            input_param TEXT,
-            input_coef TEXT,
-            output_set TEXT,
-            dataset_id TEXT,
-            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id)
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS model_output (
-            ifs_id INTEGER,
-            model_id TEXT PRIMARY KEY,
-            model_status TEXT,
-            fit_var TEXT,
-            fit_pooled REAL,
-            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id),
-            FOREIGN KEY (model_id) REFERENCES model_input(model_id)
-        )
-        """
-    )
 
 
 def write_fit_json(
