@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import {
+  getMLProgressHistory,
   modelSetup,
   subscribeToIFsProgress,
   validateIFsFolder,
@@ -17,6 +18,7 @@ import {
   type IFsProgressEvent,
   type ModelSetupData,
   type MLDriverData,
+  type MLProgressTrial,
 } from "./api";
 
 const REQUIRED_INPUT_SHEETS = ["AnalFunc", "TablFunc", "IFsVar", "DataDict"];
@@ -80,6 +82,155 @@ type TuneIFsPageProps = {
   initialFinalResult?: MLFinalResult | null;
   initialTerminationReason?: MLTerminationReason | null;
 };
+
+type ChartPoint = {
+  trialIndex: number;
+  batchIndex: number | null;
+  fitPooled: number;
+  bestSoFar: number;
+  completedAtUtc: string | null;
+  modelId: string | null;
+  modelStatus: string | null;
+};
+
+function normalizeProgressTrials(trials: MLProgressTrial[]): ChartPoint[] {
+  const sorted = [...trials]
+    .filter(
+      (trial): trial is MLProgressTrial & { trial_index: number; fit_pooled: number } =>
+        typeof trial.trial_index === "number" &&
+        Number.isFinite(trial.trial_index) &&
+        typeof trial.fit_pooled === "number" &&
+        Number.isFinite(trial.fit_pooled),
+    )
+    .sort((left, right) => left.trial_index - right.trial_index);
+
+  let bestSoFar = Number.POSITIVE_INFINITY;
+
+  return sorted.map((trial) => {
+    bestSoFar = Math.min(bestSoFar, trial.fit_pooled);
+    return {
+      trialIndex: trial.trial_index,
+      batchIndex:
+        typeof trial.batch_index === "number" && Number.isFinite(trial.batch_index)
+          ? trial.batch_index
+          : null,
+      fitPooled: trial.fit_pooled,
+      bestSoFar,
+      completedAtUtc: trial.completed_at_utc ?? null,
+      modelId: trial.model_id ?? null,
+      modelStatus: trial.model_status ?? null,
+    };
+  });
+}
+
+function formatUtcTimestamp(value: string | null): string {
+  if (!value) {
+    return "In progress";
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+function MLProgressChart({ points }: { points: ChartPoint[] }) {
+  if (points.length === 0) {
+    return <div className="progress-text">No completed trials to display yet.</div>;
+  }
+
+  const width = 760;
+  const height = 280;
+  const padding = { top: 24, right: 20, bottom: 40, left: 56 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const xMin = Math.min(...points.map((point) => point.trialIndex));
+  const xMax = Math.max(...points.map((point) => point.trialIndex));
+  const yMin = Math.min(...points.map((point) => Math.min(point.fitPooled, point.bestSoFar)));
+  const yMax = Math.max(...points.map((point) => Math.max(point.fitPooled, point.bestSoFar)));
+  const xRange = Math.max(1, xMax - xMin);
+  const yRange = Math.max(1e-9, yMax - yMin);
+
+  const xFor = (trialIndex: number) =>
+    padding.left + ((trialIndex - xMin) / xRange) * plotWidth;
+  const yFor = (value: number) =>
+    padding.top + plotHeight - ((value - yMin) / yRange) * plotHeight;
+
+  const fitPath = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(point.trialIndex)} ${yFor(point.fitPooled)}`)
+    .join(" ");
+  const bestPath = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(point.trialIndex)} ${yFor(point.bestSoFar)}`)
+    .join(" ");
+
+  const yTicks = Array.from({ length: 5 }, (_, index) => yMin + (yRange * index) / 4);
+  const xTicks = points.length <= 6
+    ? points.map((point) => point.trialIndex)
+    : Array.from({ length: 6 }, (_, index) => Math.round(xMin + (xRange * index) / 5));
+
+  return (
+    <div className="ml-progress-chart-shell">
+      <svg
+        className="ml-progress-chart"
+        viewBox={`0 0 ${width} ${height}`}
+        role="img"
+        aria-label="ML convergence chart"
+      >
+        <rect x={padding.left} y={padding.top} width={plotWidth} height={plotHeight} className="chart-plot-bg" />
+        {yTicks.map((tick) => {
+          const y = yFor(tick);
+          return (
+            <g key={`y-${tick}`}>
+              <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} className="chart-grid-line" />
+              <text x={padding.left - 8} y={y + 4} textAnchor="end" className="chart-axis-label">
+                {tick.toFixed(3)}
+              </text>
+            </g>
+          );
+        })}
+        {xTicks.map((tick) => {
+          const x = xFor(tick);
+          return (
+            <g key={`x-${tick}`}>
+              <line x1={x} x2={x} y1={padding.top} y2={height - padding.bottom} className="chart-grid-line chart-grid-line-vertical" />
+              <text x={x} y={height - padding.bottom + 18} textAnchor="middle" className="chart-axis-label">
+                {tick}
+              </text>
+            </g>
+          );
+        })}
+        <path d={bestPath} className="chart-line chart-line-best" />
+        <path d={fitPath} className="chart-line chart-line-fit" />
+        {points.map((point) => {
+          const x = xFor(point.trialIndex);
+          const y = yFor(point.fitPooled);
+          return (
+            <g key={`point-${point.trialIndex}`}>
+              <circle cx={x} cy={y} r={4} className="chart-point" />
+              <title>
+                {`Trial ${point.trialIndex}\nFit ${point.fitPooled.toFixed(4)}\nBest ${point.bestSoFar.toFixed(4)}\nBatch ${point.batchIndex ?? "N/A"}\n${formatUtcTimestamp(point.completedAtUtc)}`}
+              </title>
+            </g>
+          );
+        })}
+        <text x={width / 2} y={height - 6} textAnchor="middle" className="chart-title">
+          Trial Index
+        </text>
+        <text
+          x={18}
+          y={height / 2}
+          textAnchor="middle"
+          className="chart-title"
+          transform={`rotate(-90 18 ${height / 2})`}
+        >
+          Final Fit Metric
+        </text>
+      </svg>
+      <div className="chart-legend">
+        <span className="legend-item"><span className="legend-swatch fit" /> Trial fit</span>
+        <span className="legend-item"><span className="legend-swatch best" /> Best so far</span>
+      </div>
+    </div>
+  );
+}
 
 function calculateProgressPercentage(
   currentYear: number,
@@ -170,6 +321,10 @@ function TuneIFsPage({
   const ML_LOG_MAX_LINES = 300;
   const AUTO_SCROLL_BOTTOM_EPS_PX = 24;
   const [currentModelProgress, setCurrentModelProgress] = useState<string | null>(null);
+  const [isProgressModalOpen, setIsProgressModalOpen] = useState(false);
+  const [progressTrials, setProgressTrials] = useState<ChartPoint[]>([]);
+  const [progressHistoryLoading, setProgressHistoryLoading] = useState(false);
+  const [progressHistoryError, setProgressHistoryError] = useState<string | null>(null);
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
   );
@@ -425,6 +580,52 @@ function TuneIFsPage({
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (!isProgressModalOpen || !outputDirectory) {
+      return;
+    }
+
+    let cancelled = false;
+    let intervalId: number | null = null;
+
+    const loadProgressHistory = async (showLoader: boolean) => {
+      if (showLoader) {
+        setProgressHistoryLoading(true);
+      }
+
+      try {
+        const trials = await getMLProgressHistory(outputDirectory);
+        if (cancelled) {
+          return;
+        }
+        setProgressTrials(normalizeProgressTrials(trials));
+        setProgressHistoryError(null);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setProgressHistoryError("Unable to load ML progress history.");
+      } finally {
+        if (!cancelled) {
+          setProgressHistoryLoading(false);
+        }
+      }
+    };
+
+    loadProgressHistory(true);
+
+    intervalId = window.setInterval(() => {
+      void loadProgressHistory(false);
+    }, running ? 3000 : 8000);
+
+    return () => {
+      cancelled = true;
+      if (intervalId != null) {
+        window.clearInterval(intervalId);
+      }
+    };
+  }, [isProgressModalOpen, outputDirectory, running]);
 
   const resetModelSetupState = () => {
     setModelSetupResult(null);
@@ -766,6 +967,11 @@ function TuneIFsPage({
     }
   };
 
+  const handleOpenProgressModal = () => {
+    setIsProgressModalOpen(true);
+    setProgressHistoryError(null);
+  };
+
   const displayPercent = Math.min(100, Math.max(0, progressPercent));
   const showProgressBar = false;
   const runProgressLabel = running
@@ -848,7 +1054,7 @@ function TuneIFsPage({
         </div>
       </div>
 
-      <div className="tune-actions four-buttons">
+      <div className="tune-actions five-buttons">
         <button
           type="button"
           className="button"
@@ -872,6 +1078,14 @@ function TuneIFsPage({
           disabled={running || modelSetupRunning}
         >
           Change output folder
+        </button>
+        <button
+          type="button"
+          className="button secondary"
+          onClick={handleOpenProgressModal}
+          disabled={!outputDirectory}
+        >
+          View ML Progress
         </button>
         <button
           type="button"
@@ -973,6 +1187,65 @@ function TuneIFsPage({
           )}
         </div>
       </div>
+
+      {isProgressModalOpen && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setIsProgressModalOpen(false)}
+        >
+          <div
+            className="modal-content ml-progress-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 className="modal-title">ML Progress</h3>
+            <p className="modal-subtitle">
+              This is read-only and refreshes live while ML Optimization keeps running.
+            </p>
+            <div className="ml-progress-summary">
+              <span>
+                <strong>Points:</strong> {progressTrials.length}
+              </span>
+              <span>
+                <strong>Latest best:</strong>{" "}
+                {progressTrials.length > 0
+                  ? progressTrials[progressTrials.length - 1].bestSoFar.toFixed(4)
+                  : "N/A"}
+              </span>
+            </div>
+            {progressHistoryLoading ? (
+              <div className="progress-text">Loading ML progress history...</div>
+            ) : progressHistoryError ? (
+              <div className="progress-text error">{progressHistoryError}</div>
+            ) : (
+              <MLProgressChart points={progressTrials} />
+            )}
+            {progressTrials.length > 0 && (
+              <div className="ml-progress-table">
+                <div className="ml-progress-table-title">Recent trials</div>
+                <div className="ml-progress-table-body">
+                  {progressTrials.slice(-8).reverse().map((point) => (
+                    <div key={`trial-row-${point.trialIndex}`} className="ml-progress-row">
+                      <span>#{point.trialIndex}</span>
+                      <span>{point.fitPooled.toFixed(4)}</span>
+                      <span>{point.batchIndex ?? "N/A"}</span>
+                      <span>{formatUtcTimestamp(point.completedAtUtc)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setIsProgressModalOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </section>
   );

@@ -16,6 +16,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -28,7 +29,7 @@ sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import dataset_utils
-from model_setup import canonical_config, hash_model_id
+from model_setup import canonical_config, ensure_model_output_tracking_columns, hash_model_id
 from optimization.active_learning import active_learning_loop
 
 
@@ -159,6 +160,60 @@ def _model_input_has_dataset_id(conn: sqlite3.Connection) -> bool:
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(model_input)")
     return any(row[1] == "dataset_id" for row in cursor.fetchall())
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _upsert_model_output_tracking(
+    conn: sqlite3.Connection,
+    *,
+    ifs_id: int,
+    model_id: str,
+    trial_index: int,
+    batch_index: int,
+    started_at_utc: str | None = None,
+    completed_at_utc: str | None = None,
+    model_status: str | None = None,
+    fit_pooled: float | None = None,
+) -> None:
+    cursor = conn.cursor()
+    ensure_model_output_tracking_columns(cursor)
+    cursor.execute(
+        """
+        INSERT INTO model_output (
+            ifs_id,
+            model_id,
+            model_status,
+            fit_var,
+            fit_pooled,
+            trial_index,
+            batch_index,
+            started_at_utc,
+            completed_at_utc
+        )
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
+        ON CONFLICT(model_id) DO UPDATE SET
+            ifs_id=excluded.ifs_id,
+            model_status=COALESCE(excluded.model_status, model_output.model_status),
+            fit_pooled=COALESCE(excluded.fit_pooled, model_output.fit_pooled),
+            trial_index=excluded.trial_index,
+            batch_index=excluded.batch_index,
+            started_at_utc=COALESCE(excluded.started_at_utc, model_output.started_at_utc),
+            completed_at_utc=COALESCE(excluded.completed_at_utc, model_output.completed_at_utc)
+        """,
+        (
+            ifs_id,
+            model_id,
+            model_status,
+            fit_pooled,
+            trial_index,
+            batch_index,
+            started_at_utc,
+            completed_at_utc,
+        ),
+    )
 
 
 def _load_model_by_id(
@@ -743,11 +798,23 @@ def _run_model(
     dataset_id: str | None,
     bigpopa_db: Path,
     dataset_id_supported: bool,
+    trial_index: int,
+    batch_index: int,
 ) -> Tuple[float, str]:
     canonical = canonical_config(ifs_id, param_values, coef_values, output_set)
     model_id = hash_model_id(canonical)
+    started_at_utc = _utc_now_iso()
 
     with sqlite3.connect(bigpopa_db) as conn:
+        _upsert_model_output_tracking(
+            conn,
+            ifs_id=ifs_id,
+            model_id=model_id,
+            trial_index=trial_index,
+            batch_index=batch_index,
+            started_at_utc=started_at_utc,
+            model_status="running",
+        )
         # ----------------------------------------------------------------------
         # HUMAN-READABLE COMMENT (For Codex/GitHub Review)
         #
@@ -775,6 +842,17 @@ def _run_model(
         if row and row[0] is not None:
             # Found previously evaluated model - reuse stored fit_pooled
             fit_val = float(row[0])
+            _upsert_model_output_tracking(
+                conn,
+                ifs_id=ifs_id,
+                model_id=model_id,
+                trial_index=trial_index,
+                batch_index=batch_index,
+                started_at_utc=started_at_utc,
+                completed_at_utc=_utc_now_iso(),
+                model_status="reused",
+                fit_pooled=fit_val,
+            )
             point = np.round(flatten_inputs(param_values, coef_values), 6)
             point_text = _format_point_for_log(point)
             print(
@@ -790,6 +868,7 @@ def _run_model(
 
     with sqlite3.connect(bigpopa_db) as conn:
         cursor = conn.cursor()
+        ensure_model_output_tracking_columns(cursor)
         if not dataset_id_supported:
             raise RuntimeError("model_input.dataset_id column is required for ML runs")
         cursor.execute(
@@ -841,17 +920,40 @@ def _run_model(
     if process.returncode != 0:
         with sqlite3.connect(bigpopa_db) as conn:
             cursor = conn.cursor()
+            ensure_model_output_tracking_columns(cursor)
             cursor.execute(
                 """
-                INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                VALUES (?, ?, 'failed', NULL, ?)
+                INSERT INTO model_output (
+                    ifs_id,
+                    model_id,
+                    model_status,
+                    fit_var,
+                    fit_pooled,
+                    trial_index,
+                    batch_index,
+                    started_at_utc,
+                    completed_at_utc
+                )
+                VALUES (?, ?, 'failed', NULL, ?, ?, ?, ?, ?)
                 ON CONFLICT(model_id) DO UPDATE SET
                     ifs_id=excluded.ifs_id,
                     model_status='failed',
                     fit_var=NULL,
-                    fit_pooled=excluded.fit_pooled
+                    fit_pooled=excluded.fit_pooled,
+                    trial_index=excluded.trial_index,
+                    batch_index=excluded.batch_index,
+                    started_at_utc=excluded.started_at_utc,
+                    completed_at_utc=excluded.completed_at_utc
                 """,
-                (ifs_id, model_id, FAIL_Y),
+                (
+                    ifs_id,
+                    model_id,
+                    FAIL_Y,
+                    trial_index,
+                    batch_index,
+                    started_at_utc,
+                    _utc_now_iso(),
+                ),
             )
         print(
             f"IFs run failed for model_id={model_id} (return_code={process.returncode}); using FAIL_Y={FAIL_Y:.6f}",
@@ -861,6 +963,7 @@ def _run_model(
 
     with sqlite3.connect(bigpopa_db) as conn:
         cursor = conn.cursor()
+        ensure_model_output_tracking_columns(cursor)
         cursor.execute(
             "SELECT fit_pooled FROM model_output WHERE model_id = ? LIMIT 1", (model_id,)
         )
@@ -870,6 +973,17 @@ def _run_model(
         if row[0] is None:
             raise RuntimeError("fit_pooled is NULL after IFs run")
         fit_val = float(row[0])
+        _upsert_model_output_tracking(
+            conn,
+            ifs_id=ifs_id,
+            model_id=model_id,
+            trial_index=trial_index,
+            batch_index=batch_index,
+            started_at_utc=started_at_utc,
+            completed_at_utc=_utc_now_iso(),
+            model_status="completed",
+            fit_pooled=fit_val,
+        )
 
     point = np.round(flatten_inputs(param_values, coef_values), 6)
     point_text = _format_point_for_log(point)
@@ -1032,7 +1146,11 @@ def main(argv: list[str] | None = None) -> int:
                 n_samples=n_sample,
             )
 
+        trial_counter = {"value": 0}
+
         def callback(x_vector: np.ndarray | float):
+            trial_counter["value"] += 1
+            trial_index = trial_counter["value"]
             param_values, coef_values = unflatten_vector(x_vector, param_template, coef_template)
             fit_val, model_id = _run_model(
                 args=args,
@@ -1043,6 +1161,8 @@ def main(argv: list[str] | None = None) -> int:
                 dataset_id=dataset_id,
                 bigpopa_db=bigpopa_db,
                 dataset_id_supported=dataset_id_supported,
+                trial_index=trial_index,
+                batch_index=trial_index,
             )
             vector_to_model_id[tuple(np.round(np.atleast_1d(x_vector), 6))] = model_id
             return fit_val

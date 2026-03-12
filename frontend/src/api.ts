@@ -81,6 +81,16 @@ export type MLDriverData = {
   end_year?: number | null;
 };
 
+export type MLProgressTrial = {
+  model_id: string | null;
+  model_status: string | null;
+  fit_pooled: number | null;
+  trial_index: number | null;
+  batch_index: number | null;
+  started_at_utc: string | null;
+  completed_at_utc: string | null;
+};
+
 type RawStageResponse = {
   status?: unknown;
   stage?: unknown;
@@ -318,4 +328,20 @@ export function subscribeToIFsProgress(
   };
 
   return window.electron.on("ifs-progress", handler);
+}
+
+export async function getMLProgressHistory(
+  outputDir?: string | null,
+): Promise<MLProgressTrial[]> {
+  if (!window.electron?.getMLProgressHistory) {
+    return [];
+  }
+
+  try {
+    const response = await window.electron.getMLProgressHistory(outputDir ?? null);
+    const trials = response?.data?.trials;
+    return Array.isArray(trials) ? (trials as MLProgressTrial[]) : [];
+  } catch {
+    return [];
+  }
 }
