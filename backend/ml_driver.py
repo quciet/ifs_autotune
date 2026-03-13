@@ -119,6 +119,27 @@ def _validate_candidate_pool_size(*, n_rows: int, n_dimensions: int, budget_byte
         )
 
 
+def _log_candidate_pool_usage(X_grid: np.ndarray, *, memory_budget_bytes: int) -> None:
+    grid = np.asarray(X_grid, dtype=float)
+    if grid.ndim == 1:
+        grid = grid.reshape(-1, 1)
+    elif grid.ndim == 0:
+        grid = grid.reshape(1, 1)
+    else:
+        grid = np.atleast_2d(grid)
+
+    rows, dims = grid.shape
+    print(
+        "Candidate pool generated: "
+        f"shape=({rows}, {dims}), "
+        f"candidate_pool_rows={rows}, "
+        f"candidate_pool_dimensions={dims}, "
+        f"candidate_pool_mb={grid.nbytes / 1024 / 1024:.6f}, "
+        f"memory_budget_mb={memory_budget_bytes / 1024 / 1024:.1f}",
+        flush=True,
+    )
+
+
 # --- Flattening helpers ----------------------------------------------------
 
 
@@ -1318,6 +1339,7 @@ def main(argv: list[str] | None = None) -> int:
                 n_samples=n_sample,
                 run_seed=run_seed,
             )
+        _log_candidate_pool_usage(X_grid, memory_budget_bytes=memory_budget_bytes)
         validate_surrogate_memory(
             n_observations=max(len(X_obs), 1),
             n_candidates=max(len(X_grid), 1),

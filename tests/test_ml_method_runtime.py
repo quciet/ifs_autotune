@@ -344,3 +344,98 @@ def test_validate_surrogate_memory_rejects_unsafe_polynomial_budget() -> None:
             model_type="poly",
             memory_budget_bytes=1024,
         )
+
+
+@pytest.mark.parametrize(
+    ("search_space", "expected_shape"),
+    [
+        (
+            [
+                ml_driver.SearchDimension(
+                    key=("param", "a"),
+                    display_name="parameter 'a'",
+                    kind="param",
+                    default=0.5,
+                    minimum=0.0,
+                    maximum=1.0,
+                ),
+            ],
+            (10, 1),
+        ),
+        (
+            [
+                ml_driver.SearchDimension(
+                    key=("param", "a"),
+                    display_name="parameter 'a'",
+                    kind="param",
+                    default=0.0,
+                    minimum=0.0,
+                    maximum=19.0,
+                    level_count=10,
+                ),
+            ],
+            (10, 1),
+        ),
+        (
+            [
+                ml_driver.SearchDimension(
+                    key=("param", "a"),
+                    display_name="parameter 'a'",
+                    kind="param",
+                    default=0.0,
+                    minimum=0.0,
+                    maximum=4.0,
+                    level_count=5,
+                ),
+                ml_driver.SearchDimension(
+                    key=("param", "b"),
+                    display_name="parameter 'b'",
+                    kind="param",
+                    default=0.5,
+                    minimum=0.0,
+                    maximum=1.0,
+                ),
+            ],
+            (10, 2),
+        ),
+    ],
+)
+def test_candidate_pool_log_reports_actual_shape_and_memory(
+    capsys: pytest.CaptureFixture[str],
+    search_space: list[ml_driver.SearchDimension],
+    expected_shape: tuple[int, int],
+) -> None:
+    memory_budget_bytes = 512 * 1024 * 1024
+
+    if ml_driver._has_grid_configuration(search_space):
+        explicit_dimensions, free_dimensions = ml_driver._split_search_space(search_space)
+        if explicit_dimensions and free_dimensions:
+            x_grid = ml_driver._generate_hybrid_candidate_grid(
+                search_space,
+                n_samples=10,
+                run_seed=123,
+                memory_budget_bytes=memory_budget_bytes,
+            )
+        else:
+            x_grid = ml_driver._generate_candidate_grid(
+                search_space,
+                n_samples=10,
+                memory_budget_bytes=memory_budget_bytes,
+            )
+    else:
+        x_grid = ml_driver._sample_grid(
+            [(dimension.minimum, dimension.maximum) for dimension in search_space],
+            n_samples=10,
+            run_seed=123,
+        )
+
+    ml_driver._log_candidate_pool_usage(x_grid, memory_budget_bytes=memory_budget_bytes)
+
+    captured = capsys.readouterr().out.strip()
+
+    assert "Candidate pool generated:" in captured
+    assert f"shape=({expected_shape[0]}, {expected_shape[1]})" in captured
+    assert f"candidate_pool_rows={expected_shape[0]}" in captured
+    assert f"candidate_pool_dimensions={expected_shape[1]}" in captured
+    assert f"candidate_pool_mb={x_grid.nbytes / 1024 / 1024:.6f}" in captured
+    assert "memory_budget_mb=512.0" in captured
