@@ -178,18 +178,8 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
       ? [point.fitPooled]
       : [],
   );
-  const plottedValues = points.flatMap((point) => {
-    const values: number[] = [];
-    if (typeof point.fitPooled === "number" && Number.isFinite(point.fitPooled)) {
-      values.push(point.fitPooled);
-    }
-    if (typeof point.bestSoFar === "number" && Number.isFinite(point.bestSoFar)) {
-      values.push(point.bestSoFar);
-    }
-    return values;
-  });
 
-  if (points.length === 0 || plottedValues.length === 0) {
+  if (points.length === 0 || fitValues.length === 0) {
     return <div className="progress-text">No successful completed trials to plot yet.</div>;
   }
 
@@ -203,7 +193,7 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
   const xRangeActual = Math.max(1, xMax - xMin);
   const xRightPadding = Math.max(8, xRangeActual * 0.03);
   const xDisplayMax = xMax + xRightPadding;
-  const yMin = Math.min(...plottedValues);
+  const yMin = Math.min(...fitValues);
   const q1 = percentile(fitValues, 0.25);
   const q3 = percentile(fitValues, 0.75);
   const iqr =
@@ -217,11 +207,26 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
       ? yCapBaseCandidate
       : Math.max(...fitValues);
   const displaySpanBase = Math.max(yCapBase - yMin, Math.abs(yCapBase), 1e-9);
-  const yBottomPadding = displaySpanBase * 0.05;
+  const yBottomPadding = displaySpanBase * 0.1;
   const yHeadroom = displaySpanBase * 0.05;
   const yMinDisplay = yMin - yBottomPadding;
   const yMaxDisplay = yCapBase + yHeadroom;
   const hasOutliers = fitValues.some((value) => value > yCapBase);
+  const bestPoint = points.reduce<ChartPoint | null>((best, point) => {
+    if (point.fitPooled == null) {
+      return best;
+    }
+    if (best == null || best.fitPooled == null) {
+      return point;
+    }
+    if (point.fitPooled < best.fitPooled) {
+      return point;
+    }
+    if (point.fitPooled === best.fitPooled && point.trialIndex > best.trialIndex) {
+      return point;
+    }
+    return best;
+  }, null);
   const xRange = Math.max(1, xDisplayMax - xMin);
   const yRange = Math.max(1e-9, yMaxDisplay - yMinDisplay);
 
@@ -274,19 +279,6 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
           );
         })}
         {points.map((point) => {
-          if (point.bestSoFar == null) {
-            return null;
-          }
-
-          const x = xFor(point.trialIndex);
-          const y = yFor(Math.min(point.bestSoFar, yCapBase));
-          return (
-            <g key={`best-point-${point.trialIndex}`}>
-              <circle cx={x} cy={y} r={2} className="chart-point chart-point-best" />
-            </g>
-          );
-        })}
-        {points.map((point) => {
           if (point.fitPooled == null) {
             return null;
           }
@@ -298,11 +290,11 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
             <g key={`point-${point.trialIndex}`}>
               {isOutlier ? (
                 <polygon
-                  points={`${x},${y - 4} ${x - 3.5},${y + 2} ${x + 3.5},${y + 2}`}
+                  points={`${x},${y - 3.5} ${x - 2.75},${y + 1.5} ${x + 2.75},${y + 1.5}`}
                   className="chart-outlier"
                 />
               ) : (
-                <circle cx={x} cy={y} r={2.5} className="chart-point" />
+                <circle cx={x} cy={y} r={1.8} className="chart-point" />
               )}
               <title>
                 {`Trial ${point.trialIndex}\nFit ${formatFitValue(point.fitPooled, point.fitMissing)}${isOutlier ? " (above displayed range)" : ""}\nBest ${formatFitValue(point.bestSoFar)}\nStatus ${point.modelStatus ?? "unknown"}\nBatch ${point.batchIndex ?? "N/A"}\n${formatUtcTimestamp(point.completedAtUtc)}`}
@@ -310,6 +302,19 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
             </g>
           );
         })}
+        {bestPoint && bestPoint.fitPooled != null ? (
+          <g key={`best-point-${bestPoint.trialIndex}`}>
+            <circle
+              cx={xFor(bestPoint.trialIndex)}
+              cy={yFor(Math.min(bestPoint.fitPooled, yCapBase))}
+              r={2.2}
+              className="chart-point chart-point-best"
+            />
+            <title>
+              {`Best model\nTrial ${bestPoint.trialIndex}\nFit ${formatFitValue(bestPoint.fitPooled, bestPoint.fitMissing)}\nStatus ${bestPoint.modelStatus ?? "unknown"}\nBatch ${bestPoint.batchIndex ?? "N/A"}\n${formatUtcTimestamp(bestPoint.completedAtUtc)}`}
+            </title>
+          </g>
+        ) : null}
         <text x={width / 2} y={height - 6} textAnchor="middle" className="chart-title">
           Trial Index
         </text>
@@ -325,7 +330,7 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
       </svg>
       <div className="chart-legend">
         <span className="legend-item"><span className="legend-swatch fit" /> Trial fit</span>
-        <span className="legend-item"><span className="legend-swatch best" /> Best so far</span>
+        <span className="legend-item"><span className="legend-swatch best" /> Best model</span>
         {hasOutliers ? (
           <span className="legend-item"><span className="legend-swatch outlier" /> Above displayed range</span>
         ) : null}
@@ -1140,6 +1145,10 @@ function TuneIFsPage({
 
   const handleLowerPanelViewChange = (nextView: LowerPanelView) => {
     setLowerPanelView(nextView);
+    void window.electron?.invoke?.("ml:lowerPanelViewChanged", {
+      view: nextView,
+      datasetId: progressDatasetId,
+    });
     if (nextView === "progress") {
       setProgressHistoryError(
         progressDatasetId

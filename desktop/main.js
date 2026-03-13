@@ -347,14 +347,18 @@ function getVenvPython() {
 
 function spawnPython(args, options = {}) {
   const pythonExe = getVenvPython();
-  console.log(`[py] using: ${pythonExe}`);
+  const quiet = options && typeof options === 'object' ? options.quiet === true : false;
+  if (!quiet) {
+    console.log(`[py] using: ${pythonExe}`);
+  }
   return spawn(pythonExe, args, options);
 }
 
-function runPythonScript(scriptName, args = []) {
+function runPythonScript(scriptName, args = [], options = {}) {
   return new Promise((resolve, reject) => {
     const scriptPath = path.join(getBackendDir(), scriptName);
     const pythonArgs = ['-u', scriptPath, ...args];
+    const quiet = options && typeof options === 'object' ? options.quiet === true : false;
 
     const processOptions = {
       cwd: getRepoRoot(),
@@ -368,6 +372,7 @@ function runPythonScript(scriptName, args = []) {
 
     const isRunIFsScript = RUN_IFS_SCRIPT_NAMES.has(scriptName);
     const isMlDriver = scriptName === 'ml_driver.py';
+    const isMlProgress = scriptName === 'ml_progress.py';
     const window = mainWindow;
     let stdout = '';
     let stderr = '';
@@ -411,7 +416,9 @@ function runPythonScript(scriptName, args = []) {
       const trimmed = line.trim();
       if (!trimmed) return;
 
-      console.log("[PYTHON]", trimmed);
+      if (!isMlProgress) {
+        console.log("[PYTHON]", trimmed);
+      }
 
       let progressMessage = trimmed;
       try {
@@ -430,11 +437,13 @@ function runPythonScript(scriptName, args = []) {
         // Not JSON, keep as raw line
       }
 
-      sendModelSetupProgress(progressMessage);
+      if (!isMlProgress) {
+        sendModelSetupProgress(progressMessage);
+      }
       emitRunIFsProgress(trimmed);
     };
 
-    const pythonProcess = spawnPython(pythonArgs, processOptions);
+    const pythonProcess = spawnPython(pythonArgs, { ...processOptions, quiet });
 
     pythonProcess.stdout.on('data', (data) => {
       const text = data.toString();
@@ -1240,6 +1249,26 @@ ipcMain.handle('ml:jobStatus', async () => {
   console.log('[ml] jobStatus requested');
   return getSafeMLJobState();
 });
+ipcMain.handle('ml:lowerPanelViewChanged', async (_event, payload = {}) => {
+  const view =
+    payload?.view === 'progress' || payload?.view === 'log'
+      ? payload.view
+      : null;
+  const datasetId =
+    typeof payload?.datasetId === 'string' && payload.datasetId.trim().length > 0
+      ? payload.datasetId.trim()
+      : null;
+  if (view === 'progress') {
+    console.log(
+      datasetId
+        ? `[ml] switched to ML Progress view (dataset_id=${datasetId})`
+        : '[ml] switched to ML Progress view',
+    );
+  } else if (view === 'log') {
+    console.log('[ml] switched to ML Optimization Log view');
+  }
+  return { ok: true };
+});
 ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
   const outputDir =
     typeof payload?.outputDir === "string" && payload.outputDir.trim().length > 0
@@ -1289,7 +1318,7 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
     args.push("--model-id", modelId);
   }
 
-  return runPythonScript("ml_progress.py", args);
+  return runPythonScript("ml_progress.py", args, { quiet: true });
 });
 ipcMain.handle('run_ifs', async (_event, payload) => {
   if (!payload || typeof payload !== 'object') {

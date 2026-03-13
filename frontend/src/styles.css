@@ -747,19 +747,19 @@ body {
 .chart-point {
   fill: #2563eb;
   stroke: #ffffff;
-  stroke-width: 1;
+  stroke-width: 0.7;
 }
 
 .chart-point-best {
   fill: #dc2626;
-  stroke-width: 0.75;
-  opacity: 0.8;
+  stroke-width: 0.6;
+  opacity: 0.92;
 }
 
 .chart-outlier {
   fill: #2563eb;
   stroke: #ffffff;
-  stroke-width: 0.8;
+  stroke-width: 0.6;
 }
 
 .chart-legend {
