@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -159,3 +160,66 @@ def test_hybrid_grid_cannot_exceed_target_sample_count() -> None:
 
     with pytest.raises(ValueError, match="exceeds n_sample=99"):
         ml_driver._generate_hybrid_candidate_grid(search_space, n_samples=99)
+
+
+def test_normalize_batch_indexes_commits_before_second_connection_writes(tmp_path: Path) -> None:
+    db_path = tmp_path / "bigpopa.db"
+
+    conn_a = sqlite3.connect(db_path)
+    try:
+        cursor = conn_a.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE model_output (
+                ifs_id INTEGER,
+                model_id TEXT PRIMARY KEY,
+                model_status TEXT,
+                fit_var TEXT,
+                fit_pooled REAL
+            )
+            """
+        )
+        ml_driver.ensure_model_output_tracking_columns(cursor)
+        cursor.execute(
+            """
+            INSERT INTO model_output (
+                ifs_id,
+                model_id,
+                model_status,
+                fit_var,
+                fit_pooled,
+                trial_index,
+                batch_index
+            )
+            VALUES (?, ?, ?, NULL, ?, ?, ?)
+            """,
+            (2, "existing-model", "completed", 0.25, 1, None),
+        )
+        conn_a.commit()
+
+        repaired_rows = ml_driver._normalize_model_output_batch_indexes(conn_a)
+
+        assert repaired_rows == 1
+
+        conn_b = sqlite3.connect(db_path, timeout=0)
+        try:
+            ml_driver._upsert_model_output_tracking(
+                conn_b,
+                ifs_id=2,
+                model_id="new-model",
+                trial_index=2,
+                batch_index=1,
+                started_at_utc="2026-03-13T00:00:00+00:00",
+                model_status="running",
+            )
+            conn_b.commit()
+        finally:
+            conn_b.close()
+
+        rows = conn_a.execute(
+            "SELECT model_id, batch_index FROM model_output ORDER BY model_id"
+        ).fetchall()
+    finally:
+        conn_a.close()
+
+    assert rows == [("existing-model", 1), ("new-model", 1)]

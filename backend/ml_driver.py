@@ -230,6 +230,13 @@ def _repair_model_output_batch_indexes(conn: sqlite3.Connection) -> int:
     return int(cursor.rowcount or 0)
 
 
+def _normalize_model_output_batch_indexes(conn: sqlite3.Connection) -> int:
+    """Commit batch-index normalization before other connections begin writing."""
+
+    with conn:
+        return _repair_model_output_batch_indexes(conn)
+
+
 def _load_model_by_id(
     conn: sqlite3.Connection, has_dataset_id: bool, model_id: str
 ) -> Tuple[int, str, dict, dict, dict, str | None]:
@@ -1118,7 +1125,7 @@ def main(argv: list[str] | None = None) -> int:
             str(bigpopa_db), structure, dataset_id
         )
 
-        repaired_rows = _repair_model_output_batch_indexes(conn)
+        repaired_rows = _normalize_model_output_batch_indexes(conn)
         if repaired_rows:
             print(
                 f"Normalized batch_index to 1 for {repaired_rows} tracked model_output rows.",
