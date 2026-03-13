@@ -1,0 +1,268 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
+
+import ml_driver
+from ml_method import load_required_ml_method
+from optimization import active_learning
+from optimization.ensemble_training import validate_surrogate_memory
+
+
+def _write_workbook(path: Path, *, ml_method: str | None) -> None:
+    rows: list[dict[str, object]] = [
+        {"Method": "general", "Parameter": "n_sample", "Value": 10},
+        {"Method": "general", "Parameter": "n_max_iteration", "Value": 1},
+    ]
+    if ml_method is not None:
+        rows.append({"Method": "general", "Parameter": "ml_method", "Value": ml_method})
+
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        pd.DataFrame(rows).to_excel(writer, sheet_name="ML", index=False)
+
+
+def _create_bigpopa_db(path: Path, *, initial_model_id: str = "initial-model") -> None:
+    conn = sqlite3.connect(path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE model_input (
+                ifs_id INTEGER,
+                model_id TEXT PRIMARY KEY,
+                dataset_id TEXT,
+                input_param TEXT,
+                input_coef TEXT,
+                output_set TEXT
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE ifs_version (
+                ifs_id INTEGER PRIMARY KEY,
+                ifs_static_id INTEGER,
+                base_year INTEGER,
+                end_year INTEGER,
+                fit_metric TEXT,
+                ml_method TEXT
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE model_output (
+                ifs_id INTEGER,
+                model_id TEXT PRIMARY KEY,
+                model_status TEXT,
+                fit_var TEXT,
+                fit_pooled REAL
+            )
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO model_input (ifs_id, model_id, dataset_id, input_param, input_coef, output_set)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                initial_model_id,
+                "dataset-1",
+                json.dumps({"a": 0.5}),
+                json.dumps({}),
+                json.dumps({"fit": 1}),
+            ),
+        )
+        cursor.execute(
+            """
+            INSERT INTO ifs_version (ifs_id, ifs_static_id, base_year, end_year, fit_metric, ml_method)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (1, 1, 2020, 2030, "mse", "tree"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _dimension() -> ml_driver.SearchDimension:
+    return ml_driver.SearchDimension(
+        key=("param", "a"),
+        display_name="parameter 'a'",
+        kind="param",
+        default=0.5,
+        minimum=0.0,
+        maximum=1.0,
+    )
+
+
+@pytest.mark.parametrize(
+    ("workbook_value", "expected_model_type"),
+    [("neural network", "nn"), ("poly", "poly")],
+)
+def test_ml_driver_uses_workbook_ml_method(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workbook_value: str,
+    expected_model_type: str,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    workbook_path = tmp_path / "StartingPointTable.xlsx"
+    _create_bigpopa_db(db_path)
+    _write_workbook(workbook_path, ml_method=workbook_value)
+
+    monkeypatch.setattr(
+        ml_driver.dataset_utils,
+        "load_compatible_training_samples",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        ml_driver,
+        "_build_search_space",
+        lambda *args, **kwargs: [_dimension()],
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_active_learning_loop(**kwargs):
+        captured["model_type"] = kwargs["model_type"]
+        return (
+            np.asarray([[0.5]], dtype=float),
+            np.asarray([1.0], dtype=float),
+            np.asarray([], dtype=object),
+            {},
+            False,
+        )
+
+    monkeypatch.setattr(ml_driver, "active_learning_loop", fake_active_learning_loop)
+
+    exit_code = ml_driver.main(
+        [
+            "--ifs-root",
+            str(tmp_path),
+            "--end-year",
+            "2030",
+            "--output-folder",
+            str(output_dir),
+            "--initial-model-id",
+            "initial-model",
+            "--starting-point-table",
+            str(workbook_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["model_type"] == expected_model_type
+
+
+def test_ml_driver_fails_when_ml_method_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    workbook_path = tmp_path / "StartingPointTable.xlsx"
+    _create_bigpopa_db(db_path)
+    _write_workbook(workbook_path, ml_method=None)
+
+    called = {"value": False}
+
+    def fake_active_learning_loop(**kwargs):
+        called["value"] = True
+        raise AssertionError("active_learning_loop should not be called")
+
+    monkeypatch.setattr(ml_driver, "active_learning_loop", fake_active_learning_loop)
+
+    exit_code = ml_driver.main(
+        [
+            "--ifs-root",
+            str(tmp_path),
+            "--end-year",
+            "2030",
+            "--output-folder",
+            str(output_dir),
+            "--initial-model-id",
+            "initial-model",
+            "--starting-point-table",
+            str(workbook_path),
+        ]
+    )
+
+    assert exit_code == 1
+    assert called["value"] is False
+
+
+def test_load_required_ml_method_rejects_invalid_value(tmp_path: Path) -> None:
+    workbook_path = tmp_path / "StartingPointTable.xlsx"
+    _write_workbook(workbook_path, ml_method="svm")
+
+    with pytest.raises(ValueError, match="Unsupported ML method"):
+        load_required_ml_method(workbook_path)
+
+
+def test_active_learning_requires_explicit_model_type() -> None:
+    with pytest.raises(ValueError, match="model_type must be provided explicitly"):
+        active_learning.active_learning_loop(
+            f=lambda x: 0.0,
+            X_obs=np.asarray([[0.0]], dtype=float),
+            Y_obs=np.asarray([0.0], dtype=float),
+            X_grid=np.asarray([[0.0]], dtype=float),
+        )
+
+
+def test_chunked_candidate_selection_matches_full_scan() -> None:
+    class FakeModel:
+        def __init__(self, scale: float) -> None:
+            self.scale = scale
+
+        def predict(self, X: np.ndarray) -> np.ndarray:
+            X = np.asarray(X, dtype=float)
+            return X[:, 0] * self.scale
+
+    x_grid = np.asarray([[0.1], [0.4], [0.2], [0.3]], dtype=float)
+    cache: dict[tuple[float, ...], float] = {}
+    models = [FakeModel(1.0), FakeModel(1.5)]
+
+    chunked = active_learning._select_candidate_index(
+        models=models,
+        X_grid=x_grid,
+        results_cache=cache,
+        acquisition="LCB",
+        y_best=0.0,
+        kappa=1.0,
+        chunk_size=2,
+    )
+    full = active_learning._select_candidate_index(
+        models=models,
+        X_grid=x_grid,
+        results_cache=cache,
+        acquisition="LCB",
+        y_best=0.0,
+        kappa=1.0,
+        chunk_size=len(x_grid),
+    )
+
+    assert chunked == full
+
+
+def test_validate_surrogate_memory_rejects_unsafe_polynomial_budget() -> None:
+    with pytest.raises(ValueError, match="exceeds the configured memory budget"):
+        validate_surrogate_memory(
+            n_observations=500,
+            n_candidates=10,
+            n_dimensions=20,
+            model_type="poly",
+            memory_budget_bytes=1024,
+        )

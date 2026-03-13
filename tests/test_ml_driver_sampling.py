@@ -43,6 +43,20 @@ def test_sample_grid_legacy_returns_requested_count_and_bounds() -> None:
     assert np.all(samples[:, 1] <= 11.0)
 
 
+def test_sample_grid_uses_explicit_seed_for_reproducibility() -> None:
+    first = ml_driver._sample_grid([(0.0, 1.0)], n_samples=5, run_seed=123)
+    second = ml_driver._sample_grid([(0.0, 1.0)], n_samples=5, run_seed=123)
+
+    assert np.array_equal(first, second)
+
+
+def test_sample_grid_varies_across_runs_without_explicit_seed() -> None:
+    first = ml_driver._sample_grid([(0.0, 1.0)], n_samples=5)
+    second = ml_driver._sample_grid([(0.0, 1.0)], n_samples=5)
+
+    assert not np.array_equal(first, second)
+
+
 def test_generate_candidate_grid_builds_explicit_cartesian_product() -> None:
     search_space = [
         _dimension("a", minimum=0.0, maximum=19.0, default=0.0, level_count=20),

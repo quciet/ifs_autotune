@@ -23,6 +23,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from dataset_utils import compute_dataset_id, extract_structure_keys
 
 from log_ifs_version import log_version_metadata
+from ml_method import MLMethodConfig, load_required_ml_method
 
 import pandas as pd
 
@@ -260,17 +261,11 @@ def format_structure_drift_warning(diagnostics: Dict[str, Any]) -> str:
     )
 
 
-def _load_ml_text_settings(starting_point_table: Path) -> Tuple[str, str]:
+def _load_ml_text_settings(starting_point_table: Path) -> Tuple[str, MLMethodConfig]:
     fit_metric = "mse"
-    ml_method = "neural network"
+    ml_method = load_required_ml_method(starting_point_table)
 
-    if not starting_point_table.exists():
-        return fit_metric, ml_method
-
-    try:
-        df = pd.read_excel(starting_point_table, sheet_name="ML", engine="openpyxl")
-    except Exception:
-        return fit_metric, ml_method
+    df = pd.read_excel(starting_point_table, sheet_name="ML", engine="openpyxl")
 
     for _, row in df.iterrows():
         method = str(row.get("Method") or "").strip().lower()
@@ -284,8 +279,6 @@ def _load_ml_text_settings(starting_point_table: Path) -> Tuple[str, str]:
 
         if parameter == "fit_metric":
             fit_metric = value
-        elif parameter == "ml_method":
-            ml_method = value
 
     return fit_metric, ml_method
 
@@ -922,14 +915,21 @@ def main(argv: Optional[list[str]] = None) -> int:
                 base_year=base_year,
                 end_year=forecast_year,
                 fit_metric=fit_metric,
-                ml_method=ml_method,
+                ml_method=ml_method.normalized_value,
             )
         except Exception as exc:
             log(
-                "warn",
+                "error",
                 "Failed to record IFs version metadata",
                 error=str(exc),
             )
+            emit_stage_response(
+                "error",
+                "model_setup",
+                str(exc),
+                {},
+            )
+            return 1
         else:
             log(
                 "info",
@@ -939,6 +939,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             # Clean up version_payload to avoid duplicate keys
             version_payload.pop("status", None)
             version_payload.pop("message", None)
+            version_payload["ml_method_runtime"] = ml_method.model_type
+            version_payload["ml_method_workbook"] = ml_method.raw_value
             log("info", "IFs version metadata recorded", **version_payload)
             ifs_id_value = version_payload.get("ifs_id")
             if ifs_id_value is not None:

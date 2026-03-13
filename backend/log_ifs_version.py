@@ -23,6 +23,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--base-year", type=int, required=True, help="Base year for the model")
     parser.add_argument("--end-year", type=int, required=True, help="End year for the model")
+    parser.add_argument("--ml-method", required=True, help="Normalized ML method used at runtime")
     return parser
 
 
@@ -313,12 +314,14 @@ def log_version_metadata(
     base_year: int,
     end_year: int,
     fit_metric: str = "mse",
-    ml_method: str = "neural network",
+    ml_method: str,
 ) -> Dict[str, Any]:
     version_raw = _read_version_string(ifs_root)
     version_number = _normalize_version(version_raw)
     fit_metric = _normalize_ml_text(fit_metric, "mse")
-    ml_method = _normalize_ml_text(ml_method, "neural network")
+    ml_method = _normalize_ml_text(ml_method, "")
+    if not ml_method:
+        raise ValueError("A valid ml_method is required to record IFs version metadata.")
 
     db_path = output_folder / "bigpopa.db"
     _ensure_database(db_path)
@@ -433,6 +436,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             output_folder=Path(args.output_folder),
             base_year=args.base_year,
             end_year=args.end_year,
+            ml_method=args.ml_method,
         )
     except Exception as exc:
         error_payload = {"status": "error", "message": str(exc)}

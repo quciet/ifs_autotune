@@ -13,12 +13,12 @@ import argparse
 import math
 import json
 import os
+import secrets
 import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from itertools import product
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -29,11 +29,17 @@ sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import dataset_utils
+from ml_method import load_required_ml_method
 from model_setup import canonical_config, ensure_model_output_tracking_columns, hash_model_id
 from optimization.active_learning import active_learning_loop
+from optimization.ensemble_training import (
+    estimate_prediction_chunk_size,
+    validate_surrogate_memory,
+)
 
 
 FAIL_Y: float = float(os.getenv("BIGPOPA_FAIL_Y", "1e6"))
+DEFAULT_ML_MEMORY_BUDGET_MB: float = float(os.getenv("BIGPOPA_ML_MEMORY_BUDGET_MB", "512"))
 
 @dataclass(frozen=True)
 class UserDimensionConfig:
@@ -86,6 +92,31 @@ def stop_requested(stop_file: Path | None) -> bool:
         return stop_file.exists()
     except OSError:
         return False
+
+
+def _resolve_run_seed(seed_value: int | None) -> int:
+    if seed_value is not None:
+        return int(seed_value)
+    return secrets.randbits(63)
+
+
+def _memory_budget_bytes() -> int:
+    budget_mb = DEFAULT_ML_MEMORY_BUDGET_MB
+    if not math.isfinite(budget_mb) or budget_mb <= 0:
+        raise ValueError("BIGPOPA_ML_MEMORY_BUDGET_MB must be a positive finite number.")
+    return int(budget_mb * 1024 * 1024)
+
+
+def _validate_candidate_pool_size(*, n_rows: int, n_dimensions: int, budget_bytes: int) -> None:
+    if n_rows < 0 or n_dimensions < 0:
+        raise ValueError("Candidate-pool size inputs must be non-negative.")
+    estimated_bytes = int(n_rows) * int(n_dimensions) * np.dtype(float).itemsize
+    if estimated_bytes > budget_bytes:
+        raise ValueError(
+            "Candidate pool requires approximately "
+            f"{estimated_bytes / 1024 / 1024:.1f} MiB, which exceeds the configured "
+            f"memory budget of {budget_bytes / 1024 / 1024:.1f} MiB."
+        )
 
 
 # --- Flattening helpers ----------------------------------------------------
@@ -436,8 +467,13 @@ def _build_search_space(
     return search_space
 
 
-def _sample_grid(ranges: List[Tuple[float, float]], n_samples: int = 200) -> np.ndarray:
-    rng = np.random.default_rng(0)
+def _sample_grid(
+    ranges: List[Tuple[float, float]],
+    n_samples: int = 200,
+    *,
+    run_seed: int | None = None,
+) -> np.ndarray:
+    rng = np.random.default_rng(run_seed)
     return _sample_ranges(ranges, n_samples=n_samples, rng=rng)
 
 
@@ -450,11 +486,14 @@ def _sample_ranges(
     if not ranges:
         return np.empty((n_samples, 0), dtype=float)
 
-    samples = []
-    for _ in range(n_samples):
-        point = [rng.uniform(low, high) if low != high else low for low, high in ranges]
-        samples.append(point)
-    return np.asarray(samples, dtype=float)
+    bounds = np.asarray(ranges, dtype=float)
+    low = bounds[:, 0]
+    high = bounds[:, 1]
+    samples = rng.uniform(low=low, high=high, size=(n_samples, len(ranges)))
+    equal_mask = np.isclose(low, high)
+    if np.any(equal_mask):
+        samples[:, equal_mask] = low[equal_mask]
+    return samples.astype(float, copy=False)
 
 
 def _has_grid_configuration(search_space: list[SearchDimension]) -> bool:
@@ -543,7 +582,28 @@ def _infer_grid_level_counts(search_space: list[SearchDimension], n_samples: int
     return counts
 
 
-def _generate_candidate_grid(search_space: list[SearchDimension], n_samples: int) -> np.ndarray:
+def _cartesian_product(level_values: list[np.ndarray]) -> np.ndarray:
+    total_rows = math.prod(len(values) for values in level_values)
+    total_dimensions = len(level_values)
+    grid = np.empty((total_rows, total_dimensions), dtype=float)
+
+    repeat_block = total_rows
+    for column_index, values in enumerate(level_values):
+        value_array = np.asarray(values, dtype=float)
+        repeat_block //= len(value_array)
+        pattern = np.repeat(value_array, repeat_block)
+        tile_count = total_rows // len(pattern)
+        grid[:, column_index] = np.tile(pattern, tile_count)
+
+    return grid
+
+
+def _generate_candidate_grid(
+    search_space: list[SearchDimension],
+    n_samples: int,
+    *,
+    memory_budget_bytes: int | None = None,
+) -> np.ndarray:
     if not search_space:
         return np.empty((n_samples, 0), dtype=float)
 
@@ -557,7 +617,14 @@ def _generate_candidate_grid(search_space: list[SearchDimension], n_samples: int
         else:
             level_values.append(_generate_levels_for_count(dimension, inferred_count))
 
-    return np.asarray(list(product(*(values.tolist() for values in level_values))), dtype=float)
+    total_rows = math.prod(len(values) for values in level_values)
+    if memory_budget_bytes is not None:
+        _validate_candidate_pool_size(
+            n_rows=total_rows,
+            n_dimensions=len(search_space),
+            budget_bytes=memory_budget_bytes,
+        )
+    return _cartesian_product(level_values)
 
 
 def _split_search_space(
@@ -575,7 +642,13 @@ def _split_search_space(
     return explicit_dimensions, free_dimensions
 
 
-def _generate_hybrid_candidate_grid(search_space: list[SearchDimension], n_samples: int) -> np.ndarray:
+def _generate_hybrid_candidate_grid(
+    search_space: list[SearchDimension],
+    n_samples: int,
+    *,
+    run_seed: int | None = None,
+    memory_budget_bytes: int | None = None,
+) -> np.ndarray:
     if not search_space:
         return np.empty((n_samples, 0), dtype=float)
 
@@ -584,12 +657,21 @@ def _generate_hybrid_candidate_grid(search_space: list[SearchDimension], n_sampl
         return _sample_grid(
             [(dimension.minimum, dimension.maximum) for dimension in search_space],
             n_samples=n_samples,
+            run_seed=run_seed,
         )
     if not free_dimensions:
-        return _generate_candidate_grid(search_space, n_samples=n_samples)
+        return _generate_candidate_grid(
+            search_space,
+            n_samples=n_samples,
+            memory_budget_bytes=memory_budget_bytes,
+        )
 
     explicit_search_space = [dimension for _, dimension in explicit_dimensions]
-    explicit_grid = _generate_candidate_grid(explicit_search_space, n_samples=n_samples)
+    explicit_grid = _generate_candidate_grid(
+        explicit_search_space,
+        n_samples=n_samples,
+        memory_budget_bytes=memory_budget_bytes,
+    )
     explicit_count = explicit_grid.shape[0]
     if explicit_count > n_samples:
         raise ValueError(
@@ -599,22 +681,28 @@ def _generate_hybrid_candidate_grid(search_space: list[SearchDimension], n_sampl
 
     base_count, remainder = divmod(n_samples, explicit_count)
     free_ranges = [(dimension.minimum, dimension.maximum) for _, dimension in free_dimensions]
-    rng = np.random.default_rng(0)
-    rows: list[np.ndarray] = []
+    rng = np.random.default_rng(run_seed)
     total_dimensions = len(search_space)
+    if memory_budget_bytes is not None:
+        _validate_candidate_pool_size(
+            n_rows=n_samples,
+            n_dimensions=total_dimensions,
+            budget_bytes=memory_budget_bytes,
+        )
+    rows = np.empty((n_samples, total_dimensions), dtype=float)
+    start = 0
 
     for combo_index, explicit_values in enumerate(explicit_grid):
         sample_count = base_count + (1 if combo_index < remainder else 0)
         free_samples = _sample_ranges(free_ranges, n_samples=sample_count, rng=rng)
-        for free_values in free_samples:
-            row = np.empty(total_dimensions, dtype=float)
-            for value, (dimension_index, _) in zip(explicit_values, explicit_dimensions):
-                row[dimension_index] = value
-            for value, (dimension_index, _) in zip(free_values, free_dimensions):
-                row[dimension_index] = value
-            rows.append(row)
+        stop = start + sample_count
+        for value, (dimension_index, _) in zip(explicit_values, explicit_dimensions):
+            rows[start:stop, dimension_index] = value
+        for free_column, (dimension_index, _) in enumerate(free_dimensions):
+            rows[start:stop, dimension_index] = free_samples[:, free_column]
+        start = stop
 
-    return np.asarray(rows, dtype=float)
+    return rows
 
 
 def _switch_is_on(value: object) -> bool:
@@ -1048,6 +1136,13 @@ def main(argv: list[str] | None = None) -> int:
         dest="stop_file",
         help="Path to a sentinel file requesting graceful stop after the current run",
     )
+    parser.add_argument(
+        "--random-seed",
+        dest="random_seed",
+        type=int,
+        default=None,
+        help="Optional seed controlling candidate-pool generation for reproducible runs",
+    )
 
     args = parser.parse_args(argv)
     args.output_folder = os.path.abspath(args.output_folder)
@@ -1112,6 +1207,9 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     try:
+        memory_budget_bytes = _memory_budget_bytes()
+        run_seed = _resolve_run_seed(args.random_seed)
+        ml_method_config = load_required_ml_method(starting_point_table)
         (
             n_sample,
             n_max_iteration,
@@ -1119,6 +1217,17 @@ def main(argv: list[str] | None = None) -> int:
             min_convergence_pct,
         ) = _load_ml_settings(starting_point_table)
         user_param_configs, user_coef_configs = _load_user_search_configs(starting_point_table)
+        print(
+            (
+                "Using ML method from workbook: "
+                f"raw='{ml_method_config.raw_value}', "
+                f"normalized='{ml_method_config.normalized_value}', "
+                f"runtime_model='{ml_method_config.model_type}', "
+                f"run_seed={run_seed}, "
+                f"memory_budget_mb={memory_budget_bytes / 1024 / 1024:.1f}"
+            ),
+            flush=True,
+        )
 
         structure = dataset_utils.extract_structure_keys(input_param, input_coef, output_set)
         samples = dataset_utils.load_compatible_training_samples(
@@ -1162,17 +1271,44 @@ def main(argv: list[str] | None = None) -> int:
             user_param_configs,
             user_coef_configs,
         )
+        _validate_candidate_pool_size(
+            n_rows=n_sample,
+            n_dimensions=len(search_space),
+            budget_bytes=memory_budget_bytes,
+        )
         if _has_grid_configuration(search_space):
             explicit_dimensions, free_dimensions = _split_search_space(search_space)
             if explicit_dimensions and free_dimensions:
-                X_grid = _generate_hybrid_candidate_grid(search_space, n_samples=n_sample)
+                X_grid = _generate_hybrid_candidate_grid(
+                    search_space,
+                    n_samples=n_sample,
+                    run_seed=run_seed,
+                    memory_budget_bytes=memory_budget_bytes,
+                )
             else:
-                X_grid = _generate_candidate_grid(search_space, n_samples=n_sample)
+                X_grid = _generate_candidate_grid(
+                    search_space,
+                    n_samples=n_sample,
+                    memory_budget_bytes=memory_budget_bytes,
+                )
         else:
             X_grid = _sample_grid(
                 [(dimension.minimum, dimension.maximum) for dimension in search_space],
                 n_samples=n_sample,
+                run_seed=run_seed,
             )
+        validate_surrogate_memory(
+            n_observations=max(len(X_obs), 1),
+            n_candidates=max(len(X_grid), 1),
+            n_dimensions=len(search_space),
+            model_type=ml_method_config.model_type,
+            memory_budget_bytes=memory_budget_bytes,
+        )
+        prediction_chunk_size = estimate_prediction_chunk_size(
+            n_dimensions=len(search_space),
+            model_type=ml_method_config.model_type,
+            memory_budget_bytes=memory_budget_bytes,
+        )
 
         trial_counter = {"value": 0}
 
@@ -1201,8 +1337,11 @@ def main(argv: list[str] | None = None) -> int:
             Y_obs=np.asarray(Y_obs),
             X_grid=X_grid,
             n_iters=n_max_iteration,
+            model_type=ml_method_config.model_type,
             patience=n_convergence,
             min_improve_pct=min_convergence_pct,
+            prediction_chunk_size=prediction_chunk_size,
+            memory_budget_bytes=memory_budget_bytes,
             should_stop=lambda: stop_requested(stop_file),
         )
 
