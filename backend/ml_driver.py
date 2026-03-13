@@ -29,7 +29,7 @@ sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import dataset_utils
-from ml_method import load_required_ml_method
+from ml_method import normalize_ml_method
 from model_setup import canonical_config, ensure_model_output_tracking_columns, hash_model_id
 from optimization.active_learning import active_learning_loop
 from optimization.ensemble_training import (
@@ -297,6 +297,27 @@ def _load_model_by_id(
         json.loads(os_raw),
         dataset_id,   # keep dataset_id as string
     )
+
+
+def _load_persisted_ml_method(conn: sqlite3.Connection, ifs_id: int):
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT ml_method FROM ifs_version WHERE ifs_id = ? LIMIT 1",
+        (ifs_id,),
+    )
+    row = cursor.fetchone()
+    if not row or row[0] is None:
+        raise ValueError(
+            "bigpopa.db is missing ifs_version.ml_method for the selected model. "
+            "Please rerun model setup."
+        )
+    try:
+        return normalize_ml_method(row[0])
+    except ValueError as exc:
+        raise ValueError(
+            "bigpopa.db contains an invalid ifs_version.ml_method for the selected model. "
+            "Please rerun model setup."
+        ) from exc
 
 
 def _get_ifs_static_id(conn: sqlite3.Connection, ifs_id: int) -> Tuple[int | None, int | None]:
@@ -1209,7 +1230,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         memory_budget_bytes = _memory_budget_bytes()
         run_seed = _resolve_run_seed(args.random_seed)
-        ml_method_config = load_required_ml_method(starting_point_table)
+        ml_method_config = _load_persisted_ml_method(conn, ifs_id)
         (
             n_sample,
             n_max_iteration,
@@ -1219,8 +1240,8 @@ def main(argv: list[str] | None = None) -> int:
         user_param_configs, user_coef_configs = _load_user_search_configs(starting_point_table)
         print(
             (
-                "Using ML method from workbook: "
-                f"raw='{ml_method_config.raw_value}', "
+                "Using ML method from bigpopa.db: "
+                f"persisted='{ml_method_config.raw_value}', "
                 f"normalized='{ml_method_config.normalized_value}', "
                 f"runtime_model='{ml_method_config.model_type}', "
                 f"run_seed={run_seed}, "

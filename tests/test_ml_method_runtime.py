@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 import ml_driver
+import model_setup
 from ml_method import load_required_ml_method
 from optimization import active_learning
 from optimization.ensemble_training import validate_surrogate_memory
@@ -29,7 +30,12 @@ def _write_workbook(path: Path, *, ml_method: str | None) -> None:
         pd.DataFrame(rows).to_excel(writer, sheet_name="ML", index=False)
 
 
-def _create_bigpopa_db(path: Path, *, initial_model_id: str = "initial-model") -> None:
+def _create_bigpopa_db(
+    path: Path,
+    *,
+    initial_model_id: str = "initial-model",
+    persisted_ml_method: str | None = "tree",
+) -> None:
     conn = sqlite3.connect(path)
     try:
         cursor = conn.cursor()
@@ -87,7 +93,7 @@ def _create_bigpopa_db(path: Path, *, initial_model_id: str = "initial-model") -
             INSERT INTO ifs_version (ifs_id, ifs_static_id, base_year, end_year, fit_metric, ml_method)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (1, 1, 2020, 2030, "mse", "tree"),
+            (1, 1, 2020, 2030, "mse", persisted_ml_method),
         )
         conn.commit()
     finally:
@@ -106,12 +112,16 @@ def _dimension() -> ml_driver.SearchDimension:
 
 
 @pytest.mark.parametrize(
-    ("workbook_value", "expected_model_type"),
-    [("neural network", "nn"), ("poly", "poly")],
+    ("persisted_ml_method", "workbook_value", "expected_model_type"),
+    [
+        ("neural network", "tree", "nn"),
+        ("poly", "neural network", "poly"),
+    ],
 )
-def test_ml_driver_uses_workbook_ml_method(
+def test_ml_driver_uses_db_ml_method_even_when_workbook_differs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    persisted_ml_method: str,
     workbook_value: str,
     expected_model_type: str,
 ) -> None:
@@ -119,7 +129,7 @@ def test_ml_driver_uses_workbook_ml_method(
     output_dir.mkdir()
     db_path = output_dir / "bigpopa.db"
     workbook_path = tmp_path / "StartingPointTable.xlsx"
-    _create_bigpopa_db(db_path)
+    _create_bigpopa_db(db_path, persisted_ml_method=persisted_ml_method)
     _write_workbook(workbook_path, ml_method=workbook_value)
 
     monkeypatch.setattr(
@@ -166,7 +176,7 @@ def test_ml_driver_uses_workbook_ml_method(
     assert captured["model_type"] == expected_model_type
 
 
-def test_ml_driver_fails_when_ml_method_is_missing(
+def test_ml_driver_works_when_workbook_omits_ml_method_but_db_has_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -174,8 +184,65 @@ def test_ml_driver_fails_when_ml_method_is_missing(
     output_dir.mkdir()
     db_path = output_dir / "bigpopa.db"
     workbook_path = tmp_path / "StartingPointTable.xlsx"
-    _create_bigpopa_db(db_path)
+    _create_bigpopa_db(db_path, persisted_ml_method="tree")
     _write_workbook(workbook_path, ml_method=None)
+
+    monkeypatch.setattr(
+        ml_driver.dataset_utils,
+        "load_compatible_training_samples",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        ml_driver,
+        "_build_search_space",
+        lambda *args, **kwargs: [_dimension()],
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_active_learning_loop(**kwargs):
+        captured["model_type"] = kwargs["model_type"]
+        return (
+            np.asarray([[0.5]], dtype=float),
+            np.asarray([1.0], dtype=float),
+            np.asarray([], dtype=object),
+            {},
+            False,
+        )
+
+    monkeypatch.setattr(ml_driver, "active_learning_loop", fake_active_learning_loop)
+
+    exit_code = ml_driver.main(
+        [
+            "--ifs-root",
+            str(tmp_path),
+            "--end-year",
+            "2030",
+            "--output-folder",
+            str(output_dir),
+            "--initial-model-id",
+            "initial-model",
+            "--starting-point-table",
+            str(workbook_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["model_type"] == "tree"
+
+
+@pytest.mark.parametrize("persisted_ml_method", [None, "svm"])
+def test_ml_driver_fails_when_db_ml_method_is_missing_or_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    persisted_ml_method: str | None,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    workbook_path = tmp_path / "StartingPointTable.xlsx"
+    _create_bigpopa_db(db_path, persisted_ml_method=persisted_ml_method)
+    _write_workbook(workbook_path, ml_method="neural network")
 
     called = {"value": False}
 
@@ -210,6 +277,17 @@ def test_load_required_ml_method_rejects_invalid_value(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Unsupported ML method"):
         load_required_ml_method(workbook_path)
+
+
+def test_model_setup_reads_and_normalizes_workbook_ml_method(tmp_path: Path) -> None:
+    workbook_path = tmp_path / "StartingPointTable.xlsx"
+    _write_workbook(workbook_path, ml_method="neural network")
+
+    fit_metric, ml_method = model_setup._load_ml_text_settings(workbook_path)
+
+    assert fit_metric == "mse"
+    assert ml_method.normalized_value == "neural network"
+    assert ml_method.model_type == "nn"
 
 
 def test_active_learning_requires_explicit_model_type() -> None:
