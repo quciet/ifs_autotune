@@ -1395,7 +1395,7 @@ function TuneIFsPage({
               )}
               {typeof runResult.best_fit_pooled === "number" && (
                 <li>
-                  <strong>Best pooled fit (MSE):</strong>{" "}
+                  <strong>Best pooled fit:</strong>{" "}
                   {runResult.best_fit_pooled.toFixed(4)}
                 </li>
               )}
