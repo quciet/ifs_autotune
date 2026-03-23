@@ -38,9 +38,9 @@ The backend validation step checks:
 The validation response also advertises `Step` and `LevelCount` as optional workbook columns for `IFsVar`, `TablFunc`, and `AnalFunc`, but it does not require them.
 
 Base year detection comes from `IFsInit.db`:
-- BIGPOPA first looks for `LastYearHistory%`.
-- It also looks for `FirstYearForecast%`.
-- If both are present and consistent, it prefers the historical year as the base year.
+- BIGPOPA first looks for `LastYearHistory%`
+- it also looks for `FirstYearForecast%`
+- if both are present and consistent, it prefers the historical year as the base year
 
 ## 2. Model Setup
 
@@ -51,6 +51,8 @@ It:
 - imports parameter metadata into the `parameter` table
 - imports coefficient metadata into the `coefficient` table
 - reads workbook selections
+- reads and normalizes the workbook `ml_method`
+- persists `ml_method` and `fit_metric` into `ifs_version`
 - builds a deterministic baseline config
 - inserts that config into `model_input`
 - runs extraction immediately so the baseline gets a score
@@ -60,6 +62,7 @@ It:
 - Parameters come from enabled rows in `IFsVar`.
 - Coefficients come from enabled rows in `TablFunc` and `AnalFunc`.
 - Output variables come from enabled rows in `DataDict`.
+- Runtime ML controls such as `n_sample`, `n_max_iteration`, `n_convergence`, and `min_convergence_pct` remain workbook-driven.
 
 ### Where the baseline values come from
 
@@ -77,8 +80,8 @@ If a selected parameter is missing from the `parameter` table, model setup fails
   A SHA-256 hash of the canonicalized baseline configuration, including rounded numeric values.
 
 These IDs matter later:
-- `dataset_id` controls which prior runs are considered structurally compatible for ML training history.
-- `model_id` controls exact-result reuse for identical configurations.
+- `dataset_id` controls which prior runs are considered structurally compatible for ML training history
+- `model_id` controls exact-result reuse for identical configurations
 
 ### Baseline extraction
 
@@ -90,18 +93,61 @@ Once model setup succeeds, the UI starts `ml_driver.py`.
 
 The ML driver:
 - loads the selected baseline config from `model_input`
+- loads `ml_method` and `fit_metric` from `ifs_version`
 - loads compatible historical samples using `dataset_id`
 - builds parameter and coefficient search bounds
-- generates a candidate pool
-- runs active learning against that candidate pool
+- builds the refreshed proposal generator
+- runs active learning against a per-iteration candidate pool
+
+### What the observed training set looks like at the start
+
+Before the first new IFs run, the ML process already has observations:
+- the scored baseline model
+- any prior compatible runs from the same `dataset_id` cohort that already have `fit_pooled`
+
+That observed set becomes the initial training data for the surrogate ensemble.
+
+### Current control split
+
+Still read from `StartingPointTable.xlsx` at runtime:
+- `n_sample`
+- `n_max_iteration`
+- `n_convergence`
+- `min_convergence_pct`
+
+Persisted in `bigpopa.db` and replayed by the ML process:
+- `ifs_version.ml_method`
+- `ifs_version.fit_metric`
+
+### Runtime loop
+
+The active-learning loop now works like this:
+
+1. Train a surrogate ensemble on all currently observed compatible samples.
+2. Build a fresh candidate pool for the current iteration.
+3. Rank that pool with the acquisition function.
+4. Select the best unevaluated candidate.
+5. Reuse a prior score if the same `model_id` already exists.
+6. Otherwise run IFs, extract outputs, compute fit scores, and append the result.
+7. Repeat until the run converges, exhausts the iteration budget, or is stopped.
+
+### Candidate-pool lifecycle
+
+The candidate pool is no longer one persistent `X_grid` for the whole run.
+
+Current behavior:
+- a fresh proposal pool is generated each iteration
+- the pool exists in RAM only for the current iteration
+- it is not written to `bigpopa.db`
+- BIGPOPA logs the realized pool shape and raw NumPy memory size when it is generated
 
 ### Candidate evaluation lifecycle
 
 For each chosen candidate:
-- BIGPOPA reconstructs parameter and coefficient dictionaries from the numeric vector.
-- It hashes the canonical configuration into a `model_id`.
-- If that `model_id` already has a `fit_pooled` value in `model_output`, BIGPOPA reuses the score instead of running IFs again.
-- Otherwise it inserts the config into `model_input` and launches `run_ifs.py`.
+- BIGPOPA reconstructs parameter and coefficient dictionaries from the numeric vector
+- it hashes the canonical configuration into a `model_id`
+- if that `model_id` already has a `fit_pooled` value in `model_output`, BIGPOPA reuses the score instead of running IFs again
+- otherwise it inserts the config into `model_input` and launches `run_ifs.py`
 
 ## 4. IFs Execution
 
@@ -146,7 +192,7 @@ It:
 - computes per-variable and pooled fit metrics
 - updates `model_output.fit_var` and `model_output.fit_pooled`
 
-The fit metric is controlled by `ifs_version.fit_metric`, which is populated from the workbook `ML` sheet during model setup.
+The fit metric is controlled by `ifs_version.fit_metric`, which is populated during model setup and replayed during the ML run.
 
 ## 6. Output Layout
 
@@ -180,10 +226,8 @@ The backend uses several statuses in `model_output`:
 
 In practice, the final success state for a scored model is `evaluated`.
 
-## Notes On Current Workbook Behavior
+## Current Limitations
 
-There is a small implementation detail worth knowing:
-- baseline parameter and `DataDict` output selection currently filter rows where `Switch == 1`
-- grid/search-config parsing accepts numeric `1` or the string `on`
-
-If a workbook uses text flags, it is safest to use numeric `1` for baseline selection fields.
+- `run_seed` makes the refreshed proposal pool reproducible, but it does not yet guarantee full neural-network reproducibility because ensemble bootstrap and PyTorch initialization are not fully tied to the same seed path.
+- `direct` proposal mode exists as a planned placeholder in the codebase, but the active desktop flow uses the `refreshed` generator path.
+- If a refreshed proposal pool happens to be fully covered by already cached results, the current loop can stop even if unexplored points still exist outside that sampled pool.

@@ -2,6 +2,8 @@
 
 This document captures the tuning logic that is easy to miss when only using the UI. It is based on the current implementation in `model_setup.py`, `ml_driver.py`, `dataset_utils.py`, `log_ifs_version.py`, and `extract_compare.py`.
 
+For the training and acquisition details of the surrogate model itself, see [ML Process And Neural-Network Search](ML_PROCESS.md).
+
 ## Workbook Responsibilities
 
 BIGPOPA reads several sheets from `StartingPointTable.xlsx`.
@@ -20,7 +22,7 @@ BIGPOPA reads several sheets from `StartingPointTable.xlsx`.
 ### Optional sheet
 
 - `ML`
-  Configures ML run settings such as sample count, stopping rules, fit metric, and ML method text.
+  Configures runtime ML settings such as sample count, stopping rules, fit metric, and ML method text.
 
 Validation requires the first four sheets. The `ML` sheet is optional. If it is missing or unreadable, BIGPOPA falls back to defaults.
 
@@ -144,132 +146,162 @@ Then BIGPOPA uses:
 
 If the same coefficient has only an Excel maximum of `4.0`, BIGPOPA still preserves positivity because Excel did not fully specify both bounds.
 
-## Grid And Random Modes
+## Search-Space Roles
 
-BIGPOPA has two sampling families:
-- legacy random sampling
-- grid-aware sampling
+Once bounds are built, each tuned dimension falls into one of two roles:
 
-The switch is simple:
-- if no enabled dimension has `Step` or `LevelCount`, BIGPOPA uses random sampling
-- if any enabled dimension has `Step` or `LevelCount`, BIGPOPA switches into grid-aware mode
+- explicit dimensions
+  Dimensions with `Step` or `LevelCount`. These create discrete level sets.
+- free dimensions
+  Dimensions without `Step` or `LevelCount`. These remain continuous and are sampled within bounds.
 
-## Random Mode
+This distinction now drives the refreshed proposal policy.
 
-In legacy random mode:
-- candidate values are drawn independently and uniformly inside each dimension range
-- a fixed RNG seed of `0` is used
-- identical inputs produce the same candidate pool
+## Refreshed Proposal Policy
 
-If a dimension has identical low and high bounds, that dimension stays constant in every sample.
+The current desktop flow uses a refreshed proposal generator, not one fixed candidate matrix for the whole run.
 
-## Explicit Grid Rules
+Current default:
+- proposal mode is `refreshed`
+- `candidate_refresh_interval = 1`
 
-`Step` and `LevelCount` are read from:
-- `IFsVar` for parameters
-- `TablFunc` and `AnalFunc` for coefficients
+That means BIGPOPA rebuilds a new proposal pool every iteration.
 
-### Parsing rules
+### What `n_sample` means now
 
-- `Step` must be numeric, finite, and greater than `0`
-- `LevelCount` must be numeric, finite, an integer, and at least `1`
-- if both are supplied, `Step` wins
+`n_sample` is still the workbook-controlled cap on the per-iteration proposal pool size.
 
-### `Step` semantics
+In the current policy:
+- BIGPOPA targets up to `n_sample` candidate rows per iteration
+- those rows are allocated across selected discrete combinations
+- the realized pool is deduplicated and then backfilled if needed
 
-Stepped values:
-- start at `Minimum`
-- repeatedly add `Step`
-- stop before the next value would exceed `Maximum`
+The current pool exists in RAM only for that iteration and is not persisted to `bigpopa.db`.
 
-BIGPOPA does not force the maximum endpoint to appear unless the step lands on it.
+## Discrete Combination Selection
 
-### `LevelCount` semantics
+BIGPOPA first decides which explicit discrete combinations to consider for the current iteration.
 
-- `LevelCount > 1` uses `linspace(minimum, maximum, level_count)`
-- `LevelCount = 1` uses the dimension default, clipped into `[minimum, maximum]`
+### Small discrete spaces
 
-### Example
+If the Cartesian product of all explicit dimensions is small enough, BIGPOPA enumerates every discrete combination.
 
-If:
-- minimum `0`
-- maximum `1`
-- step `0.4`
+The current threshold is controlled by:
+- `MAX_ENUMERATED_DISCRETE_COMBINATIONS = 4096`
+- and the current `n_sample`
 
-Then the explicit levels are:
-- `0.0`
-- `0.4`
-- `0.8`
+Enumeration happens when:
+- `total_possible <= min(4096, n_sample)`
 
-The value `1.0` is not added because the next stepped point would overshoot.
+### Large discrete spaces
 
-## Full Cartesian Grid
+If the discrete product is larger than that threshold, BIGPOPA does not enumerate everything.
 
-If all tuned dimensions are explicit, BIGPOPA builds the Cartesian product of their level values.
+Instead it:
+- computes a discrete-combination budget from `n_sample`
+- uses a balanced subset sampler
+- tries to spread representation across the level values of each explicit dimension
 
-If some dimensions are explicit and others are not, BIGPOPA can still create a grid-like pool by inferring counts for the unspecified dimensions.
+Current behavior uses:
+- at least about `4` total candidates per selected discrete combination
+- deduplication of repeated sampled combinations
 
-### Role of `n_sample`
+This makes the discrete side of the search broader than greedy random picking without requiring a full Cartesian explosion.
 
-In grid-aware mode, `n_sample` is not always the exact number of final combinations from the start. Instead it is the cap or target used to decide how dense the candidate pool is allowed to become.
+## Candidate Allocation Within Each Discrete Combination
 
-For unspecified dimensions:
-- BIGPOPA starts each one at a level count of `1`
-- it repeatedly increments the currently smallest count
-- ties are broken deterministically by dimension key
-- it stops when another increment would push the total Cartesian product above `n_sample`
+After BIGPOPA chooses the discrete combinations for the current iteration, it divides the total `n_sample` budget across them:
 
-If the explicit grid alone already exceeds `n_sample`, BIGPOPA raises an error.
+- `base_count, remainder = divmod(n_sample, combo_count)`
+- each combination gets `base_count`
+- the first `remainder` combinations get one extra row
 
-### Example
+So every chosen discrete combination gets representation in the current proposal pool.
 
-If:
-- one explicit dimension has `20` levels
-- one explicit dimension has `5` levels
-- `n_sample = 99`
+## Global And Local Continuous Proposals
 
-Then BIGPOPA fails because the explicit grid already requires `100` combinations.
+For each selected discrete combination, BIGPOPA fills the free dimensions with a mix of global and local proposals.
 
-## Hybrid Grid
+### Global proposals
 
-Hybrid mode happens when:
-- at least one dimension is explicit
-- at least one dimension is still free
+A fraction of each combination's rows is sampled uniformly across the full allowed bounds of the free dimensions.
 
-In this case BIGPOPA:
-1. builds the explicit Cartesian grid
-2. divides `n_sample` across those explicit combinations
-3. randomly samples the free dimensions inside each explicit combination
+Current default:
+- `DEFAULT_GLOBAL_PROPOSAL_FRACTION = 0.25`
 
-The allocation rule is:
-- `base_count, remainder = divmod(n_sample, explicit_count)`
-- each explicit combination gets `base_count`
-- the first `remainder` combinations get one extra sample
+In plain language, about 25% of each combination's candidates are broad exploration points.
 
-This means:
-- every explicit combination is represented
-- extra budget is assigned deterministically to the earliest combinations
+### Local proposals
 
-### Example
+The remaining rows are sampled around the current best observed regions.
 
-If:
-- explicit combinations = `6`
-- `n_sample = 20`
+Current behavior:
+- seed rows come from the top `k=5` best observed samples by `fit_pooled`
+- if possible, BIGPOPA prefers top observed rows matching the same discrete combination
+- if no matching top rows exist, it falls back to the global top rows
 
-Then the allocation becomes:
-- first `2` combinations get `4` samples each
-- remaining `4` combinations get `3` samples each
+These local rows are sampled with a Gaussian draw around the seed point and clipped back into the configured bounds.
+
+## Adaptive Local Radius
+
+Local proposals narrow over time.
+
+Current defaults:
+- initial local radius fraction: `0.15`
+- decay factor per iteration: `0.85`
+- minimum local radius fraction: `0.05`
+
+That means:
+- early iterations explore broader neighborhoods around good points
+- later iterations tighten around the best observed regions
+- the local neighborhood never shrinks below 5% of the dimension span
+
+## Deduplication And Backfill
+
+The refreshed pool is deduplicated before it is used.
+
+Current behavior:
+- each row is rounded for deduplication
+- if duplicates reduce the pool below the requested size, BIGPOPA keeps sampling additional rows
+- those backfill rows respect the same bounds and explicit/free dimension structure
+
+This is why the realized pool can differ from a naive “Cartesian product plus samples” picture.
+
+## Active In-Code Defaults
+
+Current search-policy defaults in code are:
+
+- proposal mode: `refreshed`
+- candidate refresh interval: `1`
+- distance penalty: on
+- distance penalty strength: `0.15`
+- candidate memory budget default: `512 MB`
+- ensemble size: `8`
+- acquisition: `LCB`
+- `kappa` anneals from `1.6` to `0.8`
+- bootstrap: on in the active-learning loop used by `ml_driver.py`
+
+### Distance penalty
+
+The default distance penalty is applied in scaled input space.
+
+Current effect:
+- candidates farther from the baseline default configuration get a higher penalty
+- with LCB, that penalty is added to the acquisition score
+- this gently biases the search back toward default-space proximity unless the surrogate predicts a strong enough benefit elsewhere
 
 ## ML Settings From The `ML` Sheet
 
 BIGPOPA reads `ML` rows where:
 - `Method` is `general`
 
-Supported parameters:
+Still read from the workbook at runtime:
 - `n_sample`
 - `n_max_iteration`
 - `n_convergence`
 - `min_convergence_pct`
+
+Persisted during setup and replayed from `bigpopa.db`:
 - `fit_metric`
 - `ml_method`
 
@@ -338,3 +370,9 @@ If the stored fit metric is missing or unknown, BIGPOPA falls back to `mse`.
 - the final stored `fit_pooled` is `1 - pooled_r2`
 
 That last step is important: even when using `r2`, BIGPOPA stores a loss-like value so lower remains better during optimization.
+
+## Current Limitations
+
+- The refreshed pool is deterministic from `run_seed`, but the full neural-network search is not yet fully reproducible end to end.
+- `direct` proposal mode is a placeholder for a future implementation and is not the active default path.
+- If a refreshed pool is fully covered by cached observations, the current loop can stop even if unexplored points remain outside that sampled pool.
