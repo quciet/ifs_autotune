@@ -19,6 +19,8 @@ declare global {
     started_at_utc: string | null;
     completed_at_utc: string | null;
     dataset_id?: string | null;
+    sequence_index?: number | null;
+    derived_round_index?: number | null;
   }
 
   interface Window {

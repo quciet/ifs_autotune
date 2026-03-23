@@ -10,6 +10,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +54,51 @@ def resolve_dataset_id(
     return dataset_row[0]
 
 
-def normalize_trial_row(row: tuple[Any, ...]) -> dict[str, Any]:
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+
+    return parsed
+
+
+def _trial_sort_key(row: tuple[Any, ...]) -> tuple[Any, ...]:
+    started_at = _parse_iso_timestamp(row[5])
+    completed_at = _parse_iso_timestamp(row[6])
+    primary_timestamp = started_at if started_at is not None else completed_at
+    input_rowid = row[8]
+    output_rowid = row[9]
+
+    return (
+        0 if primary_timestamp is not None else 1,
+        primary_timestamp or datetime.max.replace(tzinfo=timezone.utc),
+        0 if started_at is not None else 1,
+        input_rowid if isinstance(input_rowid, int) else sys.maxsize,
+        output_rowid if isinstance(output_rowid, int) else sys.maxsize,
+        row[0] or "",
+    )
+
+
+def normalize_trial_row(
+    row: tuple[Any, ...],
+    *,
+    sequence_index: int,
+    derived_round_index: int,
+) -> dict[str, Any]:
     model_status = row[1]
     fit_missing = model_status == "failed"
     fit_pooled = None if fit_missing else row[2]
@@ -68,6 +113,8 @@ def normalize_trial_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "started_at_utc": row[5],
         "completed_at_utc": row[6],
         "dataset_id": row[7],
+        "sequence_index": sequence_index,
+        "derived_round_index": derived_round_index,
     }
 
 
@@ -156,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        rows = cursor.execute(
+        raw_rows = cursor.execute(
             """
             SELECT
                 mo.model_id,
@@ -166,7 +213,9 @@ def main(argv: list[str] | None = None) -> int:
                 mo.batch_index,
                 mo.started_at_utc,
                 mo.completed_at_utc,
-                mi.dataset_id
+                mi.dataset_id,
+                mi.rowid,
+                mo.rowid
             FROM model_output mo
             JOIN model_input mi ON mi.model_id = mo.model_id
             WHERE mo.trial_index IS NOT NULL
@@ -174,13 +223,29 @@ def main(argv: list[str] | None = None) -> int:
                 (? IS NULL AND mi.dataset_id IS NULL)
                 OR mi.dataset_id = ?
               )
-            ORDER BY mo.trial_index ASC, mi.rowid ASC, mo.rowid ASC, mo.model_id ASC
             """
             ,
             (dataset_id, dataset_id),
         ).fetchall()
 
-        trials = [normalize_trial_row(row) for row in rows]
+        rows = sorted(raw_rows, key=_trial_sort_key)
+        trials: list[dict[str, Any]] = []
+        derived_round_index = 0
+
+        for sequence_index, row in enumerate(rows, start=1):
+            trial_index = row[3]
+            if sequence_index == 1:
+                derived_round_index = 1
+            elif isinstance(trial_index, int) and trial_index == 1:
+                derived_round_index += 1
+
+            trials.append(
+                normalize_trial_row(
+                    row,
+                    sequence_index=sequence_index,
+                    derived_round_index=derived_round_index,
+                )
+            )
 
         emit_response(
             "success",

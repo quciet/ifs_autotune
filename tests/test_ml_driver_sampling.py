@@ -380,3 +380,7 @@ def test_default_distance_penalty_uses_scaled_distance_from_defaults() -> None:
     assert penalties.shape == (3,)
     assert penalties[0] == pytest.approx(penalties[1])
     assert penalties[2] == pytest.approx(0.0)
+
+
+def test_default_distance_penalty_is_enabled_by_default() -> None:
+    assert ml_driver.ENABLE_DEFAULT_DISTANCE_PENALTY is True

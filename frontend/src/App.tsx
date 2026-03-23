@@ -87,15 +87,28 @@ type TuneIFsPageProps = {
 };
 
 type ChartPoint = {
+  sequenceIndex: number;
+  derivedRoundIndex: number | null;
   trialIndex: number;
   batchIndex: number | null;
   fitPooled: number | null;
   fitMissing: boolean;
   bestSoFar: number | null;
+  startedAtUtc: string | null;
   completedAtUtc: string | null;
   modelId: string | null;
   modelStatus: string | null;
 };
+
+function parseProgressTimestamp(value: string | null | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  const timestamp = parsed.getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
 
 function normalizeProgressTrials(trials: MLProgressTrial[]): ChartPoint[] {
   const sorted = [...trials]
@@ -105,11 +118,53 @@ function normalizeProgressTrials(trials: MLProgressTrial[]): ChartPoint[] {
         Number.isFinite(trial.trial_index) &&
         trial.trial_index >= 0,
     )
-    .sort((left, right) => left.trial_index - right.trial_index);
+    .sort((left, right) => {
+      const leftSequence =
+        typeof left.sequence_index === "number" &&
+        Number.isFinite(left.sequence_index) &&
+        left.sequence_index > 0
+          ? left.sequence_index
+          : null;
+      const rightSequence =
+        typeof right.sequence_index === "number" &&
+        Number.isFinite(right.sequence_index) &&
+        right.sequence_index > 0
+          ? right.sequence_index
+          : null;
+
+      if (leftSequence != null && rightSequence != null && leftSequence !== rightSequence) {
+        return leftSequence - rightSequence;
+      }
+
+      const leftTimestamp =
+        parseProgressTimestamp(left.started_at_utc) ??
+        parseProgressTimestamp(left.completed_at_utc);
+      const rightTimestamp =
+        parseProgressTimestamp(right.started_at_utc) ??
+        parseProgressTimestamp(right.completed_at_utc);
+
+      if (leftTimestamp != null && rightTimestamp != null && leftTimestamp !== rightTimestamp) {
+        return leftTimestamp - rightTimestamp;
+      }
+
+      if (leftTimestamp == null && rightTimestamp != null) {
+        return 1;
+      }
+
+      if (leftTimestamp != null && rightTimestamp == null) {
+        return -1;
+      }
+
+      if (left.trial_index !== right.trial_index) {
+        return left.trial_index - right.trial_index;
+      }
+
+      return (left.model_id ?? "").localeCompare(right.model_id ?? "");
+    });
 
   let bestSoFar: number | null = null;
 
-  return sorted.map((trial) => {
+  return sorted.map((trial, index) => {
     const fitPooled =
       typeof trial.fit_pooled === "number" && Number.isFinite(trial.fit_pooled)
         ? trial.fit_pooled
@@ -121,6 +176,18 @@ function normalizeProgressTrials(trials: MLProgressTrial[]): ChartPoint[] {
     }
 
     return {
+      sequenceIndex:
+        typeof trial.sequence_index === "number" &&
+        Number.isFinite(trial.sequence_index) &&
+        trial.sequence_index > 0
+          ? trial.sequence_index
+          : index + 1,
+      derivedRoundIndex:
+        typeof trial.derived_round_index === "number" &&
+        Number.isFinite(trial.derived_round_index) &&
+        trial.derived_round_index > 0
+          ? trial.derived_round_index
+          : null,
       trialIndex: trial.trial_index,
       batchIndex:
         typeof trial.batch_index === "number" && Number.isFinite(trial.batch_index)
@@ -129,6 +196,7 @@ function normalizeProgressTrials(trials: MLProgressTrial[]): ChartPoint[] {
       fitPooled,
       fitMissing,
       bestSoFar,
+      startedAtUtc: trial.started_at_utc ?? null,
       completedAtUtc: trial.completed_at_utc ?? null,
       modelId: trial.model_id ?? null,
       modelStatus: trial.model_status ?? null,
@@ -188,8 +256,8 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
   const padding = { top: 24, right: 20, bottom: 40, left: 56 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
-  const xMin = Math.min(...points.map((point) => point.trialIndex));
-  const xMax = Math.max(...points.map((point) => point.trialIndex));
+  const xMin = Math.min(...points.map((point) => point.sequenceIndex));
+  const xMax = Math.max(...points.map((point) => point.sequenceIndex));
   const xRangeActual = Math.max(1, xMax - xMin);
   const xRightPadding = Math.max(8, xRangeActual * 0.03);
   const xDisplayMax = xMax + xRightPadding;
@@ -222,7 +290,7 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
     if (point.fitPooled < best.fitPooled) {
       return point;
     }
-    if (point.fitPooled === best.fitPooled && point.trialIndex > best.trialIndex) {
+    if (point.fitPooled === best.fitPooled && point.sequenceIndex > best.sequenceIndex) {
       return point;
     }
     return best;
@@ -230,8 +298,8 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
   const xRange = Math.max(1, xDisplayMax - xMin);
   const yRange = Math.max(1e-9, yMaxDisplay - yMinDisplay);
 
-  const xFor = (trialIndex: number) =>
-    padding.left + ((trialIndex - xMin) / xRange) * plotWidth;
+  const xFor = (sequenceIndex: number) =>
+    padding.left + ((sequenceIndex - xMin) / xRange) * plotWidth;
   const yFor = (value: number) =>
     padding.top + plotHeight - ((value - yMinDisplay) / yRange) * plotHeight;
 
@@ -240,7 +308,7 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
     (_, index) => yMinDisplay + ((yMaxDisplay - yMinDisplay) * index) / 4,
   );
   const xTicks = points.length <= 6
-    ? points.map((point) => point.trialIndex)
+    ? points.map((point) => point.sequenceIndex)
     : Array.from({ length: 6 }, (_, index) => Math.round(xMin + (xRangeActual * index) / 5));
 
   return (
@@ -283,11 +351,12 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
             return null;
           }
 
-          const x = xFor(point.trialIndex);
+          const x = xFor(point.sequenceIndex);
           const isOutlier = point.fitPooled > yCapBase;
           const y = yFor(isOutlier ? yCapBase : point.fitPooled);
+          const eventTimestamp = point.completedAtUtc ?? point.startedAtUtc;
           return (
-            <g key={`point-${point.trialIndex}`}>
+            <g key={`point-${point.sequenceIndex}-${point.modelId ?? "unknown"}`}>
               {isOutlier ? (
                 <polygon
                   points={`${x},${y - 3.5} ${x - 2.75},${y + 1.5} ${x + 2.75},${y + 1.5}`}
@@ -297,26 +366,26 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
                 <circle cx={x} cy={y} r={1.8} className="chart-point" />
               )}
               <title>
-                {`Trial ${point.trialIndex}\nFit ${formatFitValue(point.fitPooled, point.fitMissing)}${isOutlier ? " (above displayed range)" : ""}\nBest ${formatFitValue(point.bestSoFar)}\nStatus ${point.modelStatus ?? "unknown"}\nBatch ${point.batchIndex ?? "N/A"}\n${formatUtcTimestamp(point.completedAtUtc)}`}
+                {`Sequence ${point.sequenceIndex}\nRound ${point.derivedRoundIndex ?? "N/A"}\nTrial ${point.trialIndex}\nFit ${formatFitValue(point.fitPooled, point.fitMissing)}${isOutlier ? " (above displayed range)" : ""}\nBest ${formatFitValue(point.bestSoFar)}\nStatus ${point.modelStatus ?? "unknown"}\nBatch ${point.batchIndex ?? "N/A"}\n${formatUtcTimestamp(eventTimestamp)}`}
               </title>
             </g>
           );
         })}
         {bestPoint && bestPoint.fitPooled != null ? (
-          <g key={`best-point-${bestPoint.trialIndex}`}>
+          <g key={`best-point-${bestPoint.sequenceIndex}`}>
             <circle
-              cx={xFor(bestPoint.trialIndex)}
+              cx={xFor(bestPoint.sequenceIndex)}
               cy={yFor(Math.min(bestPoint.fitPooled, yCapBase))}
               r={2.2}
               className="chart-point chart-point-best"
             />
             <title>
-              {`Best model\nTrial ${bestPoint.trialIndex}\nFit ${formatFitValue(bestPoint.fitPooled, bestPoint.fitMissing)}\nStatus ${bestPoint.modelStatus ?? "unknown"}\nBatch ${bestPoint.batchIndex ?? "N/A"}\n${formatUtcTimestamp(bestPoint.completedAtUtc)}`}
+              {`Best model\nSequence ${bestPoint.sequenceIndex}\nRound ${bestPoint.derivedRoundIndex ?? "N/A"}\nTrial ${bestPoint.trialIndex}\nFit ${formatFitValue(bestPoint.fitPooled, bestPoint.fitMissing)}\nStatus ${bestPoint.modelStatus ?? "unknown"}\nBatch ${bestPoint.batchIndex ?? "N/A"}\n${formatUtcTimestamp(bestPoint.completedAtUtc ?? bestPoint.startedAtUtc)}`}
             </title>
           </g>
         ) : null}
         <text x={width / 2} y={height - 6} textAnchor="middle" className="chart-title">
-          Trial Index
+          Dataset Run Sequence
         </text>
         <text
           x={18}
