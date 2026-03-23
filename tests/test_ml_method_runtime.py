@@ -15,7 +15,8 @@ import ml_driver
 import model_setup
 from ml_method import load_required_ml_method
 from optimization import active_learning
-from optimization.ensemble_training import validate_surrogate_memory
+from optimization.ensemble_training import ensemble_predict, train_ensemble, validate_surrogate_memory
+from optimization.surrogate_models import BoundsScaler, LogClippedTargetTransform
 
 
 def _write_workbook(path: Path, *, ml_method: str | None) -> None:
@@ -439,3 +440,153 @@ def test_candidate_pool_log_reports_actual_shape_and_memory(
     assert f"candidate_pool_dimensions={expected_shape[1]}" in captured
     assert f"candidate_pool_mb={x_grid.nbytes / 1024 / 1024:.6f}" in captured
     assert "memory_budget_mb=512.0" in captured
+
+
+def test_bounds_scaler_maps_configured_ranges_to_unit_interval() -> None:
+    scaler = BoundsScaler(
+        lower=np.asarray([0.0, 10.0], dtype=float),
+        upper=np.asarray([20.0, 30.0], dtype=float),
+    )
+
+    transformed = scaler.transform(np.asarray([[0.0, 10.0], [10.0, 20.0], [20.0, 30.0]]))
+
+    assert np.allclose(
+        transformed,
+        np.asarray([[-1.0, -1.0], [0.0, 0.0], [1.0, 1.0]], dtype=float),
+    )
+
+
+def test_log_clipped_target_transform_limits_fail_penalty_in_training_space() -> None:
+    transformer = LogClippedTargetTransform(upper_quantile=95.0, absolute_cap=1e6).fit(
+        np.asarray(list(range(1, 21)) + [1e6], dtype=float)
+    )
+
+    transformed = transformer.transform(np.asarray([5.0, 1e6], dtype=float))
+
+    assert transformer.upper_clip_ is not None
+    assert transformer.upper_clip_ < 1e6
+    assert transformed[1] == pytest.approx(np.log1p(transformer.upper_clip_))
+    assert transformed[1] > transformed[0]
+
+
+def test_bootstrap_ensemble_adds_uncertainty_for_tree_surrogate() -> None:
+    x_obs = np.asarray([[0.0], [1.0], [2.0], [3.0]], dtype=float)
+    y_obs = np.asarray([0.0, 1.0, 4.0, 9.0], dtype=float)
+    x_grid = np.asarray([[1.5], [2.5]], dtype=float)
+
+    deterministic_models = train_ensemble(
+        x_obs,
+        y_obs,
+        M=4,
+        bootstrap=False,
+        model_type="tree",
+    )
+    bootstrapped_models = train_ensemble(
+        x_obs,
+        y_obs,
+        M=4,
+        bootstrap=True,
+        model_type="tree",
+    )
+
+    _, deterministic_sigma = ensemble_predict(deterministic_models, x_grid)
+    _, bootstrapped_sigma = ensemble_predict(bootstrapped_models, x_grid)
+
+    assert np.allclose(deterministic_sigma, 0.0)
+    assert np.any(bootstrapped_sigma > 0.0)
+
+
+def test_default_distance_penalty_changes_candidate_ranking_only() -> None:
+    class FakeModel:
+        def predict(self, X: np.ndarray) -> np.ndarray:
+            X = np.asarray(X, dtype=float)
+            return np.zeros(len(X), dtype=float)
+
+    search_space = [
+        ml_driver.SearchDimension(
+            key=("param", "a"),
+            display_name="parameter 'a'",
+            kind="param",
+            default=1.0,
+            minimum=0.0,
+            maximum=1.0,
+        ),
+    ]
+    scaler = ml_driver._build_bounds_scaler(search_space)
+    penalty = ml_driver._build_default_distance_penalty(
+        search_space=search_space,
+        x_scaler=scaler,
+        strength=1.0,
+    )
+    x_grid = np.asarray([[0.0], [1.0]], dtype=float)
+    cache: dict[tuple[float, ...], float] = {}
+    models = [FakeModel(), FakeModel()]
+
+    without_penalty = active_learning._select_candidate_index(
+        models=models,
+        X_grid=x_grid,
+        results_cache=cache,
+        acquisition="LCB",
+        y_best=0.0,
+        kappa=1.0,
+        chunk_size=2,
+    )
+    with_penalty = active_learning._select_candidate_index(
+        models=models,
+        X_grid=x_grid,
+        results_cache=cache,
+        acquisition="LCB",
+        y_best=0.0,
+        kappa=1.0,
+        chunk_size=2,
+        proposal_penalty_fn=penalty,
+    )
+
+    assert without_penalty == 0
+    assert with_penalty == 1
+
+
+def test_proposal_penalty_does_not_change_training_targets() -> None:
+    captured: dict[str, np.ndarray] = {}
+
+    def fake_train_ensemble(
+        X_obs,
+        Y_obs,
+        M=8,
+        degree=5,
+        bootstrap=True,
+        model_type=None,
+        nn_config=None,
+        x_scaler=None,
+        y_transformer=None,
+    ):
+        captured["X_obs"] = np.asarray(X_obs, dtype=float).copy()
+        captured["Y_obs"] = np.asarray(Y_obs, dtype=float).copy()
+
+        class FakeModel:
+            def predict(self, X: np.ndarray) -> np.ndarray:
+                X = np.asarray(X, dtype=float)
+                return np.zeros(len(X), dtype=float)
+
+        return [FakeModel(), FakeModel()]
+
+    original_train_ensemble = active_learning.train_ensemble
+    active_learning.train_ensemble = fake_train_ensemble
+    try:
+        x_obs, y_obs, history, _, _ = active_learning.active_learning_loop(
+            f=lambda x: 3.0,
+            X_obs=np.asarray([[0.0]], dtype=float),
+            Y_obs=np.asarray([2.5], dtype=float),
+            X_grid=np.asarray([[1.0]], dtype=float),
+            n_iters=1,
+            model_type="tree",
+            proposal_penalty_fn=lambda X: np.asarray([5.0] * len(np.asarray(X))),
+        )
+    finally:
+        active_learning.train_ensemble = original_train_ensemble
+
+    assert np.array_equal(captured["X_obs"], np.asarray([[0.0]], dtype=float))
+    assert np.array_equal(captured["Y_obs"], np.asarray([2.5], dtype=float))
+    assert np.array_equal(x_obs, np.asarray([[0.0], [1.0]], dtype=float))
+    assert np.array_equal(y_obs, np.asarray([2.5, 3.0], dtype=float))
+    assert history.shape[0] == 1

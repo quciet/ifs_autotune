@@ -4,6 +4,7 @@ import numpy as np
 
 from .acquisition_functions import expected_improvement, lcb
 from .ensemble_training import ensemble_predict, train_ensemble
+from .surrogate_models import BoundsScaler, LogClippedTargetTransform
 
 
 def _format_candidate(x: np.ndarray) -> str:
@@ -38,12 +39,12 @@ def active_learning_loop(
     f,
     X_obs,
     Y_obs,
-    X_grid,
+    X_grid=None,
     n_iters: int = 30,
     M: int = 8,
     degree: int = 5,
     model_type: str | None = None,
-    bootstrap: bool = False,
+    bootstrap: bool = True,
     kappa_start: float = 1.6,
     kappa_end: float = 0.8,
     acquisition: str = "LCB",
@@ -53,6 +54,11 @@ def active_learning_loop(
     prediction_chunk_size: int = 2048,
     memory_budget_bytes: int | None = None,
     should_stop=None,
+    candidate_generator=None,
+    candidate_refresh_interval: int = 1,
+    x_scaler: BoundsScaler | None = None,
+    y_transformer: LogClippedTargetTransform | None = None,
+    proposal_penalty_fn=None,
 ):
     """Active-learning optimization loop using ensemble-based surrogates."""
     if not model_type:
@@ -66,11 +72,9 @@ def active_learning_loop(
 
     Y_obs = np.asarray(Y_obs, dtype=float).reshape(-1)
 
-    X_grid = np.asarray(X_grid, dtype=float)
-    if X_grid.ndim == 1:
-        X_grid = X_grid.reshape(-1, 1)
-    else:
-        X_grid = np.atleast_2d(X_grid)
+    if X_grid is None and candidate_generator is None:
+        raise ValueError("Either X_grid or candidate_generator must be provided.")
+    X_grid = _coerce_candidate_pool(X_grid) if X_grid is not None else None
 
     results_cache = {
         tuple(np.round(np.atleast_1d(x), 6)): float(y) for x, y in zip(X_obs, Y_obs)
@@ -111,8 +115,17 @@ def active_learning_loop(
             bootstrap=bootstrap,
             model_type=model_type,
             nn_config=nn_config,
+            x_scaler=x_scaler,
+            y_transformer=y_transformer,
         )
         y_best = np.min(Y_obs)
+
+        if candidate_generator is not None and (
+            X_grid is None or candidate_refresh_interval <= 1 or t % candidate_refresh_interval == 0
+        ):
+            X_grid = _coerce_candidate_pool(candidate_generator(X_obs=X_obs, Y_obs=Y_obs, iteration=t))
+        if X_grid is None:
+            raise RuntimeError("Candidate generator returned no proposal pool.")
 
         best_index = _select_candidate_index(
             models=models,
@@ -122,6 +135,7 @@ def active_learning_loop(
             y_best=float(y_best),
             kappa=float(kappas[t]),
             chunk_size=max(1, prediction_chunk_size),
+            proposal_penalty_fn=proposal_penalty_fn,
         )
         x_next = None
         x_next_array = None
@@ -182,6 +196,13 @@ def active_learning_loop(
     return X_obs, Y_obs, np.array(history, dtype=object), results_cache, stop_honored
 
 
+def _coerce_candidate_pool(X_grid) -> np.ndarray:
+    grid = np.asarray(X_grid, dtype=float)
+    if grid.ndim == 1:
+        return grid.reshape(-1, 1)
+    return np.atleast_2d(grid)
+
+
 def _select_candidate_index(
     *,
     models,
@@ -191,6 +212,7 @@ def _select_candidate_index(
     y_best: float,
     kappa: float,
     chunk_size: int,
+    proposal_penalty_fn=None,
 ) -> int | None:
     best_index: int | None = None
     best_score: float | None = None
@@ -200,12 +222,19 @@ def _select_candidate_index(
         stop = min(start + chunk_size, len(X_grid))
         chunk = X_grid[start:stop]
         mu, sigma = ensemble_predict(models, chunk)
+        penalties = None
+        if proposal_penalty_fn is not None:
+            penalties = np.asarray(proposal_penalty_fn(chunk), dtype=float).reshape(-1)
+            if len(penalties) != len(chunk):
+                raise ValueError("proposal_penalty_fn must return one penalty per candidate.")
         if acquisition_name == "LCB":
             acq = lcb(mu, sigma, kappa=kappa)
-            order = np.argsort(acq)
+            adjusted = acq if penalties is None else acq + penalties
+            order = np.argsort(adjusted)
         elif acquisition_name == "EI":
             acq = expected_improvement(mu, sigma, y_best)
-            order = np.argsort(-acq)
+            adjusted = acq if penalties is None else acq - penalties
+            order = np.argsort(-adjusted)
         else:
             raise ValueError(f"Unknown acquisition: {acquisition}")
 
@@ -216,7 +245,7 @@ def _select_candidate_index(
                 continue
 
             global_index = start + int(local_index)
-            score = float(acq[local_index])
+            score = float(adjusted[local_index])
             if best_index is None:
                 best_index = global_index
                 best_score = score

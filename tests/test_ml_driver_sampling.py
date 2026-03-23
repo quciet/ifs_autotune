@@ -237,3 +237,146 @@ def test_normalize_batch_indexes_commits_before_second_connection_writes(tmp_pat
         conn_a.close()
 
     assert rows == [("existing-model", 1), ("new-model", 1)]
+
+
+def test_candidate_generator_refreshes_continuous_values_and_preserves_discrete_levels() -> None:
+    search_space = [
+        _dimension("a", minimum=1.0, maximum=3.0, default=2.0, step=1.0),
+        _dimension("b", minimum=-1.0, maximum=1.0, default=0.0, level_count=2),
+        _dimension("c", minimum=10.0, maximum=20.0, default=15.0),
+    ]
+    generator = ml_driver._build_candidate_generator(
+        search_space=search_space,
+        n_samples=12,
+        run_seed=123,
+        memory_budget_bytes=512 * 1024 * 1024,
+    )
+
+    x_obs = np.asarray(
+        [
+            [1.0, -1.0, 11.0],
+            [2.0, 1.0, 15.0],
+            [3.0, -1.0, 19.0],
+        ],
+        dtype=float,
+    )
+    y_obs = np.asarray([3.0, 1.0, 2.0], dtype=float)
+
+    first = generator(X_obs=x_obs, Y_obs=y_obs, iteration=0)
+    second = generator(X_obs=x_obs, Y_obs=y_obs, iteration=1)
+
+    assert first.shape == (12, 3)
+    assert second.shape == (12, 3)
+    assert not np.array_equal(first, second)
+
+    expected_discrete = {
+        (1.0, -1.0),
+        (1.0, 1.0),
+        (2.0, -1.0),
+        (2.0, 1.0),
+        (3.0, -1.0),
+        (3.0, 1.0),
+    }
+    assert {tuple(row[:2]) for row in first} == expected_discrete
+    assert {tuple(row[:2]) for row in second} == expected_discrete
+    assert np.all(first[:, 2] >= 10.0)
+    assert np.all(first[:, 2] <= 20.0)
+    assert np.all(second[:, 2] >= 10.0)
+    assert np.all(second[:, 2] <= 20.0)
+
+
+def test_candidate_generator_samples_balanced_subset_when_discrete_space_is_large() -> None:
+    search_space = [
+        _dimension("a", minimum=0.0, maximum=9.0, default=0.0, level_count=10),
+        _dimension("b", minimum=0.0, maximum=9.0, default=0.0, level_count=10),
+        _dimension("c", minimum=0.0, maximum=1.0, default=0.5),
+    ]
+    generator = ml_driver._build_candidate_generator(
+        search_space=search_space,
+        n_samples=20,
+        run_seed=321,
+        memory_budget_bytes=512 * 1024 * 1024,
+    )
+
+    rows = generator(
+        X_obs=np.asarray([[0.0, 0.0, 0.5]], dtype=float),
+        Y_obs=np.asarray([1.0], dtype=float),
+        iteration=0,
+    )
+
+    assert rows.shape == (20, 3)
+    assert len({tuple(row[:2]) for row in rows}) == 5
+    assert set(rows[:, 0]).issubset(set(np.arange(10, dtype=float)))
+    assert set(rows[:, 1]).issubset(set(np.arange(10, dtype=float)))
+    assert np.all(rows[:, 2] >= 0.0)
+    assert np.all(rows[:, 2] <= 1.0)
+
+
+def test_adaptive_local_radius_shrinks_refreshed_sampling_over_iterations() -> None:
+    search_space = [
+        _dimension("focus", minimum=0.0, maximum=100.0, default=50.0),
+    ]
+    generator = ml_driver._build_candidate_generator(
+        search_space=search_space,
+        n_samples=40,
+        run_seed=777,
+        memory_budget_bytes=512 * 1024 * 1024,
+    )
+
+    x_obs = np.asarray([[50.0], [40.0], [60.0]], dtype=float)
+    y_obs = np.asarray([0.1, 1.0, 2.0], dtype=float)
+
+    early = generator(X_obs=x_obs, Y_obs=y_obs, iteration=0)
+    late = generator(X_obs=x_obs, Y_obs=y_obs, iteration=20)
+
+    early_mean_abs_distance = float(np.mean(np.abs(early[:, 0] - 50.0)))
+    late_mean_abs_distance = float(np.mean(np.abs(late[:, 0] - 50.0)))
+
+    assert early.shape == (40, 1)
+    assert late.shape == (40, 1)
+    assert late_mean_abs_distance < early_mean_abs_distance
+
+
+def test_build_proposal_generator_direct_mode_raises_clear_placeholder_error() -> None:
+    generator = ml_driver._build_proposal_generator(
+        search_space=[_dimension("a", minimum=0.0, maximum=1.0, default=0.5)],
+        n_samples=8,
+        run_seed=123,
+        memory_budget_bytes=512 * 1024 * 1024,
+        proposal_mode=ml_driver.PROPOSAL_MODE_DIRECT,
+    )
+
+    with pytest.raises(NotImplementedError, match="Direct acquisition proposal mode"):
+        generator(
+            X_obs=np.asarray([[0.5]], dtype=float),
+            Y_obs=np.asarray([1.0], dtype=float),
+            iteration=0,
+        )
+
+
+def test_default_distance_penalty_uses_scaled_distance_from_defaults() -> None:
+    search_space = [
+        _dimension("wide", minimum=0.0, maximum=100.0, default=50.0),
+        _dimension("narrow", minimum=0.0, maximum=1.0, default=0.5),
+    ]
+    scaler = ml_driver._build_bounds_scaler(search_space)
+    penalty = ml_driver._build_default_distance_penalty(
+        search_space=search_space,
+        x_scaler=scaler,
+        strength=1.0,
+    )
+
+    candidates = np.asarray(
+        [
+            [60.0, 0.5],
+            [50.0, 0.6],
+            [50.0, 0.5],
+        ],
+        dtype=float,
+    )
+
+    penalties = penalty(candidates)
+
+    assert penalties.shape == (3,)
+    assert penalties[0] == pytest.approx(penalties[1])
+    assert penalties[2] == pytest.approx(0.0)

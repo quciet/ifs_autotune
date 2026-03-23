@@ -20,7 +20,7 @@ import sys
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -36,10 +36,23 @@ from optimization.ensemble_training import (
     estimate_prediction_chunk_size,
     validate_surrogate_memory,
 )
+from optimization.surrogate_models import BoundsScaler, LogClippedTargetTransform
 
 
 FAIL_Y: float = float(os.getenv("BIGPOPA_FAIL_Y", "1e6"))
 DEFAULT_ML_MEMORY_BUDGET_MB: float = float(os.getenv("BIGPOPA_ML_MEMORY_BUDGET_MB", "512"))
+DEFAULT_GLOBAL_PROPOSAL_FRACTION: float = 0.25
+DEFAULT_LOCAL_TOP_K: int = 5
+DEFAULT_LOCAL_RADIUS_FRACTION: float = 0.15
+DEFAULT_LOCAL_RADIUS_DECAY: float = 0.85
+DEFAULT_LOCAL_RADIUS_MIN_FRACTION: float = 0.05
+DEFAULT_CANDIDATE_REFRESH_INTERVAL: int = 1
+MAX_ENUMERATED_DISCRETE_COMBINATIONS: int = 4096
+PROPOSAL_MODE_REFRESHED: str = "refreshed"
+PROPOSAL_MODE_DIRECT: str = "direct"
+DEFAULT_PROPOSAL_MODE: str = PROPOSAL_MODE_REFRESHED
+ENABLE_DEFAULT_DISTANCE_PENALTY: bool = False
+DEFAULT_DISTANCE_PENALTY_STRENGTH: float = 0.15
 
 @dataclass(frozen=True)
 class UserDimensionConfig:
@@ -137,6 +150,26 @@ def _log_candidate_pool_usage(X_grid: np.ndarray, *, memory_budget_bytes: int) -
         f"candidate_pool_mb={grid.nbytes / 1024 / 1024:.6f}, "
         f"memory_budget_mb={memory_budget_bytes / 1024 / 1024:.1f}",
         flush=True,
+    )
+
+
+def _build_bounds_scaler(search_space: list[SearchDimension]) -> BoundsScaler:
+    lower = np.asarray([dimension.minimum for dimension in search_space], dtype=float)
+    upper = np.asarray([dimension.maximum for dimension in search_space], dtype=float)
+    return BoundsScaler(lower=lower, upper=upper, clip=True)
+
+
+def _build_target_transform() -> LogClippedTargetTransform:
+    return LogClippedTargetTransform(upper_quantile=95.0, absolute_cap=FAIL_Y)
+
+
+def _default_reference_vector(search_space: list[SearchDimension]) -> np.ndarray:
+    return np.asarray(
+        [
+            _clip_to_bounds(dimension.default, dimension.minimum, dimension.maximum)
+            for dimension in search_space
+        ],
+        dtype=float,
     )
 
 
@@ -546,6 +579,11 @@ def _clip_to_bounds(value: float, low: float, high: float) -> float:
     return min(max(float(value), float(low)), float(high))
 
 
+def _adaptive_local_radius_fraction(iteration: int) -> float:
+    decayed = DEFAULT_LOCAL_RADIUS_FRACTION * (DEFAULT_LOCAL_RADIUS_DECAY ** max(0, int(iteration)))
+    return max(DEFAULT_LOCAL_RADIUS_MIN_FRACTION, float(decayed))
+
+
 def _generate_levels_for_count(dimension: SearchDimension, level_count: int) -> np.ndarray:
     if level_count < 1:
         raise ValueError(f"Level count for {dimension.display_name} must be at least 1.")
@@ -745,6 +783,381 @@ def _generate_hybrid_candidate_grid(
         start = stop
 
     return rows
+
+
+def _append_unique_row(
+    rows: list[np.ndarray],
+    seen: set[tuple[float, ...]],
+    row: np.ndarray,
+    *,
+    precision: int = 12,
+) -> bool:
+    key = tuple(np.round(np.asarray(row, dtype=float), precision))
+    if key in seen:
+        return False
+    seen.add(key)
+    rows.append(np.asarray(row, dtype=float))
+    return True
+
+
+def _balanced_discrete_combo_sample(
+    level_values: list[np.ndarray],
+    *,
+    n_combos: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if not level_values:
+        return np.zeros((1, 0), dtype=float)
+
+    total_possible = math.prod(len(values) for values in level_values)
+    target = min(max(1, n_combos), total_possible)
+    rows: list[np.ndarray] = []
+    seen: set[tuple[float, ...]] = set()
+    sequences: list[np.ndarray] = []
+
+    for values in level_values:
+        indices = np.arange(len(values), dtype=int)
+        repeats = max(1, math.ceil(target / len(indices)))
+        balanced = np.tile(indices, repeats)[:target].copy()
+        rng.shuffle(balanced)
+        sequences.append(balanced)
+
+    for row_index in range(target):
+        combo = np.asarray(
+            [values[sequence[row_index]] for values, sequence in zip(level_values, sequences)],
+            dtype=float,
+        )
+        _append_unique_row(rows, seen, combo)
+
+    attempts = 0
+    max_attempts = max(target * 20, 100)
+    while len(rows) < target and attempts < max_attempts:
+        combo = np.asarray(
+            [values[rng.integers(0, len(values))] for values in level_values],
+            dtype=float,
+        )
+        if _append_unique_row(rows, seen, combo):
+            attempts = 0
+            continue
+        attempts += 1
+
+    if not rows:
+        return np.zeros((0, len(level_values)), dtype=float)
+    return np.vstack(rows)
+
+
+def _select_discrete_combinations(
+    explicit_dimensions: list[tuple[int, SearchDimension]],
+    *,
+    n_samples: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if not explicit_dimensions:
+        return np.zeros((1, 0), dtype=float)
+
+    level_values = [_explicit_level_values(dimension) for _, dimension in explicit_dimensions]
+    if any(values is None for values in level_values):
+        raise ValueError("Discrete-combination selection requires explicit levels for all dimensions.")
+    normalized_level_values = [np.asarray(values, dtype=float) for values in level_values if values is not None]
+    total_possible = math.prod(len(values) for values in normalized_level_values)
+    enumerate_all = total_possible <= min(MAX_ENUMERATED_DISCRETE_COMBINATIONS, max(1, n_samples))
+    if enumerate_all:
+        return _cartesian_product(normalized_level_values)
+
+    min_candidates_per_combo = 4
+    combo_budget = max(1, n_samples // min_candidates_per_combo)
+    return _balanced_discrete_combo_sample(
+        normalized_level_values,
+        n_combos=min(combo_budget, total_possible),
+        rng=rng,
+    )
+
+
+def _matching_seed_vectors(
+    *,
+    X_obs: np.ndarray,
+    Y_obs: np.ndarray,
+    explicit_dimensions: list[tuple[int, SearchDimension]],
+    combo_values: np.ndarray,
+    top_k: int,
+) -> np.ndarray:
+    if len(X_obs) == 0:
+        return np.zeros((0, 0), dtype=float)
+
+    top_indices = np.argsort(np.asarray(Y_obs, dtype=float))[: max(1, top_k)]
+    top_vectors = np.asarray(X_obs[top_indices], dtype=float)
+    if not explicit_dimensions:
+        return top_vectors
+
+    matching_rows = []
+    for vector in top_vectors:
+        is_match = True
+        for value, (dimension_index, _) in zip(combo_values, explicit_dimensions):
+            if not np.isclose(vector[dimension_index], value):
+                is_match = False
+                break
+        if is_match:
+            matching_rows.append(vector)
+
+    if matching_rows:
+        return np.asarray(matching_rows, dtype=float)
+    return top_vectors
+
+
+def _sample_local_continuous_rows(
+    *,
+    free_dimensions: list[tuple[int, SearchDimension]],
+    seed_vectors: np.ndarray,
+    n_rows: int,
+    rng: np.random.Generator,
+    radius_fraction: float,
+) -> np.ndarray:
+    if n_rows < 1:
+        return np.empty((0, len(free_dimensions)), dtype=float)
+    if not free_dimensions:
+        return np.empty((n_rows, 0), dtype=float)
+    if seed_vectors.size == 0:
+        ranges = [(dimension.minimum, dimension.maximum) for _, dimension in free_dimensions]
+        return _sample_ranges(ranges, n_samples=n_rows, rng=rng)
+
+    rows = np.empty((n_rows, len(free_dimensions)), dtype=float)
+    seed_indices = rng.integers(0, len(seed_vectors), size=n_rows)
+
+    for row_index, seed_index in enumerate(seed_indices):
+        seed = seed_vectors[seed_index]
+        for column_index, (dimension_index, dimension) in enumerate(free_dimensions):
+            span = float(dimension.maximum - dimension.minimum)
+            if np.isclose(span, 0.0):
+                rows[row_index, column_index] = float(dimension.minimum)
+                continue
+            center = float(seed[dimension_index])
+            scale = max(span * radius_fraction, 1e-12)
+            sampled = rng.normal(loc=center, scale=scale)
+            rows[row_index, column_index] = _clip_to_bounds(
+                sampled,
+                dimension.minimum,
+                dimension.maximum,
+            )
+    return rows
+
+
+def _assemble_candidate_pool(
+    *,
+    search_space: list[SearchDimension],
+    discrete_combinations: np.ndarray,
+    X_obs: np.ndarray,
+    Y_obs: np.ndarray,
+    n_samples: int,
+    rng: np.random.Generator,
+    iteration: int,
+) -> np.ndarray:
+    total_dimensions = len(search_space)
+    explicit_dimensions, free_dimensions = _split_search_space(search_space)
+    if discrete_combinations.size == 0:
+        discrete_combinations = np.zeros((1, 0), dtype=float)
+
+    total_requested = max(1, n_samples)
+    combo_count = len(discrete_combinations)
+    base_count, remainder = divmod(total_requested, combo_count)
+    rows: list[np.ndarray] = []
+    seen: set[tuple[float, ...]] = set()
+    free_ranges = [(dimension.minimum, dimension.maximum) for _, dimension in free_dimensions]
+    local_radius_fraction = _adaptive_local_radius_fraction(iteration)
+
+    for combo_index, combo_values in enumerate(discrete_combinations):
+        candidate_count = base_count + (1 if combo_index < remainder else 0)
+        if candidate_count < 1:
+            continue
+
+        global_count = int(round(candidate_count * DEFAULT_GLOBAL_PROPOSAL_FRACTION))
+        global_count = min(candidate_count, max(1, global_count)) if candidate_count > 1 else candidate_count
+        local_count = candidate_count - global_count
+
+        if free_dimensions:
+            global_rows = _sample_ranges(free_ranges, n_samples=global_count, rng=rng)
+            seed_vectors = _matching_seed_vectors(
+                X_obs=X_obs,
+                Y_obs=Y_obs,
+                explicit_dimensions=explicit_dimensions,
+                combo_values=combo_values,
+                top_k=DEFAULT_LOCAL_TOP_K,
+            )
+            local_rows = _sample_local_continuous_rows(
+                free_dimensions=free_dimensions,
+                seed_vectors=seed_vectors,
+                n_rows=local_count,
+                rng=rng,
+                radius_fraction=local_radius_fraction,
+            )
+            continuous_rows = np.vstack([global_rows, local_rows]) if local_rows.size else global_rows
+        else:
+            continuous_rows = np.empty((candidate_count, 0), dtype=float)
+
+        for continuous_row in continuous_rows:
+            row = np.empty(total_dimensions, dtype=float)
+            for value, (dimension_index, _) in zip(combo_values, explicit_dimensions):
+                row[dimension_index] = float(value)
+            for free_value, (dimension_index, _) in zip(continuous_row, free_dimensions):
+                row[dimension_index] = float(free_value)
+            _append_unique_row(rows, seen, row)
+
+    attempts = 0
+    max_attempts = max(total_requested * 10, 100)
+    while len(rows) < total_requested and attempts < max_attempts:
+        if explicit_dimensions:
+            combo_values = discrete_combinations[rng.integers(0, combo_count)]
+        else:
+            combo_values = np.empty(0, dtype=float)
+        if free_dimensions:
+            continuous_row = _sample_ranges(free_ranges, n_samples=1, rng=rng)[0]
+        else:
+            continuous_row = np.empty(0, dtype=float)
+        row = np.empty(total_dimensions, dtype=float)
+        for value, (dimension_index, _) in zip(combo_values, explicit_dimensions):
+            row[dimension_index] = float(value)
+        for free_value, (dimension_index, _) in zip(continuous_row, free_dimensions):
+            row[dimension_index] = float(free_value)
+        if _append_unique_row(rows, seen, row):
+            attempts = 0
+            continue
+        attempts += 1
+
+    if not rows:
+        return np.empty((0, total_dimensions), dtype=float)
+    return np.vstack(rows)
+
+
+def _build_candidate_generator(
+    *,
+    search_space: list[SearchDimension],
+    n_samples: int,
+    run_seed: int,
+    memory_budget_bytes: int,
+) -> Callable[..., np.ndarray]:
+    _validate_candidate_pool_size(
+        n_rows=max(1, n_samples),
+        n_dimensions=len(search_space),
+        budget_bytes=memory_budget_bytes,
+    )
+
+    def generator(*, X_obs: np.ndarray, Y_obs: np.ndarray, iteration: int) -> np.ndarray:
+        rng = np.random.default_rng(run_seed + int(iteration) + 1)
+        explicit_dimensions, _ = _split_search_space(search_space)
+        discrete_combinations = _select_discrete_combinations(
+            explicit_dimensions,
+            n_samples=max(1, n_samples),
+            rng=rng,
+        )
+        candidates = _assemble_candidate_pool(
+            search_space=search_space,
+            discrete_combinations=discrete_combinations,
+            X_obs=np.asarray(X_obs, dtype=float),
+            Y_obs=np.asarray(Y_obs, dtype=float),
+            n_samples=max(1, n_samples),
+            rng=rng,
+            iteration=iteration,
+        )
+        _log_candidate_pool_usage(candidates, memory_budget_bytes=memory_budget_bytes)
+        return candidates
+
+    return generator
+
+
+def _build_default_distance_penalty(
+    *,
+    search_space: list[SearchDimension],
+    x_scaler: BoundsScaler,
+    strength: float,
+) -> Callable[[np.ndarray], np.ndarray]:
+    scaled_default = np.asarray(
+        x_scaler.transform(_default_reference_vector(search_space).reshape(1, -1))[0],
+        dtype=float,
+    )
+    penalty_strength = max(0.0, float(strength))
+
+    def penalty(X: np.ndarray) -> np.ndarray:
+        X_arr = np.asarray(X, dtype=float)
+        if X_arr.ndim == 1:
+            X_arr = X_arr.reshape(1, -1)
+        scaled = np.asarray(x_scaler.transform(X_arr), dtype=float)
+        delta = scaled - scaled_default
+        return penalty_strength * np.sum(delta * delta, axis=1)
+
+    return penalty
+
+
+def _propose_direct_candidate(
+    *,
+    search_space: list[SearchDimension],
+    X_obs: np.ndarray,
+    Y_obs: np.ndarray,
+    iteration: int,
+    run_seed: int,
+) -> np.ndarray:
+    """Placeholder for future direct acquisition optimization.
+
+    The planned implementation will optimize the acquisition function directly
+    over the mixed discrete-continuous search space instead of ranking a
+    sampled candidate pool.
+
+    Intended behavior:
+    - Enumerate all discrete combinations when the Cartesian product is small.
+    - Cap or sample discrete combinations when the product is large.
+    - For each selected discrete combination, optimize the continuous
+      subspace with a bounded multi-start optimizer.
+    - Detect duplicates against prior observations and fall back to an
+      alternate proposal when needed.
+    - Surface optimizer failures clearly so the caller can decide whether to
+      retry, adjust settings, or fall back to refreshed screening.
+    """
+
+    raise NotImplementedError(
+        "Direct acquisition proposal mode is reserved for a future implementation. "
+        "The intended design is mixed discrete-continuous acquisition optimization "
+        "with enumerate-small/cap-large discrete handling, bounded multi-start "
+        "continuous optimization, and duplicate-aware fallback logic."
+    )
+
+
+def _build_direct_candidate_generator(
+    *,
+    search_space: list[SearchDimension],
+    run_seed: int,
+) -> Callable[..., np.ndarray]:
+    def generator(*, X_obs: np.ndarray, Y_obs: np.ndarray, iteration: int) -> np.ndarray:
+        return _propose_direct_candidate(
+            search_space=search_space,
+            X_obs=np.asarray(X_obs, dtype=float),
+            Y_obs=np.asarray(Y_obs, dtype=float),
+            iteration=iteration,
+            run_seed=run_seed,
+        )
+
+    return generator
+
+
+def _build_proposal_generator(
+    *,
+    search_space: list[SearchDimension],
+    n_samples: int,
+    run_seed: int,
+    memory_budget_bytes: int,
+    proposal_mode: str = DEFAULT_PROPOSAL_MODE,
+) -> Callable[..., np.ndarray]:
+    normalized_mode = str(proposal_mode).strip().lower()
+    if normalized_mode == PROPOSAL_MODE_REFRESHED:
+        return _build_candidate_generator(
+            search_space=search_space,
+            n_samples=n_samples,
+            run_seed=run_seed,
+            memory_budget_bytes=memory_budget_bytes,
+        )
+    if normalized_mode == PROPOSAL_MODE_DIRECT:
+        return _build_direct_candidate_generator(
+            search_space=search_space,
+            run_seed=run_seed,
+        )
+    raise ValueError(f"Unknown proposal_mode: {proposal_mode}")
 
 
 def _switch_is_on(value: object) -> bool:
@@ -1313,36 +1726,26 @@ def main(argv: list[str] | None = None) -> int:
             user_param_configs,
             user_coef_configs,
         )
-        _validate_candidate_pool_size(
-            n_rows=n_sample,
-            n_dimensions=len(search_space),
-            budget_bytes=memory_budget_bytes,
+        proposal_mode = DEFAULT_PROPOSAL_MODE
+        candidate_generator = _build_proposal_generator(
+            search_space=search_space,
+            n_samples=n_sample,
+            run_seed=run_seed,
+            memory_budget_bytes=memory_budget_bytes,
+            proposal_mode=proposal_mode,
         )
-        if _has_grid_configuration(search_space):
-            explicit_dimensions, free_dimensions = _split_search_space(search_space)
-            if explicit_dimensions and free_dimensions:
-                X_grid = _generate_hybrid_candidate_grid(
-                    search_space,
-                    n_samples=n_sample,
-                    run_seed=run_seed,
-                    memory_budget_bytes=memory_budget_bytes,
-                )
-            else:
-                X_grid = _generate_candidate_grid(
-                    search_space,
-                    n_samples=n_sample,
-                    memory_budget_bytes=memory_budget_bytes,
-                )
-        else:
-            X_grid = _sample_grid(
-                [(dimension.minimum, dimension.maximum) for dimension in search_space],
-                n_samples=n_sample,
-                run_seed=run_seed,
+        x_scaler = _build_bounds_scaler(search_space)
+        y_transformer = _build_target_transform()
+        proposal_penalty_fn = None
+        if ENABLE_DEFAULT_DISTANCE_PENALTY:
+            proposal_penalty_fn = _build_default_distance_penalty(
+                search_space=search_space,
+                x_scaler=x_scaler,
+                strength=DEFAULT_DISTANCE_PENALTY_STRENGTH,
             )
-        _log_candidate_pool_usage(X_grid, memory_budget_bytes=memory_budget_bytes)
         validate_surrogate_memory(
             n_observations=max(len(X_obs), 1),
-            n_candidates=max(len(X_grid), 1),
+            n_candidates=max(n_sample, 1),
             n_dimensions=len(search_space),
             model_type=ml_method_config.model_type,
             memory_budget_bytes=memory_budget_bytes,
@@ -1378,14 +1781,20 @@ def main(argv: list[str] | None = None) -> int:
             f=callback,
             X_obs=np.asarray(X_obs),
             Y_obs=np.asarray(Y_obs),
-            X_grid=X_grid,
+            X_grid=None,
             n_iters=n_max_iteration,
             model_type=ml_method_config.model_type,
+            bootstrap=True,
             patience=n_convergence,
             min_improve_pct=min_convergence_pct,
             prediction_chunk_size=prediction_chunk_size,
             memory_budget_bytes=memory_budget_bytes,
             should_stop=lambda: stop_requested(stop_file),
+            candidate_generator=candidate_generator,
+            candidate_refresh_interval=DEFAULT_CANDIDATE_REFRESH_INTERVAL,
+            x_scaler=x_scaler,
+            y_transformer=y_transformer,
+            proposal_penalty_fn=proposal_penalty_fn,
         )
 
         best_index = int(np.argmin(Y_obs_arr))

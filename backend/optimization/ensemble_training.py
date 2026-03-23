@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 
-from .surrogate_models import NNSurrogate, PolynomialSurrogate, TreeSurrogate
+from .surrogate_models import (
+    BoundsScaler,
+    LogClippedTargetTransform,
+    NNSurrogate,
+    PolynomialSurrogate,
+    TreeSurrogate,
+)
 
 
 BYTES_PER_FLOAT64 = np.dtype(np.float64).itemsize
@@ -118,6 +125,8 @@ def train_ensemble(
     bootstrap: bool = False,
     model_type: str | None = None,
     nn_config: dict | None = None,
+    x_scaler: BoundsScaler | None = None,
+    y_transformer: LogClippedTargetTransform | None = None,
 ):
     """Train an ensemble of surrogate models.
 
@@ -141,6 +150,9 @@ def train_ensemble(
 
     n = len(X_obs)
     models = []
+    fitted_transformer = None
+    if y_transformer is not None:
+        fitted_transformer = replace(y_transformer).fit(Y_obs)
     for _ in range(M):
         if bootstrap and n > 1:
             idx = np.random.randint(0, n, size=n)
@@ -149,11 +161,28 @@ def train_ensemble(
         Xb, Yb = X_obs[idx], Y_obs[idx]
 
         if model_type == "poly":
-            model = _fit_polynomial(Xb, Yb, degree)
+            model = PolynomialSurrogate.fit(
+                Xb,
+                Yb,
+                degree=degree if len(Xb) >= 2 else 0,
+                x_scaler=x_scaler,
+                y_transformer=fitted_transformer,
+            )
         elif model_type == "tree":
-            model = TreeSurrogate.fit(Xb, Yb)
+            model = TreeSurrogate.fit(
+                Xb,
+                Yb,
+                x_scaler=x_scaler,
+                y_transformer=fitted_transformer,
+            )
         elif model_type == "nn":
-            model = NNSurrogate.fit(Xb, Yb, **(nn_config or {}))
+            model = NNSurrogate.fit(
+                Xb,
+                Yb,
+                x_scaler=x_scaler,
+                y_transformer=fitted_transformer,
+                **(nn_config or {}),
+            )
         else:
             raise ValueError(f"Unknown model_type: {model_type}")
 
