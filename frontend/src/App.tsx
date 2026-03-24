@@ -684,8 +684,10 @@ function TuneIFsPage({
   }, [initialRunResult, initialTerminationReason, running]);
 
   useEffect(() => {
-    setStatusMessage("Waiting to start.");
-    setStatusLevel("info");
+    if (!initialMLJobRunning && !initialRunResult) {
+      setStatusMessage("Waiting to start.");
+      setStatusLevel("info");
+    }
     setModelSetupResult(null);
     setProgressDatasetId(
       typeof initialRunConfig?.datasetId === "string"
@@ -699,8 +701,6 @@ function TuneIFsPage({
     );
     setProgressReferenceFitPooled(null);
     setRunResult(initialRunResult);
-    setStopRequested(Boolean(initialStopRequested));
-    setStopAcknowledged(Boolean(initialStopAcknowledged));
     setLogEntries([]);
     logIdRef.current = 0;
     setProgressYear(null);
@@ -711,9 +711,8 @@ function TuneIFsPage({
     validatedPath,
     validatedInputPath,
     outputDirectory,
-    initialRunResult,
-    initialStopAcknowledged,
-    initialStopRequested,
+    initialRunConfig?.datasetId,
+    initialRunConfig?.initialModelId,
   ]);
 
   useEffect(() => {

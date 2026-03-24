@@ -10,6 +10,7 @@ dependencies = [
   "pandas",
   "openpyxl",
   "numpy",
+  "matplotlib",
   "scikit-learn",
   "torch",
 ]
@@ -25,5 +26,5 @@ py-modules = ["combine_var_hist", "dataset_utils", "extract_compare", "log_ifs_v
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["optimization*"]
+include = ["optimization*", "analysis*"]
 exclude = ["*.egg-info", "*.egg-info.*"]

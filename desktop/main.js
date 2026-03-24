@@ -1246,7 +1246,6 @@ ipcMain.handle('ml:requestStop', async () => {
   };
 });
 ipcMain.handle('ml:jobStatus', async () => {
-  console.log('[ml] jobStatus requested');
   return getSafeMLJobState();
 });
 ipcMain.handle('ml:lowerPanelViewChanged', async (_event, payload = {}) => {
