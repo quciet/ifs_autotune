@@ -77,7 +77,6 @@ type TuneIFsPageProps = {
   validatedInputPath: string;
   baseYear?: number | null;
   outputDirectory: string | null;
-  requestOutputDirectory: () => Promise<string | null>;
   initialMLJobRunning?: boolean;
   initialMLJobProgress?: string | null;
   initialRunConfig?: MLJobStatus["runConfig"];
@@ -480,7 +479,6 @@ function TuneIFsPage({
   validatedInputPath,
   baseYear,
   outputDirectory,
-  requestOutputDirectory,
   initialMLJobRunning,
   initialMLJobProgress,
   initialRunConfig,
@@ -977,24 +975,6 @@ function TuneIFsPage({
     resetModelSetupState();
   };
 
-  const handleChangeOutputDirectory = async () => {
-    if (running || modelSetupRunning) {
-      return;
-    }
-
-    try {
-      setError(null);
-      await requestOutputDirectory();
-      resetModelSetupState();
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Unable to update the output directory.";
-      setError(message);
-    }
-  };
-
   const handleModelSetup = async () => {
     if (running || modelSetupRunning) {
       return;
@@ -1388,7 +1368,7 @@ function TuneIFsPage({
         </div>
       </div>
 
-      <div className="tune-actions four-buttons">
+      <div className="tune-actions">
         <button
           type="button"
           className="button"
@@ -1404,14 +1384,6 @@ function TuneIFsPage({
           disabled={runButtonDisabled}
         >
           {runButtonLabel}
-        </button>
-        <button
-          type="button"
-          className="button secondary"
-          onClick={handleChangeOutputDirectory}
-          disabled={running || modelSetupRunning}
-        >
-          Change output folder
         </button>
         <button
           type="button"
@@ -1637,7 +1609,7 @@ function App() {
         setLastValidatedOutputDirectory(status.outputDir ?? null);
         setLastValidatedInputFile(status.inputExcelPath ?? null);
       }
-      if (status?.ifsValidated && (status?.running || status?.finalResult)) {
+      if (status?.ifsValidated && status?.running) {
         setView("tune");
       }
     } catch (err) {
@@ -2254,7 +2226,6 @@ function App() {
           }
           baseYear={result?.base_year ?? mlJobStatus?.runConfig?.baseYear ?? null}
           outputDirectory={outputDirectory ?? mlJobStatus?.outputDir ?? null}
-          requestOutputDirectory={requestOutputDirectory}
           initialMLJobRunning={Boolean(mlJobStatus?.running)}
           initialMLJobProgress={mlJobStatus?.progress?.text ?? null}
           initialRunConfig={mlJobStatus?.runConfig ?? null}
