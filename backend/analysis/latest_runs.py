@@ -38,24 +38,52 @@ def _format_optional_float(value: float | None) -> str:
     return f"{value:.6f}"
 
 
+def _format_round_trial(round_index: int | None, trial_index: int | None) -> str:
+    if round_index is None and trial_index is None:
+        return "n/a"
+    if round_index is None:
+        return f"trial {trial_index}"
+    if trial_index is None:
+        return f"round {round_index}"
+    return f"round {round_index}, trial {trial_index}"
+
+
+def _format_slice_span(summary: TrendSummary) -> str:
+    if summary.latest_slice_round_start == summary.latest_slice_round_end:
+        return (
+            f"round {summary.latest_slice_round_start}, "
+            f"trial range {summary.latest_slice_trial_start}-{summary.latest_slice_trial_end}"
+        )
+
+    return (
+        f"rounds {summary.latest_slice_round_start}-{summary.latest_slice_round_end}, "
+        f"trial span {summary.latest_slice_trial_start}->{summary.latest_slice_trial_end} "
+        "(includes round reset)"
+    )
+
+
 def _write_summary(summary: TrendSummary, path: Path) -> None:
     lines = [
         "Model-fit trend analysis",
         "",
         f"Dataset id: {summary.dataset_id}",
         f"Current round index: {summary.current_round_index}",
-        (
-            f"Analyzed runs: {summary.latest_slice_count}, "
-            f"trial range {summary.latest_slice_trial_start}-{summary.latest_slice_trial_end}"
-        ),
-        f"Latest slice completed at: {summary.latest_slice_completed_at_utc}",
+        f"Analyzed runs: {summary.latest_slice_count}, {_format_slice_span(summary)}",
+        f"Latest slice timestamp: {summary.latest_slice_last_timestamp_utc}",
         "",
-        f"Best fit: {_format_optional_float(summary.best_fit)} at trial {summary.best_trial_index}",
+        (
+            "Best fit: "
+            f"{_format_optional_float(summary.best_fit)} at "
+            f"{_format_round_trial(summary.best_round_index, summary.best_trial_index)}"
+        ),
         f"Best model id: {summary.best_model_id}",
         f"Latest run fit: {_format_optional_float(summary.latest_fit)}",
         f"Rows since last best improvement: {summary.rows_since_last_best_improvement}",
-        f"Last best improvement trial: {summary.last_best_improvement_trial_index}",
-        f"Last best improvement completed at: {summary.last_best_improvement_completed_at_utc}",
+        (
+            "Last best improvement: "
+            f"{_format_round_trial(summary.last_best_improvement_round_index, summary.last_best_improvement_trial_index)}"
+        ),
+        f"Last best improvement timestamp: {summary.last_best_improvement_timestamp_utc}",
         "",
         f"Rolling center: {summary.rolling_center_interpretation}",
         f"Rolling spread: {summary.rolling_spread_interpretation}",

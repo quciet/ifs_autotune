@@ -13,17 +13,21 @@ class TrendSummary:
     dataset_id: str | None
     current_round_index: int
     latest_slice_count: int
+    latest_slice_round_start: int
+    latest_slice_round_end: int
     latest_slice_trial_start: int | None
     latest_slice_trial_end: int | None
     latest_slice_started_at_utc: str | None
-    latest_slice_completed_at_utc: str | None
+    latest_slice_last_timestamp_utc: str | None
     best_fit: float | None
     best_trial_index: int | None
+    best_round_index: int | None
     best_model_id: str | None
     latest_fit: float | None
     rows_since_last_best_improvement: int | None
     last_best_improvement_trial_index: int | None
-    last_best_improvement_completed_at_utc: str | None
+    last_best_improvement_round_index: int | None
+    last_best_improvement_timestamp_utc: str | None
     rolling_center_interpretation: str
     rolling_spread_interpretation: str
     practical_trend_interpretation: str
@@ -128,27 +132,35 @@ def build_trend_summary(
     if not current_round_rows:
         raise RuntimeError("current_round_rows cannot be empty")
 
-    current_round_index = current_round_rows[-1].derived_round_index
+    latest_row = latest_slice[-1]
+    current_round_index = latest_row.derived_round_index
     best_fit: float | None = None
     best_trial_index: int | None = None
+    best_round_index: int | None = None
     best_model_id: str | None = None
+    best_sequence_index: int | None = None
     last_best_improvement_trial_index: int | None = None
-    last_best_improvement_completed_at_utc: str | None = None
+    last_best_improvement_round_index: int | None = None
+    last_best_improvement_timestamp_utc: str | None = None
 
-    for row in current_round_rows:
+    for row in latest_slice:
         if row.fit_pooled is None:
             continue
         if best_fit is None or row.fit_pooled < best_fit:
             best_fit = row.fit_pooled
             best_trial_index = row.trial_index
+            best_round_index = row.derived_round_index
             best_model_id = row.model_id
+            best_sequence_index = row.sequence_index
             last_best_improvement_trial_index = row.trial_index
-            last_best_improvement_completed_at_utc = row.completed_at_utc
+            last_best_improvement_round_index = row.derived_round_index
+            last_best_improvement_timestamp_utc = (
+                row.completed_at_utc if row.completed_at_utc else row.started_at_utc
+            )
 
-    latest_row = latest_slice[-1]
     rows_since_last_best_improvement = None
-    if latest_row.trial_index is not None and last_best_improvement_trial_index is not None:
-        rows_since_last_best_improvement = latest_row.trial_index - last_best_improvement_trial_index
+    if best_sequence_index is not None:
+        rows_since_last_best_improvement = latest_row.sequence_index - best_sequence_index
 
     rolling_comparison = compare_rolling_segments(metrics_frame, window)
 
@@ -156,17 +168,23 @@ def build_trend_summary(
         dataset_id=dataset_id,
         current_round_index=current_round_index,
         latest_slice_count=len(latest_slice),
+        latest_slice_round_start=latest_slice[0].derived_round_index,
+        latest_slice_round_end=latest_row.derived_round_index,
         latest_slice_trial_start=latest_slice[0].trial_index,
         latest_slice_trial_end=latest_row.trial_index,
         latest_slice_started_at_utc=latest_slice[0].started_at_utc,
-        latest_slice_completed_at_utc=latest_row.completed_at_utc,
+        latest_slice_last_timestamp_utc=(
+            latest_row.completed_at_utc if latest_row.completed_at_utc else latest_row.started_at_utc
+        ),
         best_fit=best_fit,
         best_trial_index=best_trial_index,
+        best_round_index=best_round_index,
         best_model_id=best_model_id,
         latest_fit=latest_row.fit_pooled,
         rows_since_last_best_improvement=rows_since_last_best_improvement,
         last_best_improvement_trial_index=last_best_improvement_trial_index,
-        last_best_improvement_completed_at_utc=last_best_improvement_completed_at_utc,
+        last_best_improvement_round_index=last_best_improvement_round_index,
+        last_best_improvement_timestamp_utc=last_best_improvement_timestamp_utc,
         rolling_center_interpretation=rolling_comparison["rolling_center_interpretation"],
         rolling_spread_interpretation=rolling_comparison["rolling_spread_interpretation"],
         practical_trend_interpretation=rolling_comparison["practical_trend_interpretation"],
