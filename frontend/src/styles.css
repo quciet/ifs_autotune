@@ -733,6 +733,13 @@ body {
   stroke-dasharray: 3 4;
 }
 
+.chart-reference-line {
+  stroke: #7c6f64;
+  stroke-width: 1.35;
+  stroke-dasharray: 8 5;
+  opacity: 0.95;
+}
+
 .chart-axis-label {
   fill: #64748b;
   font-size: 11px;
@@ -790,6 +797,15 @@ body {
 
 .legend-swatch.best {
   background: #dc2626;
+}
+
+.legend-swatch.reference {
+  width: 16px;
+  height: 2px;
+  border-radius: 0;
+  background: #7c6f64;
+  align-self: center;
+  box-shadow: none;
 }
 
 .legend-swatch.outlier {

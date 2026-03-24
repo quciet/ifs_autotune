@@ -72,6 +72,7 @@ type LogEntry = {
 
 type TuneIFsPageProps = {
   onBack: () => void;
+  onMLJobStatusRefresh?: () => Promise<void>;
   validatedPath: string;
   validatedInputPath: string;
   baseYear?: number | null;
@@ -240,7 +241,15 @@ function percentile(values: number[], quantile: number): number {
   return sorted[lowerIndex] * (1 - weight) + sorted[upperIndex] * weight;
 }
 
-function MLProgressChart({ points }: { points: ChartPoint[] }) {
+function MLProgressChart({
+  points,
+  referenceFitPooled,
+  referenceModelId,
+}: {
+  points: ChartPoint[];
+  referenceFitPooled: number | null;
+  referenceModelId: string | null;
+}) {
   const fitValues = points.flatMap((point) =>
     typeof point.fitPooled === "number" && Number.isFinite(point.fitPooled)
       ? [point.fitPooled]
@@ -280,6 +289,10 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
   const yMinDisplay = yMin - yBottomPadding;
   const yMaxDisplay = yCapBase + yHeadroom;
   const hasOutliers = fitValues.some((value) => value > yCapBase);
+  const referenceFitValue =
+    typeof referenceFitPooled === "number" && Number.isFinite(referenceFitPooled)
+      ? referenceFitPooled
+      : null;
   const bestPoint = points.reduce<ChartPoint | null>((best, point) => {
     if (point.fitPooled == null) {
       return best;
@@ -297,6 +310,10 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
   }, null);
   const xRange = Math.max(1, xDisplayMax - xMin);
   const yRange = Math.max(1e-9, yMaxDisplay - yMinDisplay);
+  const referenceFitInRange =
+    referenceFitValue != null &&
+    referenceFitValue >= yMinDisplay &&
+    referenceFitValue <= yMaxDisplay;
 
   const xFor = (sequenceIndex: number) =>
     padding.left + ((sequenceIndex - xMin) / xRange) * plotWidth;
@@ -317,6 +334,11 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
         Showing an adaptive IQR-capped y-axis for readability
         {hasOutliers ? ` at ${yCapBase.toFixed(4)}` : ""}.
       </div>
+      {referenceFitValue != null && !referenceFitInRange ? (
+        <div className="chart-note">
+          IFs default baseline: {referenceFitValue.toFixed(4)} (outside displayed range)
+        </div>
+      ) : null}
       <svg
         className="ml-progress-chart"
         viewBox={`0 0 ${width} ${height}`}
@@ -346,6 +368,20 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
             </g>
           );
         })}
+        {referenceFitInRange ? (
+          <g>
+            <line
+              x1={padding.left}
+              x2={width - padding.right}
+              y1={yFor(referenceFitValue!)}
+              y2={yFor(referenceFitValue!)}
+              className="chart-reference-line"
+            />
+            <title>
+              {`IFs default baseline\nModel ${referenceModelId ?? "unknown"}\nFit ${referenceFitValue!.toFixed(4)}`}
+            </title>
+          </g>
+        ) : null}
         {points.map((point) => {
           if (point.fitPooled == null) {
             return null;
@@ -400,6 +436,9 @@ function MLProgressChart({ points }: { points: ChartPoint[] }) {
       <div className="chart-legend">
         <span className="legend-item"><span className="legend-swatch fit" /> Trial fit</span>
         <span className="legend-item"><span className="legend-swatch best" /> Best model</span>
+        {referenceFitInRange ? (
+          <span className="legend-item"><span className="legend-swatch reference" /> IFs default</span>
+        ) : null}
         {hasOutliers ? (
           <span className="legend-item"><span className="legend-swatch outlier" /> Above displayed range</span>
         ) : null}
@@ -436,6 +475,7 @@ function calculateProgressPercentage(
 
 function TuneIFsPage({
   onBack,
+  onMLJobStatusRefresh,
   validatedPath,
   validatedInputPath,
   baseYear,
@@ -489,11 +529,13 @@ function TuneIFsPage({
   const [progressDatasetId, setProgressDatasetId] = useState<string | null>(
     typeof initialRunConfig?.datasetId === "string" ? initialRunConfig.datasetId : null,
   );
-  const [progressHistoryModelId, setProgressHistoryModelId] = useState<string | null>(
+  const [progressReferenceModelId, setProgressReferenceModelId] = useState<string | null>(
     typeof initialRunConfig?.initialModelId === "string"
       ? initialRunConfig.initialModelId
       : null,
   );
+  const [progressReferenceFitPooled, setProgressReferenceFitPooled] =
+    useState<number | null>(null);
   const [progressYear, setProgressYear] = useState<number | null>(null);
   const [progressPercent, setProgressPercent] = useState(0);
   const [runResult, setRunResult] = useState<MLDriverData | null>(initialRunResult);
@@ -520,6 +562,18 @@ function TuneIFsPage({
   const logIdRef = useRef(0);
   const mlConsoleBodyRef = useRef<HTMLDivElement | null>(null);
   const mlAutoScrollRef = useRef(true);
+
+  const refreshMLJobStatus = async () => {
+    if (!onMLJobStatusRefresh) {
+      return;
+    }
+
+    try {
+      await onMLJobStatusRefresh();
+    } catch (error) {
+      console.warn("Unable to refresh ML job status:", error);
+    }
+  };
 
   const appendLog = (stage: ApiStage, status: LogStatus, message: string) => {
     const normalized = typeof message === "string" ? message.trim() : "";
@@ -638,11 +692,12 @@ function TuneIFsPage({
         ? initialRunConfig.datasetId
         : null,
     );
-    setProgressHistoryModelId(
+    setProgressReferenceModelId(
       typeof initialRunConfig?.initialModelId === "string"
         ? initialRunConfig.initialModelId
         : null,
     );
+    setProgressReferenceFitPooled(null);
     setRunResult(initialRunResult);
     setStopRequested(Boolean(initialStopRequested));
     setStopAcknowledged(Boolean(initialStopAcknowledged));
@@ -783,6 +838,7 @@ function TuneIFsPage({
 
     if (!outputDirectory) {
       setProgressTrials([]);
+      setProgressReferenceFitPooled(null);
       setProgressHistoryLoading(false);
       setProgressHistoryError("Choose an output folder to view ML progress.");
       return;
@@ -790,6 +846,7 @@ function TuneIFsPage({
 
     if (!progressDatasetId) {
       setProgressTrials([]);
+      setProgressReferenceFitPooled(null);
       setProgressHistoryLoading(false);
       setProgressHistoryError(
         "Run model setup first so progress can be scoped to a dataset.",
@@ -809,7 +866,7 @@ function TuneIFsPage({
         const history = await getMLProgressHistory(
           outputDirectory,
           progressDatasetId,
-          progressHistoryModelId,
+          progressReferenceModelId,
         );
         if (cancelled) {
           return;
@@ -821,12 +878,26 @@ function TuneIFsPage({
         ) {
           setProgressDatasetId(history.dataset_id);
         }
+        if (
+          typeof history.reference_model_id === "string" &&
+          history.reference_model_id.trim().length > 0 &&
+          history.reference_model_id !== progressReferenceModelId
+        ) {
+          setProgressReferenceModelId(history.reference_model_id);
+        }
+        setProgressReferenceFitPooled(
+          typeof history.reference_fit_pooled === "number" &&
+            Number.isFinite(history.reference_fit_pooled)
+            ? history.reference_fit_pooled
+            : null,
+        );
         setProgressTrials(normalizeProgressTrials(history.trials));
         setProgressHistoryError(null);
       } catch (error) {
         if (cancelled) {
           return;
         }
+        setProgressReferenceFitPooled(null);
         setProgressHistoryError("Unable to load ML progress history.");
       } finally {
         if (!cancelled) {
@@ -847,12 +918,13 @@ function TuneIFsPage({
         window.clearInterval(intervalId);
       }
     };
-  }, [lowerPanelView, outputDirectory, progressDatasetId, progressHistoryModelId, running]);
+  }, [lowerPanelView, outputDirectory, progressDatasetId, progressReferenceModelId, running]);
 
   const resetModelSetupState = () => {
     setModelSetupResult(null);
     setProgressDatasetId(null);
-    setProgressHistoryModelId(null);
+    setProgressReferenceModelId(null);
+    setProgressReferenceFitPooled(null);
     setRunResult(null);
   };
 
@@ -983,7 +1055,8 @@ function TuneIFsPage({
 
       setModelSetupResult(response.data);
       setProgressDatasetId(response.data.dataset_id);
-      setProgressHistoryModelId(response.data.model_id);
+      setProgressReferenceModelId(response.data.model_id);
+      setProgressReferenceFitPooled(null);
       const successMessage = resolveSuccessMessage(
         response.stage,
         response.message,
@@ -1040,6 +1113,7 @@ function TuneIFsPage({
         );
         setStatusLevel("info");
         setError(null);
+        await refreshMLJobStatus();
       } catch (err) {
         const { stage, message } = resolveStageError(err, "ml_driver");
         setError(message);
@@ -1129,6 +1203,7 @@ function TuneIFsPage({
             : "[ml_driver] Re-attached to running ML Optimization job.",
         );
         setStatusLevel("info");
+        await refreshMLJobStatus();
         return;
       }
 
@@ -1183,9 +1258,6 @@ function TuneIFsPage({
       ) {
         setProgressDatasetId(nextRunResult.dataset_id);
       }
-      if (typeof nextRunResult.model_id === "string" && nextRunResult.model_id.trim().length > 0) {
-        setProgressHistoryModelId(nextRunResult.model_id);
-      }
       setStopRequested(false);
       setStopAcknowledged(false);
 
@@ -1209,6 +1281,7 @@ function TuneIFsPage({
       if (!shouldKeepRunning) {
         setRunning(false);
       }
+      await refreshMLJobStatus();
     }
   };
 
@@ -1496,7 +1569,11 @@ function TuneIFsPage({
                 {progressEmptyMessage}
               </div>
             ) : (
-              <MLProgressChart points={progressTrials} />
+              <MLProgressChart
+                points={progressTrials}
+                referenceFitPooled={progressReferenceFitPooled}
+                referenceModelId={progressReferenceModelId}
+              />
             )}
           </div>
         )}
@@ -1531,6 +1608,43 @@ function App() {
       typeof window !== "undefined" && Boolean(window.electron?.selectFile),
     );
   const defaultInputLoadedRef = useRef(false);
+  const mlJobStatusPollIntervalMs = 3000;
+
+  const refreshMLJobStatus = async () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const electron = window.electron;
+    if (!electron?.getMLJobStatus) {
+      return;
+    }
+
+    try {
+      const status = await electron.getMLJobStatus();
+
+      setMLJobStatus(status);
+      if (status?.ifsPath) {
+        setIfsFolderPath(status.ifsPath);
+      }
+      if (status?.outputDir) {
+        setOutputDirectory(status.outputDir);
+      }
+      if (status?.inputExcelPath) {
+        setInputFilePath(status.inputExcelPath);
+      }
+      if (status?.ifsValidated) {
+        setLastValidatedIfsFolder(status.ifsPath ?? null);
+        setLastValidatedOutputDirectory(status.outputDir ?? null);
+        setLastValidatedInputFile(status.inputExcelPath ?? null);
+      }
+      if (status?.ifsValidated && (status?.running || status?.finalResult)) {
+        setView("tune");
+      }
+    } catch (err) {
+      console.warn("Unable to load ML job status:", err);
+    }
+  };
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -1548,45 +1662,26 @@ function App() {
     if (!electron?.getMLJobStatus) {
       return;
     }
+    void refreshMLJobStatus();
+  }, []);
 
-    let isMounted = true;
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.electron?.getMLJobStatus) {
+      return;
+    }
 
-    const loadMLJobStatus = async () => {
-      try {
-        const status = await electron.getMLJobStatus();
-        if (!isMounted) {
-          return;
-        }
+    if (!mlJobStatus?.running && !mlJobStatus?.stopRequested) {
+      return;
+    }
 
-        setMLJobStatus(status);
-        if (status?.ifsPath) {
-          setIfsFolderPath(status.ifsPath);
-        }
-        if (status?.outputDir) {
-          setOutputDirectory(status.outputDir);
-        }
-        if (status?.inputExcelPath) {
-          setInputFilePath(status.inputExcelPath);
-        }
-        if (status?.ifsValidated) {
-          setLastValidatedIfsFolder(status.ifsPath ?? null);
-          setLastValidatedOutputDirectory(status.outputDir ?? null);
-          setLastValidatedInputFile(status.inputExcelPath ?? null);
-        }
-        if (status?.ifsValidated && (status?.running || status?.finalResult)) {
-          setView("tune");
-        }
-      } catch (err) {
-        console.warn("Unable to load ML job status:", err);
-      }
-    };
-
-    loadMLJobStatus();
+    const intervalId = window.setInterval(() => {
+      void refreshMLJobStatus();
+    }, mlJobStatusPollIntervalMs);
 
     return () => {
-      isMounted = false;
+      window.clearInterval(intervalId);
     };
-  }, []);
+  }, [mlJobStatus?.running, mlJobStatus?.stopRequested]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -2150,11 +2245,8 @@ function App() {
 
       {view === "tune" && (result?.valid || mlJobStatus?.running || mlJobStatus?.ifsValidated) && (
         <TuneIFsPage
-          onBack={() => {
-            if (!mlJobStatus?.running) {
-              setView("validate");
-            }
-          }}
+          onBack={() => setView("validate")}
+          onMLJobStatusRefresh={refreshMLJobStatus}
           validatedPath={
             lastValidatedIfsFolder ?? ifsFolderPath?.trim() ?? ""
           }

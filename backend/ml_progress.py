@@ -54,6 +54,28 @@ def resolve_dataset_id(
     return dataset_row[0]
 
 
+def resolve_reference_fit(
+    cursor: sqlite3.Cursor,
+    model_id_arg: str | None,
+) -> tuple[str | None, float | None]:
+    if not model_id_arg:
+        return None, None
+
+    input_row = cursor.execute(
+        "SELECT model_id FROM model_input WHERE model_id = ? LIMIT 1",
+        (model_id_arg,),
+    ).fetchone()
+    if not input_row:
+        return None, None
+
+    output_row = cursor.execute(
+        "SELECT fit_pooled FROM model_output WHERE model_id = ? LIMIT 1",
+        (model_id_arg,),
+    ).fetchone()
+    fit_pooled = output_row[0] if output_row else None
+    return model_id_arg, fit_pooled
+
+
 def _parse_iso_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -153,7 +175,11 @@ def main(argv: list[str] | None = None) -> int:
             "error",
             "ml_progress",
             "bigpopa.db was not found.",
-            {"trials": []},
+            {
+                "reference_model_id": None,
+                "reference_fit_pooled": None,
+                "trials": [],
+            },
         )
         return 1
 
@@ -164,7 +190,12 @@ def main(argv: list[str] | None = None) -> int:
             "error",
             "ml_progress",
             "Unable to open bigpopa.db.",
-            {"error": str(exc), "trials": []},
+            {
+                "error": str(exc),
+                "reference_model_id": None,
+                "reference_fit_pooled": None,
+                "trials": [],
+            },
         )
         return 1
 
@@ -179,7 +210,11 @@ def main(argv: list[str] | None = None) -> int:
                 "success",
                 "ml_progress",
                 "ML progress tracking columns are not available yet.",
-                {"trials": []},
+                {
+                    "reference_model_id": None,
+                    "reference_fit_pooled": None,
+                    "trials": [],
+                },
             )
             return 0
 
@@ -191,7 +226,12 @@ def main(argv: list[str] | None = None) -> int:
                 "success",
                 "ml_progress",
                 "The selected model was not found in model_input.",
-                {"dataset_id": None, "trials": []},
+                {
+                    "dataset_id": None,
+                    "reference_model_id": None,
+                    "reference_fit_pooled": None,
+                    "trials": [],
+                },
             )
             return 0
         except ValueError as exc:
@@ -199,9 +239,19 @@ def main(argv: list[str] | None = None) -> int:
                 "error",
                 "ml_progress",
                 str(exc),
-                {"dataset_id": None, "trials": []},
+                {
+                    "dataset_id": None,
+                    "reference_model_id": None,
+                    "reference_fit_pooled": None,
+                    "trials": [],
+                },
             )
             return 1
+
+        reference_model_id, reference_fit_pooled = resolve_reference_fit(
+            cursor,
+            args.model_id,
+        )
 
         raw_rows = cursor.execute(
             """
@@ -251,7 +301,12 @@ def main(argv: list[str] | None = None) -> int:
             "success",
             "ml_progress",
             "Loaded ML progress history.",
-            {"dataset_id": dataset_id, "trials": trials},
+            {
+                "dataset_id": dataset_id,
+                "reference_model_id": reference_model_id,
+                "reference_fit_pooled": reference_fit_pooled,
+                "trials": trials,
+            },
         )
         return 0
     except sqlite3.Error as exc:
@@ -259,7 +314,12 @@ def main(argv: list[str] | None = None) -> int:
             "error",
             "ml_progress",
             "Unable to query ML progress history.",
-            {"error": str(exc), "trials": []},
+            {
+                "error": str(exc),
+                "reference_model_id": None,
+                "reference_fit_pooled": None,
+                "trials": [],
+            },
         )
         return 1
     finally:

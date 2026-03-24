@@ -112,6 +112,8 @@ export type MLProgressTrial = {
 
 export type MLProgressHistoryData = {
   dataset_id: string | null;
+  reference_model_id?: string | null;
+  reference_fit_pooled?: number | null;
   trials: MLProgressTrial[];
 };
 
@@ -362,6 +364,8 @@ export async function getMLProgressHistory(
   if (!window.electron?.getMLProgressHistory) {
     return {
       dataset_id: datasetId ?? null,
+      reference_model_id: modelId ?? null,
+      reference_fit_pooled: null,
       trials: [],
     };
   }
@@ -376,14 +380,30 @@ export async function getMLProgressHistory(
       typeof response?.data?.dataset_id === "string" || response?.data?.dataset_id === null
         ? response.data.dataset_id
         : datasetId ?? null;
+    const referenceModelId =
+      typeof response?.data?.reference_model_id === "string" ||
+      response?.data?.reference_model_id === null
+        ? response.data.reference_model_id
+        : modelId ?? null;
+    const referenceFitPooled =
+      typeof response?.data?.reference_fit_pooled === "number" &&
+      Number.isFinite(response.data.reference_fit_pooled)
+        ? response.data.reference_fit_pooled
+        : response?.data?.reference_fit_pooled === null
+          ? null
+          : null;
     const trials = response?.data?.trials;
     return {
       dataset_id: responseDatasetId,
+      reference_model_id: referenceModelId,
+      reference_fit_pooled: referenceFitPooled,
       trials: Array.isArray(trials) ? (trials as MLProgressTrial[]) : [],
     };
   } catch {
     return {
       dataset_id: datasetId ?? null,
+      reference_model_id: modelId ?? null,
+      reference_fit_pooled: null,
       trials: [],
     };
   }

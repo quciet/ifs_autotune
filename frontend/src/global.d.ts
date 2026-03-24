@@ -65,6 +65,8 @@ declare global {
         message?: string;
         data?: {
           dataset_id?: string | null;
+          reference_model_id?: string | null;
+          reference_fit_pooled?: number | null;
           trials?: MLProgressTrial[];
         };
       }>;
