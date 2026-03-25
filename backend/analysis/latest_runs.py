@@ -10,8 +10,8 @@ from .run_history import RunRecord, load_run_history, select_latest_slice
 from .trend_summary import TrendSummary, build_trend_summary
 
 
-DEFAULT_LIMIT = 300
-DEFAULT_WINDOW = 20
+DEFAULT_LIMIT = 400
+DEFAULT_WINDOW = 25
 
 
 @dataclass(frozen=True)

@@ -50,11 +50,13 @@ def build_metrics_frame(rows: Sequence[RunRecord], window: int) -> pd.DataFrame:
     rolling_median = valid_fit.rolling(window=window, min_periods=window).median()
     rolling_q1 = valid_fit.rolling(window=window, min_periods=window).quantile(0.25)
     rolling_q3 = valid_fit.rolling(window=window, min_periods=window).quantile(0.75)
+    rolling_std = valid_fit.rolling(window=window, min_periods=window).std()
 
     frame[f"rolling_mean_{window}"] = rolling_mean.reindex(frame.index)
     frame[f"rolling_median_{window}"] = rolling_median.reindex(frame.index)
     frame[f"rolling_q1_{window}"] = rolling_q1.reindex(frame.index)
     frame[f"rolling_q3_{window}"] = rolling_q3.reindex(frame.index)
     frame[f"rolling_iqr_{window}"] = frame[f"rolling_q3_{window}"] - frame[f"rolling_q1_{window}"]
+    frame[f"rolling_std_{window}"] = rolling_std.reindex(frame.index)
 
     return frame

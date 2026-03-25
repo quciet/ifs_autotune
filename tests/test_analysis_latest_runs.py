@@ -9,7 +9,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
+from analysis.analyze_latest_runs import build_parser
 from analysis.latest_runs import analyze_latest_runs, dataset_output_name
+from analysis.plotting import render_trend_plot
 from analysis.rolling_metrics import build_metrics_frame
 from analysis.run_history import load_run_history
 from analysis.trend_summary import compare_rolling_segments
@@ -201,6 +203,7 @@ def test_build_metrics_frame_computes_rolling_statistics() -> None:
     assert pytest.approx(frame.loc[2, "rolling_q1_3"]) == 1.5
     assert pytest.approx(frame.loc[2, "rolling_q3_3"]) == 2.5
     assert pytest.approx(frame.loc[2, "rolling_iqr_3"]) == 1.0
+    assert pytest.approx(frame.loc[2, "rolling_std_3"]) == 1.0
     assert pytest.approx(frame.loc[3, "rolling_median_3"]) == 3.0
 
 
@@ -213,6 +216,29 @@ def test_compare_rolling_segments_detects_shrinking_spread() -> None:
     comparison = compare_rolling_segments(frame, window=3)
 
     assert comparison["rolling_spread_interpretation"] == "rolling IQR is shrinking"
+
+
+def test_cli_defaults_use_latest_400_and_window_25() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--bigpopa-db", "C:\\temp\\bigpopa.db"])
+
+    assert args.limit == 400
+    assert args.window == 25
+
+
+def test_render_trend_plot_handles_high_outliers(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+
+    frame = build_metrics_frame(
+        stub_rows([0.05, 0.06, 0.055, 0.058, 0.4, 0.052, 0.051, 0.39, 0.054]),
+        window=3,
+    )
+    output_path = tmp_path / "trend.png"
+
+    render_trend_plot(frame, output_path, window=3, dataset_id="dataset-a")
+
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
 
 
 def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Path) -> None:
@@ -299,5 +325,7 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
     assert artifacts.metrics_path.exists()
     assert artifacts.plot_path.exists()
     summary_text = artifacts.summary_path.read_text(encoding="utf-8").lower()
+    metrics_header = artifacts.metrics_path.read_text(encoding="utf-8").splitlines()[0]
     assert "rolling center:" in summary_text
     assert "rolling spread:" in summary_text
+    assert "rolling_std_3" in metrics_header

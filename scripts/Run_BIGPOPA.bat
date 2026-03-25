@@ -6,11 +6,11 @@ set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..") do set "REPO_ROOT=%%~fI"
 cd /d "%REPO_ROOT%"
 
+set "SETUP_BAT=%SCRIPT_DIR%Setup_BIGPOPA.bat"
 set "VENV_PY=backend\.venv\Scripts\python.exe"
-set "PYTHON_CMD="
 
 echo ========================================================
-echo BIGPOPA setup and launch
+echo BIGPOPA launch
 echo Repo: %REPO_ROOT%
 echo ========================================================
 
@@ -20,32 +20,9 @@ if not exist "backend\pyproject.toml" (
   exit /b 1
 )
 
-call :find_python
-if errorlevel 1 exit /b 1
-
-if not exist "backend\.venv\Scripts\python.exe" (
-  echo [1/6] Creating required virtual environment at backend\.venv ...
-  call %PYTHON_CMD% -m venv backend\.venv
-  if errorlevel 1 (
-    echo [ERROR] Failed to create backend\.venv.
-    exit /b 1
-  )
-) else (
-  echo [1/6] Using existing required virtual environment: backend\.venv
-)
-
-echo [2/6] Upgrading pip in backend\.venv ...
-"%VENV_PY%" -m pip install -U pip
-if errorlevel 1 (
-  echo [ERROR] pip upgrade failed.
-  exit /b 1
-)
-
-echo [3/6] Installing backend dependencies (editable install) ...
-"%VENV_PY%" -m pip install -e backend
-if errorlevel 1 (
-  echo [ERROR] Backend install failed.
-  echo Try deleting backend\*.egg-info and run this script again.
+if not exist "%VENV_PY%" (
+  echo [ERROR] backend\.venv is missing.
+  echo Run "%SETUP_BAT%" first.
   exit /b 1
 )
 
@@ -53,44 +30,35 @@ call :check_npm
 if errorlevel 1 exit /b 1
 
 if exist "frontend\package.json" (
-  echo [4/6] Installing frontend dependencies ...
-  pushd frontend
-  call npm install
-  if errorlevel 1 (
-    popd
-    echo [ERROR] Frontend npm install failed.
+  if not exist "frontend\node_modules" (
+    echo [ERROR] frontend dependencies are not installed.
+    echo Run "%SETUP_BAT%" first.
     exit /b 1
   )
-  popd
 ) else (
-  echo [4/6] frontend\package.json not found; skipping frontend dependency install and frontend launch.
+  echo [WARN] frontend\package.json not found; frontend background process was not started.
 )
 
 if exist "desktop\package.json" (
-  echo [5/6] Installing desktop/Electron dependencies ...
-  pushd desktop
-  call npm install
-  if errorlevel 1 (
-    popd
-    echo [ERROR] Desktop npm install failed.
+  if not exist "desktop\node_modules" (
+    echo [ERROR] desktop dependencies are not installed.
+    echo Run "%SETUP_BAT%" first.
     exit /b 1
   )
-  popd
 ) else (
   echo [ERROR] desktop\package.json not found.
   echo Ensure the desktop directory exists and contains package.json, then re-run this script.
   exit /b 1
 )
 
-echo [6/6] Launching BIGPOPA ...
+echo [1/2] Prerequisites look ready.
+echo [2/2] Launching BIGPOPA ...
 if exist "frontend\package.json" (
   echo Starting BIGPOPA Frontend in background ^(same console^) ...
   REM Use start /b so Vite runs in the background without opening a new window; Electron runs in foreground to keep a single terminal workflow.
   pushd "%REPO_ROOT%\frontend"
   start /b "" npm run dev
   popd
-) else (
-  echo [WARN] frontend\package.json not found; frontend background process was not started.
 )
 
 echo Starting BIGPOPA Desktop in foreground ^(same console^) ...
@@ -101,35 +69,6 @@ echo.
 echo BIGPOPA is launching in a single console. Keep this window running while using the app.
 echo Backend Python tools run from backend\.venv on demand from Electron.
 
-exit /b 0
-
-:find_python
-where py >nul 2>nul
-if not errorlevel 1 (
-  py -3.11 -c "import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)" >nul 2>nul
-  if not errorlevel 1 (
-    set "PYTHON_CMD=py -3.11"
-    echo Using Python launcher: py -3.11
-    goto :eof
-  )
-)
-
-where python >nul 2>nul
-if errorlevel 1 (
-  echo [ERROR] Python 3.11+ not found.
-  echo Install Python 3.11 or newer, then re-run this script.
-  exit /b 1
-)
-
-python -c "import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)" >nul 2>nul
-if errorlevel 1 (
-  echo [ERROR] Found python, but version is below 3.11.
-  echo Install Python 3.11 or newer, then re-run this script.
-  exit /b 1
-)
-
-set "PYTHON_CMD=python"
-echo Using Python executable: python
 exit /b 0
 
 :check_npm
