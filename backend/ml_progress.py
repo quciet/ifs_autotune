@@ -56,24 +56,66 @@ def resolve_dataset_id(
 
 def resolve_reference_fit(
     cursor: sqlite3.Cursor,
+    dataset_id_arg: str | None,
     model_id_arg: str | None,
-) -> tuple[str | None, float | None]:
+) -> tuple[str | None, float | None, str | None]:
+    baseline_rows = cursor.execute(
+        """
+        SELECT
+            mi.model_id,
+            mo.fit_pooled,
+            mi.rowid,
+            mo.rowid
+        FROM model_input mi
+        LEFT JOIN model_output mo ON mo.model_id = mi.model_id
+        WHERE (
+                (? IS NULL AND mi.dataset_id IS NULL)
+                OR mi.dataset_id = ?
+              )
+          AND mo.trial_index IS NULL
+        ORDER BY
+            CASE WHEN mo.rowid IS NULL THEN 1 ELSE 0 END,
+            mi.rowid ASC,
+            mo.rowid ASC
+        """,
+        (dataset_id_arg, dataset_id_arg),
+    ).fetchall()
+    if baseline_rows:
+        if len(baseline_rows) == 1:
+            selected_row = baseline_rows[0]
+            warning = None
+        else:
+            selected_row = None
+            if model_id_arg:
+                selected_row = next(
+                    (row for row in baseline_rows if row[0] == model_id_arg),
+                    None,
+                )
+            if selected_row is None:
+                selected_row = baseline_rows[0]
+            warning = (
+                "Multiple default IFs baseline candidates were found for the selected "
+                f"dataset; using model {selected_row[0]}."
+            )
+
+        return selected_row[0], selected_row[1], warning
+
     if not model_id_arg:
-        return None, None
+        return None, None, None
 
     input_row = cursor.execute(
         "SELECT model_id FROM model_input WHERE model_id = ? LIMIT 1",
         (model_id_arg,),
     ).fetchone()
     if not input_row:
-        return None, None
+        return None, None, None
 
     output_row = cursor.execute(
         "SELECT fit_pooled FROM model_output WHERE model_id = ? LIMIT 1",
         (model_id_arg,),
     ).fetchone()
     fit_pooled = output_row[0] if output_row else None
-    return model_id_arg, fit_pooled
+    return model_id_arg, fit_pooled, None
 
 
 def _parse_iso_timestamp(value: str | None) -> datetime | None:
@@ -248,8 +290,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        reference_model_id, reference_fit_pooled = resolve_reference_fit(
+        reference_model_id, reference_fit_pooled, reference_warning = resolve_reference_fit(
             cursor,
+            dataset_id,
             args.model_id,
         )
 
@@ -297,10 +340,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
+        message = "Loaded ML progress history."
+        if reference_warning:
+            message = f"{message} {reference_warning}"
+
         emit_response(
             "success",
             "ml_progress",
-            "Loaded ML progress history.",
+            message,
             {
                 "dataset_id": dataset_id,
                 "reference_model_id": reference_model_id,

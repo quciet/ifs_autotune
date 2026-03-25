@@ -1280,13 +1280,14 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
         mlJobState.runConfig.datasetId.trim().length > 0
       ? mlJobState.runConfig.datasetId.trim()
       : null;
-  const modelId =
-    typeof payload?.modelId === "string" && payload.modelId.trim().length > 0
+  const modelId = !datasetId
+    ? typeof payload?.modelId === "string" && payload.modelId.trim().length > 0
       ? payload.modelId.trim()
       : typeof mlJobState.runConfig?.initialModelId === "string" &&
         mlJobState.runConfig.initialModelId.trim().length > 0
       ? mlJobState.runConfig.initialModelId.trim()
-      : null;
+      : null
+    : null;
 
   if (!outputDir) {
     return {

@@ -561,6 +561,14 @@ function TuneIFsPage({
   const mlConsoleBodyRef = useRef<HTMLDivElement | null>(null);
   const mlAutoScrollRef = useRef(true);
 
+  const scrollMLLogToBottom = () => {
+    const el = mlConsoleBodyRef.current;
+    if (!el) {
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+  };
+
   const refreshMLJobStatus = async () => {
     if (!onMLJobStatusRefresh) {
       return;
@@ -790,13 +798,25 @@ function TuneIFsPage({
   }, []);
 
   useEffect(() => {
-    const el = mlConsoleBodyRef.current;
-    if (!el) return;
-
     if (mlAutoScrollRef.current) {
-      el.scrollTop = el.scrollHeight;
+      scrollMLLogToBottom();
     }
   }, [mlLogEntries]);
+
+  useEffect(() => {
+    if (lowerPanelView !== "log") {
+      return;
+    }
+
+    mlAutoScrollRef.current = true;
+    const frame = window.requestAnimationFrame(() => {
+      scrollMLLogToBottom();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [lowerPanelView]);
 
   useEffect(() => {
     if (!window.electron?.on) {

@@ -113,7 +113,7 @@ def test_main_normalizes_failed_trials_as_missing(tmp_path: Path, capsys) -> Non
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "success"
     assert payload["data"]["dataset_id"] == "dataset-1"
-    assert payload["data"]["reference_model_id"] is None
+    assert payload["data"]["reference_model_id"] == "seed-model"
     assert payload["data"]["reference_fit_pooled"] is None
     assert payload["data"]["trials"] == [
         {
@@ -337,6 +337,62 @@ def test_main_uses_stable_tie_breakers_when_timestamps_match(
     assert [trial["sequence_index"] for trial in trials] == [1, 2]
 
 
+def test_main_returns_reference_fit_from_dataset_baseline_and_excludes_it_from_trials(
+    tmp_path: Path, capsys
+) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_progress_db(
+        db_path,
+        input_rows=[
+            ("seed-model", "dataset-1"),
+            ("first-trial", "dataset-1"),
+            ("best-trial", "dataset-1"),
+        ],
+        output_rows=[
+            (
+                "seed-model",
+                "completed",
+                15.0,
+                None,
+                None,
+                "2026-03-12T09:00:00Z",
+                "2026-03-12T09:05:00Z",
+            ),
+            (
+                "first-trial",
+                "completed",
+                8.0,
+                1,
+                None,
+                "2026-03-12T10:00:00Z",
+                "2026-03-12T10:05:00Z",
+            ),
+            (
+                "best-trial",
+                "completed",
+                3.0,
+                2,
+                None,
+                "2026-03-12T10:06:00Z",
+                "2026-03-12T10:07:00Z",
+            ),
+        ],
+    )
+
+    exit_code = ml_progress.main(["--bigpopa-db", str(db_path), "--dataset-id", "dataset-1"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["data"]["dataset_id"] == "dataset-1"
+    assert payload["data"]["reference_model_id"] == "seed-model"
+    assert payload["data"]["reference_fit_pooled"] == 15.0
+    assert [trial["model_id"] for trial in payload["data"]["trials"]] == [
+        "first-trial",
+        "best-trial",
+    ]
+
+
 def test_main_returns_reference_fit_from_exact_seed_model_id(
     tmp_path: Path, capsys
 ) -> None:
@@ -395,7 +451,7 @@ def test_main_returns_reference_fit_from_exact_seed_model_id(
     ]
 
 
-def test_main_returns_null_reference_fit_when_seed_model_has_no_output(
+def test_main_returns_null_reference_fit_when_dataset_baseline_has_no_output(
     tmp_path: Path, capsys
 ) -> None:
     db_path = tmp_path / "bigpopa.db"
@@ -418,9 +474,7 @@ def test_main_returns_null_reference_fit_when_seed_model_has_no_output(
         ],
     )
 
-    exit_code = ml_progress.main(
-        ["--bigpopa-db", str(db_path), "--model-id", "seed-model"]
-    )
+    exit_code = ml_progress.main(["--bigpopa-db", str(db_path), "--dataset-id", "dataset-1"])
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
