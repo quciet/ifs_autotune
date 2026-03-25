@@ -4,9 +4,15 @@ from dataclasses import dataclass
 from pathlib import Path
 import sqlite3
 
-from .plotting import render_trend_plot
+from .plotting import render_input_trend_plots, render_trend_plot
 from .rolling_metrics import build_metrics_frame
-from .run_history import RunRecord, load_run_history, select_latest_slice
+from .run_history import (
+    RunRecord,
+    coefficient_column_names,
+    load_run_history,
+    parameter_column_names,
+    select_latest_slice,
+)
 from .trend_summary import TrendSummary, build_trend_summary
 
 
@@ -21,6 +27,8 @@ class AnalysisArtifacts:
     summary_path: Path
     metrics_path: Path
     plot_path: Path
+    parameter_plot_paths: tuple[Path, ...]
+    coefficient_plot_paths: tuple[Path, ...]
     summary: TrendSummary
 
 
@@ -138,10 +146,26 @@ def analyze_latest_runs(
     summary_path = dataset_dir / f"{file_prefix}_summary.txt"
     metrics_path = dataset_dir / f"{file_prefix}_metrics.csv"
     plot_path = dataset_dir / f"{file_prefix}_trend.png"
+    parameter_plot_base = dataset_dir / f"{file_prefix}_parameters_trend.png"
+    coefficient_plot_base = dataset_dir / f"{file_prefix}_coefficients_trend.png"
 
     metrics_frame.to_csv(metrics_path, index=False)
     _write_summary(summary, summary_path)
     render_trend_plot(metrics_frame, plot_path, window, selected_dataset_id)
+    parameter_plot_paths = render_input_trend_plots(
+        metrics_frame,
+        parameter_plot_base,
+        window=window,
+        title_prefix=f"Parameter trends for dataset {selected_dataset_id or '<null>'}",
+        value_columns=parameter_column_names(latest_slice),
+    )
+    coefficient_plot_paths = render_input_trend_plots(
+        metrics_frame,
+        coefficient_plot_base,
+        window=window,
+        title_prefix=f"Coefficient trends for dataset {selected_dataset_id or '<null>'}",
+        value_columns=coefficient_column_names(latest_slice),
+    )
 
     return AnalysisArtifacts(
         dataset_id=selected_dataset_id,
@@ -149,5 +173,7 @@ def analyze_latest_runs(
         summary_path=summary_path,
         metrics_path=metrics_path,
         plot_path=plot_path,
+        parameter_plot_paths=tuple(parameter_plot_paths),
+        coefficient_plot_paths=tuple(coefficient_plot_paths),
         summary=summary,
     )

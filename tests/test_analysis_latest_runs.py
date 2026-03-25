@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -11,9 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from analysis.analyze_latest_runs import build_parser
 from analysis.latest_runs import analyze_latest_runs, dataset_output_name
-from analysis.plotting import render_trend_plot
+from analysis.plotting import render_input_trend_plots, render_trend_plot
 from analysis.rolling_metrics import build_metrics_frame
-from analysis.run_history import load_run_history
+from analysis.run_history import coefficient_column_names, load_run_history, parameter_column_names
 from analysis.trend_summary import compare_rolling_segments
 
 
@@ -29,6 +30,8 @@ def build_history_db(
             int | None,
             str,
             str,
+            dict[str, float] | None,
+            dict[str, dict[str, dict[str, float]]] | None,
         ]
     ],
 ) -> None:
@@ -38,7 +41,9 @@ def build_history_db(
             """
             CREATE TABLE model_input (
                 model_id TEXT PRIMARY KEY,
-                dataset_id TEXT
+                dataset_id TEXT,
+                input_param TEXT,
+                input_coef TEXT
             )
             """
         )
@@ -56,8 +61,23 @@ def build_history_db(
             """
         )
         conn.executemany(
-            "INSERT INTO model_input (model_id, dataset_id) VALUES (?, ?)",
-            [(row[0], row[1]) for row in rows],
+            """
+            INSERT INTO model_input (model_id, dataset_id, input_param, input_coef)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (
+                    row[0],
+                    row[1],
+                    json.dumps(row[8] if len(row) > 8 and row[8] is not None else {"param_a": float(index + 1)}),
+                    json.dumps(
+                        row[9]
+                        if len(row) > 9 and row[9] is not None
+                        else {"func_a": {"x_a": {"beta_a": float(index + 1)}}}
+                    ),
+                )
+                for index, row in enumerate(rows)
+            ],
         )
         conn.executemany(
             """
@@ -92,6 +112,8 @@ class StubRunRecord:
     derived_round_index: int
     started_at_utc: str | None = None
     completed_at_utc: str | None = None
+    input_param: dict[str, float] | None = None
+    input_coef: dict[str, dict[str, dict[str, float]]] | None = None
 
 
 def stub_rows(values: list[float]) -> list[StubRunRecord]:
@@ -106,6 +128,8 @@ def stub_rows(values: list[float]) -> list[StubRunRecord]:
             batch_index=1,
             sequence_index=index,
             derived_round_index=1,
+            input_param={},
+            input_coef={},
         )
         for index, value in enumerate(values, start=1)
     ]
@@ -125,6 +149,8 @@ def test_load_run_history_defaults_to_dataset_of_newest_tracked_run(tmp_path: Pa
                 1,
                 "2026-03-24T00:00:00Z",
                 "2026-03-24T00:01:00Z",
+                None,
+                None,
             ),
             (
                 "newer-b",
@@ -135,6 +161,8 @@ def test_load_run_history_defaults_to_dataset_of_newest_tracked_run(tmp_path: Pa
                 1,
                 "2026-03-24T01:00:00Z",
                 "2026-03-24T01:01:00Z",
+                None,
+                None,
             ),
         ],
     )
@@ -160,6 +188,8 @@ def test_round_derivation_matches_trial_reset_ordering(tmp_path: Path) -> None:
                 1,
                 "2026-03-24T00:00:00Z",
                 "2026-03-24T00:05:00Z",
+                None,
+                None,
             ),
             (
                 "round-2-first",
@@ -170,6 +200,8 @@ def test_round_derivation_matches_trial_reset_ordering(tmp_path: Path) -> None:
                 1,
                 "2026-03-24T01:00:00Z",
                 "2026-03-24T01:05:00Z",
+                None,
+                None,
             ),
             (
                 "round-3-first",
@@ -180,6 +212,8 @@ def test_round_derivation_matches_trial_reset_ordering(tmp_path: Path) -> None:
                 1,
                 "2026-03-24T02:00:00Z",
                 "2026-03-24T02:05:00Z",
+                None,
+                None,
             ),
         ],
     )
@@ -205,6 +239,59 @@ def test_build_metrics_frame_computes_rolling_statistics() -> None:
     assert pytest.approx(frame.loc[2, "rolling_iqr_3"]) == 1.0
     assert pytest.approx(frame.loc[2, "rolling_std_3"]) == 1.0
     assert pytest.approx(frame.loc[3, "rolling_median_3"]) == 3.0
+
+
+def test_load_run_history_parses_input_json_and_metrics_frame_flattens_columns(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_history_db(
+        db_path,
+        [
+            (
+                "m1",
+                "dataset-a",
+                "completed",
+                0.5,
+                1,
+                1,
+                "2026-03-24T00:00:00Z",
+                "2026-03-24T00:01:00Z",
+                {"alpha": 1.0, "beta": 2.0},
+                {"func_b": {"x_b": {"b2": 4.0}}, "func_a": {"x_a": {"a1": 3.0}}},
+            ),
+            (
+                "m2",
+                "dataset-a",
+                "completed",
+                0.4,
+                2,
+                1,
+                "2026-03-24T00:02:00Z",
+                "2026-03-24T00:03:00Z",
+                {"alpha": 1.5, "beta": 2.5},
+                {"func_b": {"x_b": {"b2": 4.5}}, "func_a": {"x_a": {"a1": 3.5}}},
+            ),
+        ],
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        _, rows = load_run_history(conn, dataset_id="dataset-a")
+
+    assert rows[0].input_param == {"alpha": 1.0, "beta": 2.0}
+    assert rows[0].input_coef == {
+        "func_b": {"x_b": {"b2": 4.0}},
+        "func_a": {"x_a": {"a1": 3.0}},
+    }
+    assert parameter_column_names(rows) == ["alpha", "beta"]
+    assert coefficient_column_names(rows) == ["func_a.x_a.a1", "func_b.x_b.b2"]
+
+    frame = build_metrics_frame(rows, window=2)
+
+    assert frame["alpha"].tolist() == [1.0, 1.5]
+    assert frame["beta"].tolist() == [2.0, 2.5]
+    assert frame["func_a.x_a.a1"].tolist() == [3.0, 3.5]
+    assert frame["func_b.x_b.b2"].tolist() == [4.0, 4.5]
 
 
 def test_compare_rolling_segments_detects_shrinking_spread() -> None:
@@ -241,6 +328,32 @@ def test_render_trend_plot_handles_high_outliers(tmp_path: Path) -> None:
     assert output_path.stat().st_size > 0
 
 
+def test_render_input_trend_plots_paginates(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+
+    frame = build_metrics_frame(stub_rows([0.1, 0.2, 0.15, 0.12, 0.18]), window=3)
+    value_columns: list[str] = []
+    for index in range(13):
+        column = f"param_{index:02d}"
+        frame[column] = [index + value for value in (0.0, 0.1, 0.2, 0.15, 0.18)]
+        value_columns.append(column)
+
+    output_path = tmp_path / "parameters_trend.png"
+    plot_paths = render_input_trend_plots(
+        frame,
+        output_path,
+        window=3,
+        title_prefix="Parameter trends",
+        value_columns=value_columns,
+        max_subplots_per_page=12,
+    )
+
+    assert len(plot_paths) == 2
+    for path in plot_paths:
+        assert path.exists()
+        assert path.stat().st_size > 0
+
+
 def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")
 
@@ -258,6 +371,8 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
                 1,
                 "2026-03-24T00:00:00Z",
                 "2026-03-24T00:01:00Z",
+                {"alpha": 1.0},
+                {"func_a": {"x_a": {"beta_a": 0.1}}},
             ),
             (
                 "m2",
@@ -268,6 +383,8 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
                 1,
                 "2026-03-24T00:02:00Z",
                 "2026-03-24T00:03:00Z",
+                {"alpha": 1.1},
+                {"func_a": {"x_a": {"beta_a": 0.2}}},
             ),
             (
                 "m3",
@@ -278,6 +395,8 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
                 1,
                 "2026-03-24T00:04:00Z",
                 "2026-03-24T00:05:00Z",
+                {"alpha": 1.2},
+                {"func_a": {"x_a": {"beta_a": 0.3}}},
             ),
             (
                 "m4",
@@ -288,6 +407,8 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
                 1,
                 "2026-03-24T00:06:00Z",
                 "2026-03-24T00:07:00Z",
+                {"alpha": 1.3},
+                {"func_a": {"x_a": {"beta_a": 0.4}}},
             ),
             (
                 "m5",
@@ -298,6 +419,8 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
                 1,
                 "2026-03-24T00:08:00Z",
                 "2026-03-24T00:09:00Z",
+                {"alpha": 1.4},
+                {"func_a": {"x_a": {"beta_a": 0.5}}},
             ),
             (
                 "m6",
@@ -308,6 +431,8 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
                 1,
                 "2026-03-24T00:10:00Z",
                 "2026-03-24T00:11:00Z",
+                {"alpha": 1.5},
+                {"func_a": {"x_a": {"beta_a": 0.6}}},
             ),
         ],
     )
@@ -324,8 +449,12 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
     assert artifacts.summary_path.exists()
     assert artifacts.metrics_path.exists()
     assert artifacts.plot_path.exists()
+    assert artifacts.parameter_plot_paths
+    assert artifacts.coefficient_plot_paths
     summary_text = artifacts.summary_path.read_text(encoding="utf-8").lower()
     metrics_header = artifacts.metrics_path.read_text(encoding="utf-8").splitlines()[0]
     assert "rolling center:" in summary_text
     assert "rolling spread:" in summary_text
     assert "rolling_std_3" in metrics_header
+    assert "alpha" in metrics_header
+    assert "func_a.x_a.beta_a" in metrics_header

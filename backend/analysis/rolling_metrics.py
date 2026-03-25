@@ -4,7 +4,12 @@ from collections.abc import Sequence
 
 import pandas as pd
 
-from .run_history import RunRecord
+from .run_history import (
+    RunRecord,
+    coefficient_column_names,
+    flatten_run_inputs,
+    parameter_column_names,
+)
 
 
 def _best_so_far(values: Sequence[float | None]) -> list[float | None]:
@@ -42,6 +47,15 @@ def build_metrics_frame(rows: Sequence[RunRecord], window: int) -> pd.DataFrame:
 
     if frame.empty:
         return frame
+
+    flattened_input_rows = [flatten_run_inputs(row) for row in rows]
+    flat_frame = pd.DataFrame(flattened_input_rows)
+    ordered_input_columns = parameter_column_names(list(rows)) + coefficient_column_names(list(rows))
+    if ordered_input_columns:
+        for column in ordered_input_columns:
+            if column not in flat_frame.columns:
+                flat_frame[column] = pd.NA
+        frame = pd.concat([frame, flat_frame[ordered_input_columns]], axis=1)
 
     frame["best_so_far"] = _best_so_far(frame["fit_pooled"].tolist())
 

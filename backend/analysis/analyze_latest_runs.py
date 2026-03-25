@@ -71,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Summary: {artifacts.summary_path}")
     print(f"Metrics CSV: {artifacts.metrics_path}")
     print(f"Trend PNG: {artifacts.plot_path}")
+    for path in artifacts.parameter_plot_paths:
+        print(f"Parameter trend PNG: {path}")
+    for path in artifacts.coefficient_plot_paths:
+        print(f"Coefficient trend PNG: {path}")
     return 0
 
 

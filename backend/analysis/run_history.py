@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import sqlite3
 import sys
-
-
 @dataclass(frozen=True)
 class RunRecord:
     model_id: str
@@ -21,6 +20,8 @@ class RunRecord:
     derived_round_index: int
     model_input_rowid: int | None
     model_output_rowid: int | None
+    input_param: dict[str, float]
+    input_coef: dict[str, dict[str, dict[str, float]]]
 
 
 def parse_iso_timestamp(value: str | None) -> datetime | None:
@@ -51,8 +52,8 @@ def _trial_sort_key(row: tuple[object, ...]) -> tuple[object, ...]:
     started_at = parse_iso_timestamp(started_at_value)
     completed_at = parse_iso_timestamp(completed_at_value)
     primary_timestamp = started_at if started_at is not None else completed_at
-    input_rowid = row[8]
-    output_rowid = row[9]
+    input_rowid = row[10]
+    output_rowid = row[11]
 
     return (
         0 if primary_timestamp is not None else 1,
@@ -92,6 +93,89 @@ def resolve_latest_dataset_id(cursor: sqlite3.Cursor) -> str | None:
     return row[0]
 
 
+def _parse_numeric_dict(value: object) -> dict[str, float]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    normalized: dict[str, float] = {}
+    for key, item in parsed.items():
+        if not isinstance(key, str):
+            continue
+        try:
+            normalized[key] = float(item)
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
+def _parse_nested_numeric_dict(value: object) -> dict[str, dict[str, dict[str, float]]]:
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    normalized: dict[str, dict[str, dict[str, float]]] = {}
+    for func_name, x_map in parsed.items():
+        if not isinstance(func_name, str) or not isinstance(x_map, dict):
+            continue
+        normalized_x_map: dict[str, dict[str, float]] = {}
+        for x_name, beta_map in x_map.items():
+            if not isinstance(x_name, str) or not isinstance(beta_map, dict):
+                continue
+            normalized_beta_map: dict[str, float] = {}
+            for beta_name, beta_value in beta_map.items():
+                if not isinstance(beta_name, str):
+                    continue
+                try:
+                    normalized_beta_map[beta_name] = float(beta_value)
+                except (TypeError, ValueError):
+                    continue
+            normalized_x_map[x_name] = normalized_beta_map
+        normalized[func_name] = normalized_x_map
+    return normalized
+
+
+def parameter_column_names(rows: list[RunRecord]) -> list[str]:
+    return sorted({key for row in rows for key in row.input_param.keys()})
+
+
+def coefficient_column_names(rows: list[RunRecord]) -> list[str]:
+    return sorted(
+        {
+            f"{func_name}.{x_name}.{beta_name}"
+            for row in rows
+            for func_name, x_map in row.input_coef.items()
+            for x_name, beta_map in x_map.items()
+            for beta_name in beta_map.keys()
+        }
+    )
+
+
+def flatten_run_inputs(row: RunRecord) -> dict[str, float]:
+    flattened: dict[str, float] = {}
+    for key in sorted(row.input_param.keys()):
+        flattened[key] = float(row.input_param[key])
+
+    for func_name in sorted(row.input_coef.keys()):
+        x_map = row.input_coef[func_name]
+        for x_name in sorted(x_map.keys()):
+            beta_map = x_map[x_name]
+            for beta_name in sorted(beta_map.keys()):
+                flattened[f"{func_name}.{x_name}.{beta_name}"] = float(beta_map[beta_name])
+
+    return flattened
+
+
 def load_dataset_rows(cursor: sqlite3.Cursor, dataset_id: str | None) -> list[tuple[object, ...]]:
     if dataset_id is None:
         rows = cursor.execute(
@@ -105,6 +189,8 @@ def load_dataset_rows(cursor: sqlite3.Cursor, dataset_id: str | None) -> list[tu
                 mo.batch_index,
                 mo.started_at_utc,
                 mo.completed_at_utc,
+                mi.input_param,
+                mi.input_coef,
                 mi.rowid,
                 mo.rowid
             FROM model_output mo
@@ -125,6 +211,8 @@ def load_dataset_rows(cursor: sqlite3.Cursor, dataset_id: str | None) -> list[tu
                 mo.batch_index,
                 mo.started_at_utc,
                 mo.completed_at_utc,
+                mi.input_param,
+                mi.input_coef,
                 mi.rowid,
                 mo.rowid
             FROM model_output mo
@@ -166,8 +254,10 @@ def normalize_rows(rows: list[tuple[object, ...]]) -> list[RunRecord]:
                 completed_at_utc=row[7] if isinstance(row[7], str) or row[7] is None else str(row[7]),
                 sequence_index=sequence_index,
                 derived_round_index=derived_round_index,
-                model_input_rowid=row[8] if isinstance(row[8], int) else None,
-                model_output_rowid=row[9] if isinstance(row[9], int) else None,
+                model_input_rowid=row[10] if isinstance(row[10], int) else None,
+                model_output_rowid=row[11] if isinstance(row[11], int) else None,
+                input_param=_parse_numeric_dict(row[8]),
+                input_coef=_parse_nested_numeric_dict(row[9]),
             )
         )
 

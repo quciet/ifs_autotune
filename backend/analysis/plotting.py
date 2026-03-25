@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
+import textwrap
 
 import pandas as pd
 
@@ -23,6 +25,24 @@ def _clipped_fit_range(fit_rows: pd.DataFrame) -> tuple[float, float, int]:
 
     outlier_count = int((fit_values > clipped_upper).sum())
     return lower_bound, clipped_upper, outlier_count
+
+
+def _rolling_median(series: pd.Series, window: int) -> pd.Series:
+    valid = series.dropna()
+    return valid.rolling(window=window, min_periods=window).median().reindex(series.index)
+
+
+def _wrap_label(label: str, width: int = 36) -> str:
+    return "\n".join(textwrap.wrap(label, width=width)) or label
+
+
+def _page_paths(output_path: Path, page_count: int) -> list[Path]:
+    if page_count <= 1:
+        return [output_path]
+    return [
+        output_path.with_name(f"{output_path.stem}_part_{index:02d}{output_path.suffix}")
+        for index in range(1, page_count + 1)
+    ]
 
 
 def render_trend_plot(
@@ -162,3 +182,101 @@ def render_trend_plot(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output_path, bbox_inches="tight")
     plt.close(figure)
+
+
+def render_input_trend_plots(
+    metrics_frame: pd.DataFrame,
+    output_path: Path,
+    *,
+    window: int,
+    title_prefix: str,
+    value_columns: list[str],
+    max_subplots_per_page: int = 12,
+) -> list[Path]:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError as exc:  # pragma: no cover - runtime guard
+        raise RuntimeError(
+            "matplotlib is required to render trend analysis PNG outputs."
+        ) from exc
+
+    available_columns = [column for column in value_columns if column in metrics_frame.columns]
+    if not available_columns:
+        return []
+
+    page_count = math.ceil(len(available_columns) / max_subplots_per_page)
+    output_paths = _page_paths(output_path, page_count)
+
+    for page_index, page_path in enumerate(output_paths):
+        start = page_index * max_subplots_per_page
+        end = start + max_subplots_per_page
+        page_columns = available_columns[start:end]
+        ncols = 2
+        nrows = math.ceil(len(page_columns) / ncols)
+
+        figure, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=(14, max(3.2 * nrows, 4.8)),
+            dpi=140,
+            sharex=True,
+        )
+        figure.patch.set_facecolor("white")
+        axes_list = list(axes.ravel() if hasattr(axes, "ravel") else [axes])
+
+        for axis, column in zip(axes_list, page_columns):
+            series = pd.to_numeric(metrics_frame[column], errors="coerce")
+            valid_rows = metrics_frame[series.notna()]
+            if valid_rows.empty:
+                axis.set_visible(False)
+                continue
+
+            rolling_median = _rolling_median(series, window)
+            median_rows = metrics_frame[rolling_median.notna()]
+
+            axis.scatter(
+                valid_rows["trial_index"],
+                pd.to_numeric(valid_rows[column], errors="coerce"),
+                s=12,
+                alpha=0.35,
+                color="#205493",
+                label="Raw value",
+            )
+            if not median_rows.empty:
+                axis.plot(
+                    median_rows["trial_index"],
+                    rolling_median[rolling_median.notna()],
+                    linewidth=2.4,
+                    color="#1b7837",
+                    label=f"Rolling median ({window})",
+                )
+
+            axis.set_title(_wrap_label(column), fontsize=9, fontweight="bold")
+            axis.grid(True, alpha=0.2)
+
+        for axis in axes_list[len(page_columns):]:
+            axis.set_visible(False)
+
+        if axes_list:
+            axes_list[0].legend(loc="upper right")
+        for axis in axes_list[-ncols:]:
+            if axis.get_visible():
+                axis.set_xlabel("Trial index")
+        for row_start in range(0, len(axes_list), ncols):
+            axis = axes_list[row_start]
+            if axis.get_visible():
+                axis.set_ylabel("Input value")
+
+        title = title_prefix
+        if page_count > 1:
+            title = f"{title_prefix} (page {page_index + 1} of {page_count})"
+        figure.suptitle(title, fontweight="bold", y=0.995)
+        figure.tight_layout(rect=(0, 0, 1, 0.98))
+        page_path.parent.mkdir(parents=True, exist_ok=True)
+        figure.savefig(page_path, bbox_inches="tight")
+        plt.close(figure)
+
+    return output_paths
