@@ -652,6 +652,14 @@ function TuneIFsPage({
   const clampEndYear = (value: number) =>
     Math.min(MAX_END_YEAR, Math.max(minEndYear, value));
 
+  const normalizeRestoredEndYear = (value: unknown) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return clampEndYear(DEFAULT_END_YEAR);
+    }
+    return clampEndYear(parsed);
+  };
+
   useEffect(() => {
     const normalized =
       typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null;
@@ -694,7 +702,11 @@ function TuneIFsPage({
       setStatusMessage("Waiting to start.");
       setStatusLevel("info");
     }
+    const restoredEndYear = normalizeRestoredEndYear(initialRunConfig?.endYear);
     setModelSetupResult(null);
+    setEndYear(restoredEndYear);
+    setEndYearInput(String(restoredEndYear));
+    targetEndYearRef.current = restoredEndYear;
     setProgressDatasetId(
       typeof initialRunConfig?.datasetId === "string"
         ? initialRunConfig.datasetId
@@ -718,12 +730,15 @@ function TuneIFsPage({
     validatedInputPath,
     outputDirectory,
     initialRunConfig?.datasetId,
+    initialRunConfig?.endYear,
     initialRunConfig?.initialModelId,
+    minEndYear,
   ]);
 
   useEffect(() => {
     setEndYear((current) => {
-      const fallback = Number.isFinite(current) ? (current as number) : DEFAULT_END_YEAR;
+      const restored = normalizeRestoredEndYear(initialRunConfig?.endYear);
+      const fallback = Number.isFinite(current) ? (current as number) : restored;
       const next = clampEndYear(fallback);
       if (next !== current) {
         setEndYearInput(String(next));
@@ -731,7 +746,7 @@ function TuneIFsPage({
       targetEndYearRef.current = next;
       return next;
     });
-  }, [minEndYear]);
+  }, [initialRunConfig?.endYear, minEndYear]);
 
   useEffect(() => {
     const unsubscribe = subscribeToIFsProgress((event: IFsProgressEvent) => {
