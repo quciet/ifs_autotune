@@ -560,6 +560,7 @@ function TuneIFsPage({
   const logIdRef = useRef(0);
   const mlConsoleBodyRef = useRef<HTMLDivElement | null>(null);
   const mlAutoScrollRef = useRef(true);
+  const previousInitialMLJobRunningRef = useRef(Boolean(initialMLJobRunning));
 
   const scrollMLLogToBottom = () => {
     const el = mlConsoleBodyRef.current;
@@ -668,17 +669,45 @@ function TuneIFsPage({
   }, [baseYear]);
 
   useEffect(() => {
-    if (!initialMLJobRunning) {
+    const nextRunning = Boolean(initialMLJobRunning);
+    const wasRunning = previousInitialMLJobRunningRef.current;
+    previousInitialMLJobRunningRef.current = nextRunning;
+
+    if (nextRunning) {
+      setRunning(true);
+      setStatusMessage("Re-attached to running ML Optimization job.");
+      setStatusLevel("info");
+      if (initialMLJobProgress) {
+        setCurrentModelProgress(initialMLJobProgress);
+      }
       return;
     }
 
-    setRunning(true);
-    setStatusMessage("Re-attached to running ML Optimization job.");
-    setStatusLevel("info");
-    if (initialMLJobProgress) {
-      setCurrentModelProgress(initialMLJobProgress);
+    if (wasRunning) {
+      setRunning(false);
+      setStopRequested(false);
+      setStopAcknowledged(false);
+      setCurrentModelProgress(null);
+
+      if (initialRunResult) {
+        const message =
+          initialTerminationReason === "stopped_gracefully"
+            ? "ML optimization stopped after the current run."
+            : "ML optimization completed successfully.";
+        setRunResult(initialRunResult);
+        setStatusMessage(`[ml_driver] ${message}`);
+        setStatusLevel("success");
+      } else {
+        setStatusMessage("Waiting to start.");
+        setStatusLevel("info");
+      }
     }
-  }, [initialMLJobRunning, initialMLJobProgress]);
+  }, [
+    initialMLJobProgress,
+    initialMLJobRunning,
+    initialRunResult,
+    initialTerminationReason,
+  ]);
 
   useEffect(() => {
     setStopRequested(Boolean(initialStopRequested));
