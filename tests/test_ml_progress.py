@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 import ml_progress
+from model_status import FIT_EVALUATED, IFS_RUN_COMPLETED, IFS_RUN_FAILED
 
 
 def build_progress_db(
@@ -479,5 +480,135 @@ def test_main_returns_null_reference_fit_when_dataset_baseline_has_no_output(
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
 
+    assert payload["data"]["reference_model_id"] == "seed-model"
+    assert payload["data"]["reference_fit_pooled"] is None
+
+
+def test_main_hides_fallback_fit_for_new_missing_fit_statuses(
+    tmp_path: Path, capsys
+) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_progress_db(
+        db_path,
+        input_rows=[
+            ("seed-model", "dataset-1"),
+            ("ifs-failed", "dataset-1"),
+            ("fit-missing", "dataset-1"),
+            ("fit-ok", "dataset-1"),
+        ],
+        output_rows=[
+            (
+                "ifs-failed",
+                IFS_RUN_FAILED,
+                1e6,
+                1,
+                None,
+                "2026-03-12T10:00:00Z",
+                "2026-03-12T10:05:00Z",
+            ),
+            (
+                "fit-missing",
+                IFS_RUN_COMPLETED,
+                1e6,
+                2,
+                None,
+                "2026-03-12T10:06:00Z",
+                "2026-03-12T10:07:00Z",
+            ),
+            (
+                "fit-ok",
+                FIT_EVALUATED,
+                4.5,
+                3,
+                None,
+                "2026-03-12T10:08:00Z",
+                "2026-03-12T10:09:00Z",
+            ),
+        ],
+    )
+
+    exit_code = ml_progress.main(["--bigpopa-db", str(db_path), "--dataset-id", "dataset-1"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["trials"] == [
+        {
+            "model_id": "ifs-failed",
+            "model_status": IFS_RUN_FAILED,
+            "fit_pooled": None,
+            "fit_missing": True,
+            "trial_index": 1,
+            "batch_index": 1,
+            "started_at_utc": "2026-03-12T10:00:00Z",
+            "completed_at_utc": "2026-03-12T10:05:00Z",
+            "dataset_id": "dataset-1",
+            "sequence_index": 1,
+            "derived_round_index": 1,
+        },
+        {
+            "model_id": "fit-missing",
+            "model_status": IFS_RUN_COMPLETED,
+            "fit_pooled": None,
+            "fit_missing": True,
+            "trial_index": 2,
+            "batch_index": 1,
+            "started_at_utc": "2026-03-12T10:06:00Z",
+            "completed_at_utc": "2026-03-12T10:07:00Z",
+            "dataset_id": "dataset-1",
+            "sequence_index": 2,
+            "derived_round_index": 1,
+        },
+        {
+            "model_id": "fit-ok",
+            "model_status": FIT_EVALUATED,
+            "fit_pooled": 4.5,
+            "fit_missing": False,
+            "trial_index": 3,
+            "batch_index": 1,
+            "started_at_utc": "2026-03-12T10:08:00Z",
+            "completed_at_utc": "2026-03-12T10:09:00Z",
+            "dataset_id": "dataset-1",
+            "sequence_index": 3,
+            "derived_round_index": 1,
+        },
+    ]
+
+
+def test_reference_fit_hides_persisted_fallback_when_baseline_is_not_evaluated(
+    tmp_path: Path, capsys
+) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_progress_db(
+        db_path,
+        input_rows=[
+            ("seed-model", "dataset-1"),
+            ("trial-ok", "dataset-1"),
+        ],
+        output_rows=[
+            (
+                "seed-model",
+                IFS_RUN_COMPLETED,
+                1e6,
+                None,
+                None,
+                "2026-03-12T09:00:00Z",
+                "2026-03-12T09:05:00Z",
+            ),
+            (
+                "trial-ok",
+                FIT_EVALUATED,
+                12.5,
+                1,
+                None,
+                "2026-03-12T10:00:00Z",
+                "2026-03-12T10:05:00Z",
+            ),
+        ],
+    )
+
+    exit_code = ml_progress.main(["--bigpopa-db", str(db_path), "--dataset-id", "dataset-1"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["reference_model_id"] == "seed-model"
     assert payload["data"]["reference_fit_pooled"] is None

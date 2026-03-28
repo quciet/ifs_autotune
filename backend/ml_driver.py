@@ -30,6 +30,14 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import dataset_utils
 from ml_method import normalize_ml_method
+from model_status import (
+    FALLBACK_FIT_POOLED,
+    FIT_EVALUATED,
+    IFS_RUN_FAILED,
+    IFS_RUN_COMPLETED,
+    MODEL_REUSED,
+    cached_result_status,
+)
 from model_setup import canonical_config, ensure_model_output_tracking_columns, hash_model_id
 from optimization.active_learning import active_learning_loop
 from optimization.ensemble_training import (
@@ -39,7 +47,7 @@ from optimization.ensemble_training import (
 from optimization.surrogate_models import BoundsScaler, LogClippedTargetTransform
 
 
-FAIL_Y: float = float(os.getenv("BIGPOPA_FAIL_Y", "1e6"))
+FAIL_Y: float = FALLBACK_FIT_POOLED
 DEFAULT_ML_MEMORY_BUDGET_MB: float = float(os.getenv("BIGPOPA_ML_MEMORY_BUDGET_MB", "512"))
 DEFAULT_GLOBAL_PROPOSAL_FRACTION: float = 0.25
 DEFAULT_LOCAL_TOP_K: int = 5
@@ -47,6 +55,7 @@ DEFAULT_LOCAL_RADIUS_FRACTION: float = 0.15
 DEFAULT_LOCAL_RADIUS_DECAY: float = 0.85
 DEFAULT_LOCAL_RADIUS_MIN_FRACTION: float = 0.05
 DEFAULT_CANDIDATE_REFRESH_INTERVAL: int = 1
+DEFAULT_MAX_POOL_REGENERATIONS: int = 3
 MAX_ENUMERATED_DISCRETE_COMBINATIONS: int = 4096
 PROPOSAL_MODE_REFRESHED: str = "refreshed"
 PROPOSAL_MODE_DIRECT: str = "direct"
@@ -299,6 +308,25 @@ def _upsert_model_output_tracking(
             completed_at_utc,
         ),
     )
+
+
+def _fetch_model_output_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    model_id: str,
+) -> tuple[str | None, float | None]:
+    cursor = conn.cursor()
+    ensure_model_output_tracking_columns(cursor)
+    cursor.execute(
+        "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ? LIMIT 1",
+        (model_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None, None
+    status = row[0] if isinstance(row[0], str) or row[0] is None else str(row[0])
+    fit_pooled = float(row[1]) if row[1] is not None else None
+    return status, fit_pooled
 
 
 def _repair_model_output_batch_indexes(conn: sqlite3.Connection) -> int:
@@ -1377,7 +1405,6 @@ def _run_model(
             trial_index=trial_index,
             batch_index=batch_index,
             started_at_utc=started_at_utc,
-            model_status="running",
         )
         # ----------------------------------------------------------------------
         # HUMAN-READABLE COMMENT (For Codex/GitHub Review)
@@ -1398,14 +1425,11 @@ def _run_model(
         #
         # ----------------------------------------------------------------------
         cur = conn.cursor()
-        cur.execute(
-            "SELECT fit_pooled FROM model_output WHERE model_id = ? LIMIT 1",
-            (model_id,),
-        )
-        row = cur.fetchone()
-        if row and row[0] is not None:
+        existing_status, existing_fit = _fetch_model_output_snapshot(conn, model_id=model_id)
+        if existing_fit is not None:
             # Found previously evaluated model - reuse stored fit_pooled
-            fit_val = float(row[0])
+            fit_val = existing_fit
+            reused_status = cached_result_status(existing_status, fit_val)
             _upsert_model_output_tracking(
                 conn,
                 ifs_id=ifs_id,
@@ -1414,13 +1438,14 @@ def _run_model(
                 batch_index=batch_index,
                 started_at_utc=started_at_utc,
                 completed_at_utc=_utc_now_iso(),
-                model_status="reused",
+                model_status=reused_status,
                 fit_pooled=fit_val,
             )
             point = np.round(flatten_inputs(param_values, coef_values), 6)
             point_text = _format_point_for_log(point)
+            status_text = reused_status or existing_status or "unknown"
             print(
-                f"Reusing evaluated model {model_id} at {point_text} => fit_pooled={fit_val:.6f}",
+                f"Reusing cached model {model_id} at {point_text} => fit_pooled={fit_val:.6f}, status={status_text}",
                 flush=True,
             )
             return fit_val, model_id
@@ -1483,60 +1508,43 @@ def _run_model(
     process = subprocess.run(command, capture_output=False, text=True, env=env)
     if process.returncode != 0:
         with sqlite3.connect(bigpopa_db) as conn:
-            cursor = conn.cursor()
-            ensure_model_output_tracking_columns(cursor)
-            cursor.execute(
-                """
-                INSERT INTO model_output (
-                    ifs_id,
-                    model_id,
-                    model_status,
-                    fit_var,
-                    fit_pooled,
-                    trial_index,
-                    batch_index,
-                    started_at_utc,
-                    completed_at_utc
+            status, fit_val = _fetch_model_output_snapshot(conn, model_id=model_id)
+            if fit_val is None:
+                fit_val = FAIL_Y
+                _upsert_model_output_tracking(
+                    conn,
+                    ifs_id=ifs_id,
+                    model_id=model_id,
+                    trial_index=trial_index,
+                    batch_index=batch_index,
+                    started_at_utc=started_at_utc,
+                    completed_at_utc=_utc_now_iso(),
+                    model_status=IFS_RUN_FAILED,
+                    fit_pooled=fit_val,
                 )
-                VALUES (?, ?, 'failed', NULL, ?, ?, ?, ?, ?)
-                ON CONFLICT(model_id) DO UPDATE SET
-                    ifs_id=excluded.ifs_id,
-                    model_status='failed',
-                    fit_var=NULL,
-                    fit_pooled=excluded.fit_pooled,
-                    trial_index=excluded.trial_index,
-                    batch_index=excluded.batch_index,
-                    started_at_utc=excluded.started_at_utc,
-                    completed_at_utc=excluded.completed_at_utc
-                """,
-                (
-                    ifs_id,
-                    model_id,
-                    FAIL_Y,
-                    trial_index,
-                    batch_index,
-                    started_at_utc,
-                    _utc_now_iso(),
-                ),
-            )
+                status = IFS_RUN_FAILED
+            else:
+                _upsert_model_output_tracking(
+                    conn,
+                    ifs_id=ifs_id,
+                    model_id=model_id,
+                    trial_index=trial_index,
+                    batch_index=batch_index,
+                    started_at_utc=started_at_utc,
+                    completed_at_utc=_utc_now_iso(),
+                    fit_pooled=fit_val,
+                )
         print(
-            f"IFs run failed for model_id={model_id} (return_code={process.returncode}); using FAIL_Y={FAIL_Y:.6f}",
+            f"IFs runtime exited non-zero for model_id={model_id} (return_code={process.returncode}); "
+            f"using recorded fit_pooled={fit_val:.6f}, status={status or IFS_RUN_FAILED}",
             flush=True,
         )
-        return FAIL_Y, model_id
+        return fit_val, model_id
 
     with sqlite3.connect(bigpopa_db) as conn:
-        cursor = conn.cursor()
-        ensure_model_output_tracking_columns(cursor)
-        cursor.execute(
-            "SELECT fit_pooled FROM model_output WHERE model_id = ? LIMIT 1", (model_id,)
-        )
-        row = cursor.fetchone()
-        if row is None:
+        status, fit_val = _fetch_model_output_snapshot(conn, model_id=model_id)
+        if fit_val is None:
             raise RuntimeError("fit_pooled not found after IFs run")
-        if row[0] is None:
-            raise RuntimeError("fit_pooled is NULL after IFs run")
-        fit_val = float(row[0])
         _upsert_model_output_tracking(
             conn,
             ifs_id=ifs_id,
@@ -1545,14 +1553,13 @@ def _run_model(
             batch_index=batch_index,
             started_at_utc=started_at_utc,
             completed_at_utc=_utc_now_iso(),
-            model_status="completed",
             fit_pooled=fit_val,
         )
 
     point = np.round(flatten_inputs(param_values, coef_values), 6)
     point_text = _format_point_for_log(point)
     print(
-        f"Evaluated model {model_id} at {point_text} => fit_pooled={fit_val:.6f}",
+        f"Finished model {model_id} at {point_text} => fit_pooled={fit_val:.6f}, status={status or FIT_EVALUATED}",
         flush=True,
     )
     return fit_val, model_id
@@ -1792,6 +1799,7 @@ def main(argv: list[str] | None = None) -> int:
             should_stop=lambda: stop_requested(stop_file),
             candidate_generator=candidate_generator,
             candidate_refresh_interval=DEFAULT_CANDIDATE_REFRESH_INTERVAL,
+            max_pool_regenerations=DEFAULT_MAX_POOL_REGENERATIONS,
             x_scaler=x_scaler,
             y_transformer=y_transformer,
             proposal_penalty_fn=proposal_penalty_fn,

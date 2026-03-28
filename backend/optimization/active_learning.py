@@ -56,6 +56,7 @@ def active_learning_loop(
     should_stop=None,
     candidate_generator=None,
     candidate_refresh_interval: int = 1,
+    max_pool_regenerations: int = 3,
     x_scaler: BoundsScaler | None = None,
     y_transformer: LogClippedTargetTransform | None = None,
     proposal_penalty_fn=None,
@@ -123,7 +124,14 @@ def active_learning_loop(
         if candidate_generator is not None and (
             X_grid is None or candidate_refresh_interval <= 1 or t % candidate_refresh_interval == 0
         ):
-            X_grid = _coerce_candidate_pool(candidate_generator(X_obs=X_obs, Y_obs=Y_obs, iteration=t))
+            X_grid = _coerce_candidate_pool(
+                candidate_generator(
+                    X_obs=X_obs,
+                    Y_obs=Y_obs,
+                    iteration=t,
+                    refresh_attempt=0,
+                )
+            )
         if X_grid is None:
             raise RuntimeError("Candidate generator returned no proposal pool.")
 
@@ -137,6 +145,33 @@ def active_learning_loop(
             chunk_size=max(1, prediction_chunk_size),
             proposal_penalty_fn=proposal_penalty_fn,
         )
+        if best_index is None and candidate_generator is not None:
+            for regeneration_attempt in range(1, max_pool_regenerations + 1):
+                print(
+                    f"{ml_prefix}Candidate pool exhausted; regenerating random pool "
+                    f"({regeneration_attempt}/{max_pool_regenerations}).",
+                    flush=True,
+                )
+                X_grid = _coerce_candidate_pool(
+                    candidate_generator(
+                        X_obs=X_obs,
+                        Y_obs=Y_obs,
+                        iteration=t,
+                        refresh_attempt=regeneration_attempt,
+                    )
+                )
+                best_index = _select_candidate_index(
+                    models=models,
+                    X_grid=X_grid,
+                    results_cache=results_cache,
+                    acquisition=acquisition,
+                    y_best=float(y_best),
+                    kappa=float(kappas[t]),
+                    chunk_size=max(1, prediction_chunk_size),
+                    proposal_penalty_fn=proposal_penalty_fn,
+                )
+                if best_index is not None:
+                    break
         x_next = None
         x_next_array = None
         if best_index is not None:
@@ -144,7 +179,11 @@ def active_learning_loop(
             x_next = candidate.item() if candidate.size == 1 else candidate
             x_next_array = candidate
         if x_next_array is None:
-            print(f"{ml_prefix}All candidates evaluated. Stopping early.", flush=True)
+            print(
+                f"{ml_prefix}All candidates evaluated after pool regeneration attempts. "
+                "Stopping early.",
+                flush=True,
+            )
             break
 
         key = tuple(np.round(x_next_array, 6))

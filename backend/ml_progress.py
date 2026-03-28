@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from model_status import fit_is_missing, visible_fit_pooled
+
 
 def repair_model_output_batch_indexes(conn: sqlite3.Connection) -> int:
     cursor = conn.cursor()
@@ -98,7 +100,12 @@ def resolve_reference_fit(
                 f"dataset; using model {selected_row[0]}."
             )
 
-        return selected_row[0], selected_row[1], warning
+        status_row = cursor.execute(
+            "SELECT model_status FROM model_output WHERE model_id = ? LIMIT 1",
+            (selected_row[0],),
+        ).fetchone()
+        model_status = status_row[0] if status_row else None
+        return selected_row[0], visible_fit_pooled(model_status, selected_row[1]), warning
 
     if not model_id_arg:
         return None, None, None
@@ -111,10 +118,10 @@ def resolve_reference_fit(
         return None, None, None
 
     output_row = cursor.execute(
-        "SELECT fit_pooled FROM model_output WHERE model_id = ? LIMIT 1",
+        "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ? LIMIT 1",
         (model_id_arg,),
     ).fetchone()
-    fit_pooled = output_row[0] if output_row else None
+    fit_pooled = visible_fit_pooled(output_row[0], output_row[1]) if output_row else None
     return model_id_arg, fit_pooled, None
 
 
@@ -164,8 +171,8 @@ def normalize_trial_row(
     derived_round_index: int,
 ) -> dict[str, Any]:
     model_status = row[1]
-    fit_missing = model_status == "failed"
-    fit_pooled = None if fit_missing else row[2]
+    fit_missing = fit_is_missing(model_status, row[2])
+    fit_pooled = visible_fit_pooled(model_status, row[2])
 
     return {
         "model_id": row[0],

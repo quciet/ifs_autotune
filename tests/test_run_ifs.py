@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
 import json
+import io
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -10,20 +12,42 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 import run_ifs
+from model_status import FALLBACK_FIT_POOLED, IFS_RUN_COMPLETED
 
 
 def _create_bigpopa_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "CREATE TABLE model_input (model_id TEXT PRIMARY KEY, input_param TEXT, input_coef TEXT)"
+            """
+            CREATE TABLE model_input (
+                model_id TEXT PRIMARY KEY,
+                input_param TEXT,
+                input_coef TEXT,
+                output_set TEXT
+            )
+            """
         )
         conn.execute(
             "CREATE TABLE ifs_version (ifs_id INTEGER PRIMARY KEY, ifs_static_id INTEGER)"
         )
         conn.execute(
-            "INSERT INTO model_input (model_id, input_param, input_coef) VALUES (?, ?, ?)",
-            ("model-1", json.dumps({}), json.dumps({})),
+            """
+            CREATE TABLE model_output (
+                ifs_id INTEGER,
+                model_id TEXT PRIMARY KEY,
+                model_status TEXT,
+                fit_var TEXT,
+                fit_pooled REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO model_input (model_id, input_param, input_coef, output_set)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("model-1", json.dumps({}), json.dumps({}), json.dumps({"WGDP": "hist_wgdp"})),
         )
         conn.execute(
             "INSERT INTO ifs_version (ifs_id, ifs_static_id) VALUES (?, ?)",
@@ -162,3 +186,137 @@ def test_main_refreshes_dyadic_db_before_launch(
         and "Refreshed dyadic working database" in str(response["message"])
         for response in responses
     )
+
+
+def test_main_keeps_ifs_completed_status_when_extract_compare_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ifs_root = tmp_path / "ifs"
+    output_dir = tmp_path / "output"
+    model_folder = output_dir / "model-1"
+    model_folder.mkdir(parents=True)
+    _create_bigpopa_db(output_dir / "bigpopa.db")
+    (model_folder / "Working.model-1.run.db").write_text("db", encoding="utf-8")
+
+    monkeypatch.setattr(run_ifs, "apply_config_to_ifs_files", lambda **kwargs: None)
+    monkeypatch.setattr(run_ifs, "_refresh_dyadic_work_database", lambda _: False)
+    monkeypatch.setattr(run_ifs, "_read_progress_summary", lambda _: (2030, 123.0))
+    monkeypatch.setattr(
+        run_ifs,
+        "_prepare_run_artifacts",
+        lambda **kwargs: {"model_folder": str(model_folder)},
+    )
+    monkeypatch.setattr(run_ifs, "_reset_working_database", lambda _: None)
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(run_ifs.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(
+        run_ifs.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(returncode=2, cmd=args[0])
+        ),
+    )
+
+    result = run_ifs.main(
+        [
+            "--ifs-root",
+            str(ifs_root),
+            "--output-dir",
+            str(output_dir),
+            "--model-id",
+            "model-1",
+            "--ifs-id",
+            "7",
+            "--base-year",
+            "2020",
+            "--end-year",
+            "2030",
+        ]
+    )
+
+    with sqlite3.connect(output_dir / "bigpopa.db") as conn:
+        row = conn.execute(
+            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
+            ("model-1",),
+        ).fetchone()
+
+    assert result == 1
+    assert row == (IFS_RUN_COMPLETED, FALLBACK_FIT_POOLED)
+
+
+def test_main_treats_handled_missing_pooled_fit_as_successful_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ifs_root = tmp_path / "ifs"
+    output_dir = tmp_path / "output"
+    model_folder = output_dir / "model-1"
+    model_folder.mkdir(parents=True)
+    _create_bigpopa_db(output_dir / "bigpopa.db")
+    (model_folder / "Working.model-1.run.db").write_text("db", encoding="utf-8")
+    responses: list[dict[str, object]] = []
+
+    monkeypatch.setattr(run_ifs, "apply_config_to_ifs_files", lambda **kwargs: None)
+    monkeypatch.setattr(run_ifs, "_refresh_dyadic_work_database", lambda _: False)
+    monkeypatch.setattr(run_ifs, "_read_progress_summary", lambda _: (2030, 123.0))
+    monkeypatch.setattr(
+        run_ifs,
+        "_prepare_run_artifacts",
+        lambda **kwargs: {"model_folder": str(model_folder)},
+    )
+    monkeypatch.setattr(run_ifs, "_reset_working_database", lambda _: None)
+    monkeypatch.setattr(
+        run_ifs,
+        "emit_stage_response",
+        lambda status, stage, message, data: responses.append(
+            {"status": status, "stage": stage, "message": message, "data": data}
+        ),
+    )
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(run_ifs.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(
+        run_ifs.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], returncode=0),
+    )
+
+    result = run_ifs.main(
+        [
+            "--ifs-root",
+            str(ifs_root),
+            "--output-dir",
+            str(output_dir),
+            "--model-id",
+            "model-1",
+            "--ifs-id",
+            "7",
+            "--base-year",
+            "2020",
+            "--end-year",
+            "2030",
+        ]
+    )
+
+    with sqlite3.connect(output_dir / "bigpopa.db") as conn:
+        row = conn.execute(
+            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
+            ("model-1",),
+        ).fetchone()
+
+    assert result == 0
+    assert row == (IFS_RUN_COMPLETED, FALLBACK_FIT_POOLED)
+    assert responses[-1]["status"] == "success"
+    assert responses[-1]["stage"] == "extract_compare"

@@ -18,6 +18,13 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from model_status import (
+    FALLBACK_FIT_POOLED,
+    IFS_CONFIG_APPLIED,
+    IFS_RUN_COMPLETED,
+    IFS_RUN_FAILED,
+    IFS_RUN_STARTED,
+)
 from prepare_coeff_param import apply_config_to_ifs_files
 
 
@@ -80,20 +87,28 @@ def build_command(args: argparse.Namespace) -> List[str]:
     return command
 
 
-def _upsert_model_failed(conn: sqlite3.Connection, ifs_id: int, model_id: str) -> None:
+def _upsert_model_output(
+    conn: sqlite3.Connection,
+    ifs_id: int,
+    model_id: str,
+    *,
+    model_status: str,
+    fit_pooled: float | None = None,
+    fit_var: str | None = None,
+) -> None:
     with conn:
         cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-            VALUES (?, ?, 'failed', NULL, NULL)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(model_id) DO UPDATE SET
                 ifs_id=excluded.ifs_id,
-                model_status='failed',
-                fit_var=NULL,
-                fit_pooled=NULL
+                model_status=excluded.model_status,
+                fit_var=excluded.fit_var,
+                fit_pooled=excluded.fit_pooled
             """,
-            (ifs_id, model_id),
+            (ifs_id, model_id, model_status, fit_var, fit_pooled),
         )
 
 
@@ -235,6 +250,13 @@ def main(argv: list[str] | None = None) -> int:
                 ifs_static_id=int(static_row[0]),
             )
         except Exception as exc:
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -243,9 +265,23 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
+        _upsert_model_output(
+            conn_bp,
+            ifs_id,
+            model_id,
+            model_status=IFS_CONFIG_APPLIED,
+        )
+
         try:
             dyadic_refreshed = _refresh_dyadic_work_database(ifs_root)
         except OSError as exc:
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -275,6 +311,13 @@ def main(argv: list[str] | None = None) -> int:
                 bufsize=1,
             )
         except Exception as exc:  # pragma: no cover - surface unexpected spawn errors
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -282,6 +325,13 @@ def main(argv: list[str] | None = None) -> int:
                 {"error": str(exc)},
             )
             return 1
+
+        _upsert_model_output(
+            conn_bp,
+            ifs_id,
+            model_id,
+            model_status=IFS_RUN_STARTED,
+        )
 
         assert process.stdout is not None  # for the type checker
         try:
@@ -296,7 +346,13 @@ def main(argv: list[str] | None = None) -> int:
         return_code = process.wait()
 
         if return_code != 0:
-            _upsert_model_failed(conn_bp, ifs_id, model_id)
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
 
             emit_stage_response(
                 "error",
@@ -309,6 +365,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             end_year, w_gdp = _read_progress_summary(progress_path)
         except FileNotFoundError:
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -317,6 +380,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         except ValueError as exc:
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -326,6 +396,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         if end_year != args.end_year:
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -344,6 +421,13 @@ def main(argv: list[str] | None = None) -> int:
                 model_id=model_id,
             )
         except FileNotFoundError:
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -352,6 +436,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         except OSError as exc:
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -363,6 +454,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             _reset_working_database(ifs_root)
         except FileNotFoundError as exc:
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -371,6 +469,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         except OSError as exc:
+            _upsert_model_output(
+                conn_bp,
+                ifs_id,
+                model_id,
+                model_status=IFS_RUN_FAILED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -379,20 +484,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        with conn_bp:
-            cursor = conn_bp.cursor()
-            cursor.execute(
-                """
-                INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                VALUES (?, ?, 'completed', NULL, NULL)
-                ON CONFLICT(model_id) DO UPDATE SET
-                    ifs_id=excluded.ifs_id,
-                    model_status='completed',
-                    fit_var=NULL,
-                    fit_pooled=NULL
-                """,
-                (ifs_id, model_id),
-            )
+        _upsert_model_output(
+            conn_bp,
+            ifs_id,
+            model_id,
+            model_status=IFS_RUN_COMPLETED,
+            fit_pooled=FALLBACK_FIT_POOLED,
+        )
 
         emit_stage_response(
             "success",
@@ -412,7 +510,6 @@ def main(argv: list[str] | None = None) -> int:
             input_file_path = os.path.join(output_dir, "StartingPointTable.xlsx")
 
             if not os.path.exists(model_db_path):
-                _upsert_model_failed(conn_bp, ifs_id, model_id)
                 emit_stage_response(
                     "error",
                     "extract_compare",
@@ -443,7 +540,6 @@ def main(argv: list[str] | None = None) -> int:
                             {"bigpopa_db": bigpopa_db_path, "output_set_size": found_pairs},
                         )
                     else:
-                        _upsert_model_failed(conn_bp, ifs_id, model_id)
                         emit_stage_response(
                             "error",
                             "extract_compare",
@@ -452,7 +548,6 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         return 1
             except sqlite3.Error as exc:
-                _upsert_model_failed(conn_bp, ifs_id, model_id)
                 emit_stage_response(
                     "error",
                     "extract_compare",
@@ -461,7 +556,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             except Exception as exc:
-                _upsert_model_failed(conn_bp, ifs_id, model_id)
                 emit_stage_response(
                     "error",
                     "extract_compare",
@@ -497,7 +591,6 @@ def main(argv: list[str] | None = None) -> int:
                 {"model_id": model_id, "ifs_id": ifs_id, "model_folder": payload["model_folder"]},
             )
         except subprocess.CalledProcessError as exc:
-            _upsert_model_failed(conn_bp, ifs_id, model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",
@@ -506,7 +599,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         except Exception as exc:
-            _upsert_model_failed(conn_bp, ifs_id, model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",

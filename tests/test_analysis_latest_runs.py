@@ -16,6 +16,7 @@ from analysis.plotting import render_input_trend_plots, render_trend_plot
 from analysis.rolling_metrics import build_metrics_frame
 from analysis.run_history import coefficient_column_names, load_run_history, parameter_column_names
 from analysis.trend_summary import compare_rolling_segments
+from model_status import FIT_EVALUATED, IFS_RUN_COMPLETED, IFS_RUN_FAILED
 
 
 def build_history_db(
@@ -458,3 +459,57 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
     assert "rolling_std_3" in metrics_header
     assert "alpha" in metrics_header
     assert "func_a.x_a.beta_a" in metrics_header
+
+
+def test_load_run_history_hides_fallback_fit_for_missing_fit_statuses(tmp_path: Path) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_history_db(
+        db_path,
+        [
+            (
+                "failed-run",
+                "dataset-a",
+                IFS_RUN_FAILED,
+                1e6,
+                1,
+                1,
+                "2026-03-24T00:00:00Z",
+                "2026-03-24T00:01:00Z",
+                None,
+                None,
+            ),
+            (
+                "fit-missing",
+                "dataset-a",
+                IFS_RUN_COMPLETED,
+                1e6,
+                2,
+                1,
+                "2026-03-24T00:02:00Z",
+                "2026-03-24T00:03:00Z",
+                None,
+                None,
+            ),
+            (
+                "fit-ok",
+                "dataset-a",
+                FIT_EVALUATED,
+                0.4,
+                3,
+                1,
+                "2026-03-24T00:04:00Z",
+                "2026-03-24T00:05:00Z",
+                None,
+                None,
+            ),
+        ],
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        _, rows = load_run_history(conn, dataset_id="dataset-a")
+
+    assert [(row.model_id, row.fit_missing, row.fit_pooled) for row in rows] == [
+        ("failed-run", True, None),
+        ("fit-missing", True, None),
+        ("fit-ok", False, 0.4),
+    ]

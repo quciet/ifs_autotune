@@ -13,6 +13,7 @@ import pandas as pd
 
 from combine_var_hist import combine_var_hist
 from model_setup import ensure_bigpopa_schema
+from model_status import FALLBACK_FIT_POOLED, FIT_EVALUATED, IFS_RUN_COMPLETED
 
 
 def log(status: str, message: str, **kwargs) -> None:
@@ -49,6 +50,46 @@ def format_metric(value: float | None) -> str:
     if value is None:
         return "None"
     return f"{value:.3e}" if abs(value) < 1e-3 else f"{value:.6f}"
+
+
+def _upsert_model_output(
+    bp: sqlite3.Connection,
+    *,
+    ifs_id: int,
+    model_id: str,
+    model_status: str,
+    fit_var: str | None,
+    fit_pooled: float | None,
+) -> None:
+    with bp:
+        cursor = bp.cursor()
+        cursor.execute(
+            """
+            UPDATE model_output
+            SET model_status=?, fit_var=?, fit_pooled=?
+            WHERE model_id=?
+            """,
+            (model_status, fit_var, fit_pooled, model_id),
+        )
+        if cursor.rowcount == 0:
+            cursor.execute(
+                """
+                INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (ifs_id, model_id, model_status, fit_var, fit_pooled),
+            )
+
+
+def _persist_fit_unavailable(bp: sqlite3.Connection, *, ifs_id: int, model_id: str) -> None:
+    _upsert_model_output(
+        bp,
+        ifs_id=ifs_id,
+        model_id=model_id,
+        model_status=IFS_RUN_COMPLETED,
+        fit_var=None,
+        fit_pooled=FALLBACK_FIT_POOLED,
+    )
 
 
 def main() -> int:
@@ -200,6 +241,7 @@ def main() -> int:
 
         if not row or not row[0]:
             log("error", "No output_set found in model_input for this model_id", model_id=model_id)
+            _persist_fit_unavailable(bp, ifs_id=ifs_id, model_id=model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",
@@ -212,6 +254,7 @@ def main() -> int:
             output_set = json.loads(row[0])
         except Exception as exc:
             log("error", f"Failed to parse output_set JSON: {exc}", model_id=model_id)
+            _persist_fit_unavailable(bp, ifs_id=ifs_id, model_id=model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",
@@ -222,6 +265,7 @@ def main() -> int:
 
         if not output_set:
             log("warn", "Output_set is empty; nothing to extract", model_id=model_id)
+            _persist_fit_unavailable(bp, ifs_id=ifs_id, model_id=model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",
@@ -231,6 +275,7 @@ def main() -> int:
             return 1
 
     except Exception as exc:
+        _persist_fit_unavailable(bp, ifs_id=ifs_id, model_id=model_id)
         bp.close()
         emit_stage_response(
             "error",
@@ -244,24 +289,7 @@ def main() -> int:
         hist_db_path = ifs_root / "RUNFILES" / "IFsHistSeries.db"
         if not hist_db_path.exists():
             log("error", f"Historical database not found: {hist_db_path}")
-            with bp:
-                cursor = bp.cursor()
-                cursor.execute(
-                    """
-                    UPDATE model_output
-                    SET model_status='error', fit_var=NULL, fit_pooled=NULL
-                    WHERE model_id=?
-                    """,
-                    (model_id,),
-                )
-                if cursor.rowcount == 0:
-                    cursor.execute(
-                        """
-                        INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                        VALUES (?, ?, 'error', NULL, NULL)
-                        """,
-                        (ifs_id, model_id),
-                    )
+            _persist_fit_unavailable(bp, ifs_id=ifs_id, model_id=model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",
@@ -449,24 +477,39 @@ def main() -> int:
 
         write_fit_json(model_dir, model_id, metric_map, pooled_metric)
 
-        with bp:
-            cursor = bp.cursor()
-            cursor.execute(
-                """
-                UPDATE model_output
-                SET model_status='evaluated', fit_var=?, fit_pooled=?
-                WHERE model_id=?
-                """,
-                (json.dumps(metric_map), pooled_metric, model_id),
+        if pooled_metric is None:
+            _persist_fit_unavailable(bp, ifs_id=ifs_id, model_id=model_id)
+            fallback_message = (
+                "Model comparison completed without a pooled fit metric; "
+                f"persisted fallback fit_pooled={format_metric(FALLBACK_FIT_POOLED)}."
             )
-            if cursor.rowcount == 0:
-                cursor.execute(
-                    """
-                    INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                    VALUES (?, ?, 'evaluated', ?, ?)
-                    """,
-                    (ifs_id, model_id, json.dumps(metric_map), pooled_metric),
-                )
+            log(
+                "warn",
+                fallback_message,
+                file=str(metrics_path),
+            )
+            emit_stage_response(
+                "success",
+                "extract_compare",
+                fallback_message,
+                {
+                    "model_id": model_id,
+                    "fit_pooled": None,
+                    "fit_var": metric_map,
+                    "persisted_fit_pooled": FALLBACK_FIT_POOLED,
+                },
+            )
+            return 0
+
+        fit_var_json = json.dumps(metric_map)
+        _upsert_model_output(
+            bp,
+            ifs_id=ifs_id,
+            model_id=model_id,
+            model_status=FIT_EVALUATED,
+            fit_var=fit_var_json,
+            fit_pooled=pooled_metric,
+        )
 
         log(
             "success",
@@ -482,24 +525,7 @@ def main() -> int:
         )
         return 0
     except Exception as exc:  # noqa: BLE001
-        with bp:
-            cursor = bp.cursor()
-            cursor.execute(
-                """
-                UPDATE model_output
-                SET model_status='error', fit_var=NULL, fit_pooled=NULL
-                WHERE model_id=?
-                """,
-                (model_id,),
-            )
-            if cursor.rowcount == 0:
-                cursor.execute(
-                    """
-                    INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                    VALUES (?, ?, 'error', NULL, NULL)
-                    """,
-                    (ifs_id, model_id),
-                )
+        _persist_fit_unavailable(bp, ifs_id=ifs_id, model_id=model_id)
         emit_stage_response(
             "error",
             "extract_compare",

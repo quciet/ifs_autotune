@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 import json
 import sqlite3
 import sys
+
+from model_status import fit_is_missing, visible_fit_pooled
+
 @dataclass(frozen=True)
 class RunRecord:
     model_id: str
@@ -238,8 +241,8 @@ def normalize_rows(rows: list[tuple[object, ...]]) -> list[RunRecord]:
             derived_round_index += 1
 
         model_status = row[2] if isinstance(row[2], str) or row[2] is None else str(row[2])
-        fit_missing = model_status == "failed"
-        fit_value = None if fit_missing or row[3] is None else float(row[3])
+        fit_missing = fit_is_missing(model_status, row[3])
+        fit_value = visible_fit_pooled(model_status, row[3])
 
         normalized.append(
             RunRecord(

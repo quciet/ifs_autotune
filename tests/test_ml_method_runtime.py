@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +16,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 import ml_driver
 import model_setup
 from ml_method import load_required_ml_method
+from model_status import (
+    FALLBACK_FIT_POOLED,
+    FIT_EVALUATED,
+    IFS_RUN_COMPLETED,
+    IFS_RUN_FAILED,
+    MODEL_REUSED,
+)
 from optimization import active_learning
 from optimization.ensemble_training import ensemble_predict, train_ensemble, validate_surrogate_memory
 from optimization.surrogate_models import BoundsScaler, LogClippedTargetTransform
@@ -110,6 +119,23 @@ def _dimension() -> ml_driver.SearchDimension:
         minimum=0.0,
         maximum=1.0,
     )
+
+
+def _args_namespace(tmp_path: Path, output_dir: Path) -> argparse.Namespace:
+    return argparse.Namespace(
+        ifs_root=str(tmp_path),
+        end_year=2030,
+        output_folder=str(output_dir),
+        base_year=2020,
+        start_token="5",
+        log="jrs.txt",
+        websessionid="session-1",
+    )
+
+
+def _canonical_model_id(*, ifs_id: int, param_values: dict, coef_values: dict, output_set: dict) -> str:
+    canonical = model_setup.canonical_config(ifs_id, param_values, coef_values, output_set)
+    return model_setup.hash_model_id(canonical)
 
 
 @pytest.mark.parametrize(
@@ -590,3 +616,348 @@ def test_proposal_penalty_does_not_change_training_targets() -> None:
     assert np.array_equal(x_obs, np.asarray([[0.0], [1.0]], dtype=float))
     assert np.array_equal(y_obs, np.asarray([2.5, 3.0], dtype=float))
     assert history.shape[0] == 1
+
+
+def test_active_learning_regenerates_exhausted_cached_pool_and_continues() -> None:
+    refresh_attempts: list[int] = []
+    evaluated: list[float] = []
+
+    class FakeModel:
+        def predict(self, X: np.ndarray) -> np.ndarray:
+            X = np.asarray(X, dtype=float)
+            return np.zeros(len(X), dtype=float)
+
+    original_train_ensemble = active_learning.train_ensemble
+    active_learning.train_ensemble = lambda *args, **kwargs: [FakeModel(), FakeModel()]
+    try:
+        x_obs, y_obs, history, _, _ = active_learning.active_learning_loop(
+            f=lambda x: evaluated.append(float(np.atleast_1d(x)[0])) or 3.0,
+            X_obs=np.asarray([[0.0]], dtype=float),
+            Y_obs=np.asarray([2.5], dtype=float),
+            X_grid=None,
+            n_iters=1,
+            model_type="tree",
+            candidate_generator=lambda **kwargs: (
+                refresh_attempts.append(int(kwargs["refresh_attempt"])) or np.asarray(
+                    [[0.0]] if kwargs["refresh_attempt"] == 0 else [[1.0]],
+                    dtype=float,
+                )
+            ),
+        )
+    finally:
+        active_learning.train_ensemble = original_train_ensemble
+
+    assert refresh_attempts == [0, 1]
+    assert evaluated == [1.0]
+    assert np.array_equal(x_obs, np.asarray([[0.0], [1.0]], dtype=float))
+    assert np.array_equal(y_obs, np.asarray([2.5, 3.0], dtype=float))
+    assert history.shape[0] == 1
+
+
+def test_active_learning_stops_after_configured_pool_regeneration_limit() -> None:
+    refresh_attempts: list[int] = []
+
+    class FakeModel:
+        def predict(self, X: np.ndarray) -> np.ndarray:
+            X = np.asarray(X, dtype=float)
+            return np.zeros(len(X), dtype=float)
+
+    original_train_ensemble = active_learning.train_ensemble
+    active_learning.train_ensemble = lambda *args, **kwargs: [FakeModel(), FakeModel()]
+    try:
+        x_obs, y_obs, history, _, _ = active_learning.active_learning_loop(
+            f=lambda x: pytest.fail("No new candidate should be evaluated"),
+            X_obs=np.asarray([[0.0]], dtype=float),
+            Y_obs=np.asarray([2.5], dtype=float),
+            X_grid=None,
+            n_iters=1,
+            model_type="tree",
+            max_pool_regenerations=2,
+            candidate_generator=lambda **kwargs: (
+                refresh_attempts.append(int(kwargs["refresh_attempt"])) or np.asarray([[0.0]], dtype=float)
+            ),
+        )
+    finally:
+        active_learning.train_ensemble = original_train_ensemble
+
+    assert refresh_attempts == [0, 1, 2]
+    assert np.array_equal(x_obs, np.asarray([[0.0]], dtype=float))
+    assert np.array_equal(y_obs, np.asarray([2.5], dtype=float))
+    assert history.size == 0
+
+
+def test_active_learning_uses_later_regenerated_pool_with_fresh_point() -> None:
+    refresh_attempts: list[int] = []
+    evaluated: list[float] = []
+
+    class FakeModel:
+        def predict(self, X: np.ndarray) -> np.ndarray:
+            X = np.asarray(X, dtype=float)
+            return np.zeros(len(X), dtype=float)
+
+    original_train_ensemble = active_learning.train_ensemble
+    active_learning.train_ensemble = lambda *args, **kwargs: [FakeModel(), FakeModel()]
+    try:
+        x_obs, y_obs, history, _, _ = active_learning.active_learning_loop(
+            f=lambda x: evaluated.append(float(np.atleast_1d(x)[0])) or 4.0,
+            X_obs=np.asarray([[0.0]], dtype=float),
+            Y_obs=np.asarray([2.5], dtype=float),
+            X_grid=None,
+            n_iters=1,
+            model_type="tree",
+            max_pool_regenerations=3,
+            candidate_generator=lambda **kwargs: (
+                refresh_attempts.append(int(kwargs["refresh_attempt"])) or np.asarray(
+                    [[0.0]] if kwargs["refresh_attempt"] < 2 else [[2.0]],
+                    dtype=float,
+                )
+            ),
+        )
+    finally:
+        active_learning.train_ensemble = original_train_ensemble
+
+    assert refresh_attempts == [0, 1, 2]
+    assert evaluated == [2.0]
+    assert np.array_equal(x_obs, np.asarray([[0.0], [2.0]], dtype=float))
+    assert np.array_equal(y_obs, np.asarray([2.5, 4.0], dtype=float))
+    assert history.shape[0] == 1
+
+
+def test_run_model_marks_cached_result_as_reused_without_launching_ifs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    param_values = {"a": 0.5}
+    coef_values: dict[str, dict[str, dict[str, float]]] = {}
+    output_set = {"fit": 1}
+    model_id = _canonical_model_id(
+        ifs_id=1,
+        param_values=param_values,
+        coef_values=coef_values,
+        output_set=output_set,
+    )
+
+    _create_bigpopa_db(db_path, initial_model_id=model_id)
+    with sqlite3.connect(db_path) as conn:
+        ml_driver._upsert_model_output_tracking(
+            conn,
+            ifs_id=1,
+            model_id=model_id,
+            trial_index=99,
+            batch_index=1,
+            model_status=FIT_EVALUATED,
+            fit_pooled=12.5,
+        )
+
+    monkeypatch.setattr(
+        ml_driver.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("run_ifs.py should not be launched for cached models"),
+    )
+
+    fit_val, returned_model_id = ml_driver._run_model(
+        args=_args_namespace(tmp_path, output_dir),
+        param_values=param_values,
+        coef_values=coef_values,
+        output_set=output_set,
+        ifs_id=1,
+        dataset_id="dataset-1",
+        bigpopa_db=db_path,
+        dataset_id_supported=True,
+        trial_index=1,
+        batch_index=1,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
+            (model_id,),
+        ).fetchone()
+
+    assert fit_val == 12.5
+    assert returned_model_id == model_id
+    assert row == (MODEL_REUSED, 12.5)
+
+
+def test_run_model_persists_fallback_fit_when_ifs_run_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    _create_bigpopa_db(db_path)
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args[0], returncode=1)
+
+    monkeypatch.setattr(ml_driver.subprocess, "run", fake_run)
+
+    fit_val, model_id = ml_driver._run_model(
+        args=_args_namespace(tmp_path, output_dir),
+        param_values={"a": 0.5},
+        coef_values={},
+        output_set={"fit": 1},
+        ifs_id=1,
+        dataset_id="dataset-1",
+        bigpopa_db=db_path,
+        dataset_id_supported=True,
+        trial_index=1,
+        batch_index=1,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
+            (model_id,),
+        ).fetchone()
+
+    assert fit_val == FALLBACK_FIT_POOLED
+    assert row == (IFS_RUN_FAILED, FALLBACK_FIT_POOLED)
+
+
+def test_run_model_preserves_real_fit_after_successful_fit_evaluation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    _create_bigpopa_db(db_path)
+
+    def fake_run(command, **kwargs):
+        model_id = command[command.index("--model-id") + 1]
+        with sqlite3.connect(db_path) as conn:
+            ml_driver._upsert_model_output_tracking(
+                conn,
+                ifs_id=1,
+                model_id=model_id,
+                trial_index=1,
+                batch_index=1,
+                model_status=FIT_EVALUATED,
+                fit_pooled=7.25,
+            )
+        return subprocess.CompletedProcess(command, returncode=0)
+
+    monkeypatch.setattr(ml_driver.subprocess, "run", fake_run)
+
+    fit_val, model_id = ml_driver._run_model(
+        args=_args_namespace(tmp_path, output_dir),
+        param_values={"a": 0.5},
+        coef_values={},
+        output_set={"fit": 1},
+        ifs_id=1,
+        dataset_id="dataset-1",
+        bigpopa_db=db_path,
+        dataset_id_supported=True,
+        trial_index=1,
+        batch_index=1,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
+            (model_id,),
+        ).fetchone()
+
+    assert fit_val == 7.25
+    assert row == (FIT_EVALUATED, 7.25)
+
+
+def test_run_model_returns_fallback_fit_when_compare_completes_without_pooled_metric(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    _create_bigpopa_db(db_path)
+
+    def fake_run(command, **kwargs):
+        model_id = command[command.index("--model-id") + 1]
+        with sqlite3.connect(db_path) as conn:
+            ml_driver._upsert_model_output_tracking(
+                conn,
+                ifs_id=1,
+                model_id=model_id,
+                trial_index=1,
+                batch_index=1,
+                model_status=IFS_RUN_COMPLETED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
+        return subprocess.CompletedProcess(command, returncode=0)
+
+    monkeypatch.setattr(ml_driver.subprocess, "run", fake_run)
+
+    fit_val, model_id = ml_driver._run_model(
+        args=_args_namespace(tmp_path, output_dir),
+        param_values={"a": 0.5},
+        coef_values={},
+        output_set={"fit": 1},
+        ifs_id=1,
+        dataset_id="dataset-1",
+        bigpopa_db=db_path,
+        dataset_id_supported=True,
+        trial_index=1,
+        batch_index=1,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
+            (model_id,),
+        ).fetchone()
+
+    assert fit_val == FALLBACK_FIT_POOLED
+    assert row == (IFS_RUN_COMPLETED, FALLBACK_FIT_POOLED)
+
+
+def test_run_model_keeps_ifs_completed_status_when_fit_evaluation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    _create_bigpopa_db(db_path)
+
+    def fake_run(command, **kwargs):
+        model_id = command[command.index("--model-id") + 1]
+        with sqlite3.connect(db_path) as conn:
+            ml_driver._upsert_model_output_tracking(
+                conn,
+                ifs_id=1,
+                model_id=model_id,
+                trial_index=1,
+                batch_index=1,
+                model_status=IFS_RUN_COMPLETED,
+                fit_pooled=FALLBACK_FIT_POOLED,
+            )
+        return subprocess.CompletedProcess(command, returncode=1)
+
+    monkeypatch.setattr(ml_driver.subprocess, "run", fake_run)
+
+    fit_val, model_id = ml_driver._run_model(
+        args=_args_namespace(tmp_path, output_dir),
+        param_values={"a": 0.5},
+        coef_values={},
+        output_set={"fit": 1},
+        ifs_id=1,
+        dataset_id="dataset-1",
+        bigpopa_db=db_path,
+        dataset_id_supported=True,
+        trial_index=1,
+        batch_index=1,
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
+            (model_id,),
+        ).fetchone()
+
+    assert fit_val == FALLBACK_FIT_POOLED
+    assert row == (IFS_RUN_COMPLETED, FALLBACK_FIT_POOLED)
