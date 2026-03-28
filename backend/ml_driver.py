@@ -1068,8 +1068,16 @@ def _build_candidate_generator(
         budget_bytes=memory_budget_bytes,
     )
 
-    def generator(*, X_obs: np.ndarray, Y_obs: np.ndarray, iteration: int) -> np.ndarray:
-        rng = np.random.default_rng(run_seed + int(iteration) + 1)
+    def generator(
+        *,
+        X_obs: np.ndarray,
+        Y_obs: np.ndarray,
+        iteration: int,
+        refresh_attempt: int = 0,
+    ) -> np.ndarray:
+        # Refresh attempts must produce a new deterministic pool for the same
+        # optimization iteration when the previous pool was already exhausted.
+        rng = np.random.default_rng(run_seed + int(iteration) + int(refresh_attempt) + 1)
         explicit_dimensions, _ = _split_search_space(search_space)
         discrete_combinations = _select_discrete_combinations(
             explicit_dimensions,
@@ -1152,7 +1160,13 @@ def _build_direct_candidate_generator(
     search_space: list[SearchDimension],
     run_seed: int,
 ) -> Callable[..., np.ndarray]:
-    def generator(*, X_obs: np.ndarray, Y_obs: np.ndarray, iteration: int) -> np.ndarray:
+    def generator(
+        *,
+        X_obs: np.ndarray,
+        Y_obs: np.ndarray,
+        iteration: int,
+        refresh_attempt: int = 0,
+    ) -> np.ndarray:
         return _propose_direct_candidate(
             search_space=search_space,
             X_obs=np.asarray(X_obs, dtype=float),

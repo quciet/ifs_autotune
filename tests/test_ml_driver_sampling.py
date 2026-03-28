@@ -285,6 +285,39 @@ def test_candidate_generator_refreshes_continuous_values_and_preserves_discrete_
     assert np.all(second[:, 2] <= 20.0)
 
 
+def test_candidate_generator_refresh_attempt_produces_new_deterministic_pool() -> None:
+    search_space = [
+        _dimension("a", minimum=1.0, maximum=3.0, default=2.0, step=1.0),
+        _dimension("b", minimum=-1.0, maximum=1.0, default=0.0, level_count=2),
+        _dimension("c", minimum=10.0, maximum=20.0, default=15.0),
+    ]
+    generator = ml_driver._build_candidate_generator(
+        search_space=search_space,
+        n_samples=12,
+        run_seed=123,
+        memory_budget_bytes=512 * 1024 * 1024,
+    )
+
+    x_obs = np.asarray(
+        [
+            [1.0, -1.0, 11.0],
+            [2.0, 1.0, 15.0],
+            [3.0, -1.0, 19.0],
+        ],
+        dtype=float,
+    )
+    y_obs = np.asarray([3.0, 1.0, 2.0], dtype=float)
+
+    first_attempt = generator(X_obs=x_obs, Y_obs=y_obs, iteration=4, refresh_attempt=0)
+    repeated_first_attempt = generator(X_obs=x_obs, Y_obs=y_obs, iteration=4, refresh_attempt=0)
+    refreshed_attempt = generator(X_obs=x_obs, Y_obs=y_obs, iteration=4, refresh_attempt=1)
+    repeated_refreshed_attempt = generator(X_obs=x_obs, Y_obs=y_obs, iteration=4, refresh_attempt=1)
+
+    assert np.array_equal(first_attempt, repeated_first_attempt)
+    assert np.array_equal(refreshed_attempt, repeated_refreshed_attempt)
+    assert not np.array_equal(first_attempt, refreshed_attempt)
+
+
 def test_candidate_generator_samples_balanced_subset_when_discrete_space_is_large() -> None:
     search_space = [
         _dimension("a", minimum=0.0, maximum=9.0, default=0.0, level_count=10),
@@ -302,6 +335,7 @@ def test_candidate_generator_samples_balanced_subset_when_discrete_space_is_larg
         X_obs=np.asarray([[0.0, 0.0, 0.5]], dtype=float),
         Y_obs=np.asarray([1.0], dtype=float),
         iteration=0,
+        refresh_attempt=0,
     )
 
     assert rows.shape == (20, 3)
@@ -326,8 +360,8 @@ def test_adaptive_local_radius_shrinks_refreshed_sampling_over_iterations() -> N
     x_obs = np.asarray([[50.0], [40.0], [60.0]], dtype=float)
     y_obs = np.asarray([0.1, 1.0, 2.0], dtype=float)
 
-    early = generator(X_obs=x_obs, Y_obs=y_obs, iteration=0)
-    late = generator(X_obs=x_obs, Y_obs=y_obs, iteration=20)
+    early = generator(X_obs=x_obs, Y_obs=y_obs, iteration=0, refresh_attempt=0)
+    late = generator(X_obs=x_obs, Y_obs=y_obs, iteration=20, refresh_attempt=0)
 
     early_mean_abs_distance = float(np.mean(np.abs(early[:, 0] - 50.0)))
     late_mean_abs_distance = float(np.mean(np.abs(late[:, 0] - 50.0)))
@@ -351,6 +385,7 @@ def test_build_proposal_generator_direct_mode_raises_clear_placeholder_error() -
             X_obs=np.asarray([[0.5]], dtype=float),
             Y_obs=np.asarray([1.0], dtype=float),
             iteration=0,
+            refresh_attempt=0,
         )
 
 
