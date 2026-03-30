@@ -34,6 +34,7 @@ def build_metrics_frame(rows: Sequence[RunRecord], window: int) -> pd.DataFrame:
                 "model_status": row.model_status,
                 "fit_pooled": row.fit_pooled,
                 "fit_missing": row.fit_missing,
+                "run_index": row.sequence_index,
                 "trial_index": row.trial_index,
                 "batch_index": row.batch_index,
                 "sequence_index": row.sequence_index,

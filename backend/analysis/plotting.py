@@ -6,6 +6,9 @@ import textwrap
 
 import pandas as pd
 
+X_AXIS_COLUMN = "run_index"
+X_AXIS_LABEL = "Run index"
+
 
 def _clipped_fit_range(fit_rows: pd.DataFrame) -> tuple[float, float, int]:
     fit_values = fit_rows["fit_pooled"].astype(float)
@@ -96,7 +99,7 @@ def render_trend_plot(
 
     top_axis, bottom_axis = axes
     top_axis.scatter(
-        clipped_fit_rows["trial_index"],
+        clipped_fit_rows[X_AXIS_COLUMN],
         clipped_fit_rows["fit_pooled"],
         s=18,
         alpha=0.35,
@@ -105,7 +108,7 @@ def render_trend_plot(
     )
     if not outlier_rows.empty:
         top_axis.scatter(
-            outlier_rows["trial_index"],
+            outlier_rows[X_AXIS_COLUMN],
             [clipped_marker_y] * len(outlier_rows),
             s=42,
             marker="^",
@@ -114,7 +117,7 @@ def render_trend_plot(
             label=f"Outliers clipped above {clipped_upper:.3f} (n={outlier_count})",
         )
     top_axis.plot(
-        fit_rows["trial_index"],
+        fit_rows[X_AXIS_COLUMN],
         fit_rows["best_so_far"],
         linestyle="--",
         linewidth=1.6,
@@ -124,7 +127,7 @@ def render_trend_plot(
 
     if not metric_rows.empty:
         top_axis.fill_between(
-            metric_rows["trial_index"],
+            metric_rows[X_AXIS_COLUMN],
             metric_rows[f"rolling_q1_{window}"],
             metric_rows[f"rolling_q3_{window}"],
             color="#7fc97f",
@@ -132,7 +135,7 @@ def render_trend_plot(
             label=f"Rolling IQR ({window})",
         )
         top_axis.plot(
-            metric_rows["trial_index"],
+            metric_rows[X_AXIS_COLUMN],
             metric_rows[f"rolling_mean_{window}"],
             linewidth=1.8,
             color="#d95f02",
@@ -140,21 +143,21 @@ def render_trend_plot(
             label=f"Rolling mean ({window})",
         )
         top_axis.plot(
-            metric_rows["trial_index"],
+            metric_rows[X_AXIS_COLUMN],
             metric_rows[f"rolling_median_{window}"],
             linewidth=2.9,
             color="#1b7837",
             label=f"Rolling median ({window})",
         )
         bottom_axis.plot(
-            metric_rows["trial_index"],
+            metric_rows[X_AXIS_COLUMN],
             metric_rows[f"rolling_iqr_{window}"],
             linewidth=2.2,
             color="#b22222",
             label=f"Rolling IQR ({window}, middle 50%)",
         )
         bottom_axis.plot(
-            metric_rows["trial_index"],
+            metric_rows[X_AXIS_COLUMN],
             metric_rows[f"rolling_std_{window}"],
             linewidth=2.0,
             linestyle="--",
@@ -172,7 +175,7 @@ def render_trend_plot(
     top_axis.grid(True, alpha=0.2)
     top_axis.legend(loc="upper right")
 
-    bottom_axis.set_xlabel("Trial index")
+    bottom_axis.set_xlabel(X_AXIS_LABEL)
     bottom_axis.set_ylabel("Rolling spread")
     bottom_axis.grid(True, alpha=0.2)
     if not metric_rows.empty:
@@ -238,7 +241,7 @@ def render_input_trend_plots(
             median_rows = metrics_frame[rolling_median.notna()]
 
             axis.scatter(
-                valid_rows["trial_index"],
+                valid_rows[X_AXIS_COLUMN],
                 pd.to_numeric(valid_rows[column], errors="coerce"),
                 s=12,
                 alpha=0.35,
@@ -247,7 +250,7 @@ def render_input_trend_plots(
             )
             if not median_rows.empty:
                 axis.plot(
-                    median_rows["trial_index"],
+                    median_rows[X_AXIS_COLUMN],
                     rolling_median[rolling_median.notna()],
                     linewidth=2.4,
                     color="#1b7837",
@@ -264,7 +267,7 @@ def render_input_trend_plots(
             axes_list[0].legend(loc="upper right")
         for axis in axes_list[-ncols:]:
             if axis.get_visible():
-                axis.set_xlabel("Trial index")
+                axis.set_xlabel(X_AXIS_LABEL)
         for row_start in range(0, len(axes_list), ncols):
             axis = axes_list[row_start]
             if axis.get_visible():

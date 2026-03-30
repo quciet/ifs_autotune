@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import sqlite3
 import sys
@@ -14,7 +15,12 @@ from analysis.analyze_latest_runs import build_parser
 from analysis.latest_runs import analyze_latest_runs, dataset_output_name
 from analysis.plotting import render_input_trend_plots, render_trend_plot
 from analysis.rolling_metrics import build_metrics_frame
-from analysis.run_history import coefficient_column_names, load_run_history, parameter_column_names
+from analysis.run_history import (
+    coefficient_column_names,
+    load_run_history,
+    normalize_requested_dataset_id,
+    parameter_column_names,
+)
 from analysis.trend_summary import compare_rolling_segments
 from model_status import FIT_EVALUATED, IFS_RUN_COMPLETED, IFS_RUN_FAILED
 
@@ -175,6 +181,13 @@ def test_load_run_history_defaults_to_dataset_of_newest_tracked_run(tmp_path: Pa
     assert [row.model_id for row in rows] == ["newer-b"]
 
 
+def test_normalize_requested_dataset_id_treats_whitespace_as_blank() -> None:
+    assert normalize_requested_dataset_id(None) is None
+    assert normalize_requested_dataset_id("") is None
+    assert normalize_requested_dataset_id("   ") is None
+    assert normalize_requested_dataset_id("  dataset-a  ") == "dataset-a"
+
+
 def test_round_derivation_matches_trial_reset_ordering(tmp_path: Path) -> None:
     db_path = tmp_path / "bigpopa.db"
     build_history_db(
@@ -233,6 +246,7 @@ def test_round_derivation_matches_trial_reset_ordering(tmp_path: Path) -> None:
 def test_build_metrics_frame_computes_rolling_statistics() -> None:
     frame = build_metrics_frame(stub_rows([1.0, 2.0, 3.0, 4.0]), window=3)
 
+    assert frame["run_index"].tolist() == [1, 2, 3, 4]
     assert pytest.approx(frame.loc[2, "rolling_mean_3"]) == 2.0
     assert pytest.approx(frame.loc[2, "rolling_median_3"]) == 2.0
     assert pytest.approx(frame.loc[2, "rolling_q1_3"]) == 1.5
@@ -456,9 +470,89 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
     metrics_header = artifacts.metrics_path.read_text(encoding="utf-8").splitlines()[0]
     assert "rolling center:" in summary_text
     assert "rolling spread:" in summary_text
+    assert "run range 1-6" in summary_text
+    assert "best fit: 0.540000 at run 5 (round 1, trial 5)" in summary_text
     assert "rolling_std_3" in metrics_header
+    assert "run_index" in metrics_header
     assert "alpha" in metrics_header
     assert "func_a.x_a.beta_a" in metrics_header
+
+
+def test_analyze_latest_runs_uses_consecutive_run_index_across_round_resets(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+
+    db_path = tmp_path / "bigpopa.db"
+    output_root = tmp_path / "analysis"
+    build_history_db(
+        db_path,
+        [
+            (
+                "m1",
+                "dataset-r",
+                "completed",
+                0.90,
+                3,
+                1,
+                "2026-03-24T00:00:00Z",
+                "2026-03-24T00:01:00Z",
+                {"alpha": 1.0},
+                {"func_a": {"x_a": {"beta_a": 0.1}}},
+            ),
+            (
+                "m2",
+                "dataset-r",
+                "completed",
+                0.80,
+                4,
+                1,
+                "2026-03-24T00:02:00Z",
+                "2026-03-24T00:03:00Z",
+                {"alpha": 1.1},
+                {"func_a": {"x_a": {"beta_a": 0.2}}},
+            ),
+            (
+                "m3",
+                "dataset-r",
+                "completed",
+                0.70,
+                1,
+                1,
+                "2026-03-24T00:04:00Z",
+                "2026-03-24T00:05:00Z",
+                {"alpha": 1.2},
+                {"func_a": {"x_a": {"beta_a": 0.3}}},
+            ),
+            (
+                "m4",
+                "dataset-r",
+                "completed",
+                0.60,
+                2,
+                1,
+                "2026-03-24T00:06:00Z",
+                "2026-03-24T00:07:00Z",
+                {"alpha": 1.3},
+                {"func_a": {"x_a": {"beta_a": 0.4}}},
+            ),
+        ],
+    )
+
+    artifacts = analyze_latest_runs(
+        bigpopa_db=db_path,
+        output_root=output_root,
+        limit=4,
+        window=2,
+    )
+
+    with artifacts.metrics_path.open("r", encoding="utf-8", newline="") as handle:
+        parsed_rows = list(csv.DictReader(handle))
+
+    assert [int(row["run_index"]) for row in parsed_rows] == [1, 2, 3, 4]
+    assert [int(row["trial_index"]) for row in parsed_rows] == [3, 4, 1, 2]
+
+    summary_text = artifacts.summary_path.read_text(encoding="utf-8").lower()
+    assert "run range 1-4" in summary_text
+    assert "trial span" not in summary_text
 
 
 def test_load_run_history_hides_fallback_fit_for_missing_fit_statuses(tmp_path: Path) -> None:
@@ -513,3 +607,70 @@ def test_load_run_history_hides_fallback_fit_for_missing_fit_statuses(tmp_path: 
         ("fit-missing", True, None),
         ("fit-ok", False, 0.4),
     ]
+
+
+def test_load_run_history_whitespace_dataset_override_uses_latest_dataset(tmp_path: Path) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_history_db(
+        db_path,
+        [
+            (
+                "older-a",
+                "dataset-a",
+                "completed",
+                0.9,
+                1,
+                1,
+                "2026-03-24T00:00:00Z",
+                "2026-03-24T00:01:00Z",
+                None,
+                None,
+            ),
+            (
+                "newer-b",
+                "dataset-b",
+                "completed",
+                0.8,
+                1,
+                1,
+                "2026-03-24T01:00:00Z",
+                "2026-03-24T01:01:00Z",
+                None,
+                None,
+            ),
+        ],
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        dataset_id, rows = load_run_history(conn, dataset_id="   ")
+
+    assert dataset_id == "dataset-b"
+    assert [row.model_id for row in rows] == ["newer-b"]
+
+
+def test_load_run_history_invalid_dataset_override_has_clear_error(tmp_path: Path) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_history_db(
+        db_path,
+        [
+            (
+                "m1",
+                "dataset-a",
+                "completed",
+                0.9,
+                1,
+                1,
+                "2026-03-24T00:00:00Z",
+                "2026-03-24T00:01:00Z",
+                None,
+                None,
+            ),
+        ],
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(RuntimeError) as exc_info:
+            load_run_history(conn, dataset_id="missing-dataset")
+
+    assert "requested dataset_id='missing-dataset'" in str(exc_info.value)
+    assert "Leave the dataset override blank to use the latest dataset." in str(exc_info.value)

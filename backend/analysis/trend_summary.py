@@ -13,6 +13,8 @@ class TrendSummary:
     dataset_id: str | None
     current_round_index: int
     latest_slice_count: int
+    latest_slice_run_start: int
+    latest_slice_run_end: int
     latest_slice_round_start: int
     latest_slice_round_end: int
     latest_slice_trial_start: int | None
@@ -20,11 +22,13 @@ class TrendSummary:
     latest_slice_started_at_utc: str | None
     latest_slice_last_timestamp_utc: str | None
     best_fit: float | None
+    best_run_index: int | None
     best_trial_index: int | None
     best_round_index: int | None
     best_model_id: str | None
     latest_fit: float | None
     rows_since_last_best_improvement: int | None
+    last_best_improvement_run_index: int | None
     last_best_improvement_trial_index: int | None
     last_best_improvement_round_index: int | None
     last_best_improvement_timestamp_utc: str | None
@@ -135,10 +139,12 @@ def build_trend_summary(
     latest_row = latest_slice[-1]
     current_round_index = latest_row.derived_round_index
     best_fit: float | None = None
+    best_run_index: int | None = None
     best_trial_index: int | None = None
     best_round_index: int | None = None
     best_model_id: str | None = None
     best_sequence_index: int | None = None
+    last_best_improvement_run_index: int | None = None
     last_best_improvement_trial_index: int | None = None
     last_best_improvement_round_index: int | None = None
     last_best_improvement_timestamp_utc: str | None = None
@@ -148,10 +154,12 @@ def build_trend_summary(
             continue
         if best_fit is None or row.fit_pooled < best_fit:
             best_fit = row.fit_pooled
+            best_run_index = row.sequence_index
             best_trial_index = row.trial_index
             best_round_index = row.derived_round_index
             best_model_id = row.model_id
             best_sequence_index = row.sequence_index
+            last_best_improvement_run_index = row.sequence_index
             last_best_improvement_trial_index = row.trial_index
             last_best_improvement_round_index = row.derived_round_index
             last_best_improvement_timestamp_utc = (
@@ -168,6 +176,8 @@ def build_trend_summary(
         dataset_id=dataset_id,
         current_round_index=current_round_index,
         latest_slice_count=len(latest_slice),
+        latest_slice_run_start=latest_slice[0].sequence_index,
+        latest_slice_run_end=latest_row.sequence_index,
         latest_slice_round_start=latest_slice[0].derived_round_index,
         latest_slice_round_end=latest_row.derived_round_index,
         latest_slice_trial_start=latest_slice[0].trial_index,
@@ -177,11 +187,13 @@ def build_trend_summary(
             latest_row.completed_at_utc if latest_row.completed_at_utc else latest_row.started_at_utc
         ),
         best_fit=best_fit,
+        best_run_index=best_run_index,
         best_trial_index=best_trial_index,
         best_round_index=best_round_index,
         best_model_id=best_model_id,
         latest_fit=latest_row.fit_pooled,
         rows_since_last_best_improvement=rows_since_last_best_improvement,
+        last_best_improvement_run_index=last_best_improvement_run_index,
         last_best_improvement_trial_index=last_best_improvement_trial_index,
         last_best_improvement_round_index=last_best_improvement_round_index,
         last_best_improvement_timestamp_utc=last_best_improvement_timestamp_utc,

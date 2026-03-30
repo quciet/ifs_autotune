@@ -53,12 +53,23 @@ def main(argv: list[str] | None = None) -> int:
     print("Analysis complete.")
     print(f"Dataset id: {artifacts.dataset_id}")
     print(f"Current round index: {summary.current_round_index}")
+    print(f"Analyzed run range: {summary.latest_slice_run_start}-{summary.latest_slice_run_end}")
     print(
         f"Best fit: {summary.best_fit:.6f}"
         if summary.best_fit is not None
         else "Best fit: n/a"
     )
-    print(f"Best trial index: {summary.best_trial_index}")
+    print(f"Best run index: {summary.best_run_index}")
+    if summary.best_round_index is not None or summary.best_trial_index is not None:
+        if summary.best_round_index is not None and summary.best_trial_index is not None:
+            best_reference = f"round {summary.best_round_index}, trial {summary.best_trial_index}"
+        elif summary.best_round_index is not None:
+            best_reference = f"round {summary.best_round_index}"
+        else:
+            best_reference = f"trial {summary.best_trial_index}"
+    else:
+        best_reference = "n/a"
+    print(f"Best run reference: {best_reference}")
     print(
         f"Latest fit: {summary.latest_fit:.6f}"
         if summary.latest_fit is not None

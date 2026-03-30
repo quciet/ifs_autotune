@@ -56,18 +56,22 @@ def _format_round_trial(round_index: int | None, trial_index: int | None) -> str
     return f"round {round_index}, trial {trial_index}"
 
 
-def _format_slice_span(summary: TrendSummary) -> str:
-    if summary.latest_slice_round_start == summary.latest_slice_round_end:
-        return (
-            f"round {summary.latest_slice_round_start}, "
-            f"trial range {summary.latest_slice_trial_start}-{summary.latest_slice_trial_end}"
-        )
+def _format_run_reference(
+    run_index: int | None,
+    round_index: int | None,
+    trial_index: int | None,
+) -> str:
+    if run_index is None:
+        return _format_round_trial(round_index, trial_index)
 
-    return (
-        f"rounds {summary.latest_slice_round_start}-{summary.latest_slice_round_end}, "
-        f"trial span {summary.latest_slice_trial_start}->{summary.latest_slice_trial_end} "
-        "(includes round reset)"
-    )
+    round_trial = _format_round_trial(round_index, trial_index)
+    if round_trial == "n/a":
+        return f"run {run_index}"
+    return f"run {run_index} ({round_trial})"
+
+
+def _format_slice_span(summary: TrendSummary) -> str:
+    return f"run range {summary.latest_slice_run_start}-{summary.latest_slice_run_end}"
 
 
 def _write_summary(summary: TrendSummary, path: Path) -> None:
@@ -82,14 +86,14 @@ def _write_summary(summary: TrendSummary, path: Path) -> None:
         (
             "Best fit: "
             f"{_format_optional_float(summary.best_fit)} at "
-            f"{_format_round_trial(summary.best_round_index, summary.best_trial_index)}"
+            f"{_format_run_reference(summary.best_run_index, summary.best_round_index, summary.best_trial_index)}"
         ),
         f"Best model id: {summary.best_model_id}",
         f"Latest run fit: {_format_optional_float(summary.latest_fit)}",
         f"Rows since last best improvement: {summary.rows_since_last_best_improvement}",
         (
             "Last best improvement: "
-            f"{_format_round_trial(summary.last_best_improvement_round_index, summary.last_best_improvement_trial_index)}"
+            f"{_format_run_reference(summary.last_best_improvement_run_index, summary.last_best_improvement_round_index, summary.last_best_improvement_trial_index)}"
         ),
         f"Last best improvement timestamp: {summary.last_best_improvement_timestamp_utc}",
         "",

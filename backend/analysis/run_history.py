@@ -96,6 +96,17 @@ def resolve_latest_dataset_id(cursor: sqlite3.Cursor) -> str | None:
     return row[0]
 
 
+def normalize_requested_dataset_id(dataset_id: str | None) -> str | None:
+    if dataset_id is None:
+        return None
+
+    normalized = dataset_id.strip()
+    if not normalized:
+        return None
+
+    return normalized
+
+
 def _parse_numeric_dict(value: object) -> dict[str, float]:
     if not isinstance(value, str) or not value.strip():
         return {}
@@ -279,8 +290,16 @@ def load_run_history(
 ) -> tuple[str | None, list[RunRecord]]:
     cursor = conn.cursor()
     ensure_tracking_columns(cursor)
-    selected_dataset_id = dataset_id if dataset_id is not None else resolve_latest_dataset_id(cursor)
+    requested_dataset_id = normalize_requested_dataset_id(dataset_id)
+    selected_dataset_id = (
+        requested_dataset_id if requested_dataset_id is not None else resolve_latest_dataset_id(cursor)
+    )
     rows = normalize_rows(load_dataset_rows(cursor, selected_dataset_id))
     if not rows:
+        if requested_dataset_id is not None:
+            raise RuntimeError(
+                f"No tracked runs were found for requested dataset_id={requested_dataset_id!r}. "
+                "Leave the dataset override blank to use the latest dataset."
+            )
         raise RuntimeError(f"No tracked runs were found for dataset_id={selected_dataset_id!r}.")
     return selected_dataset_id, rows
