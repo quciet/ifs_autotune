@@ -18,8 +18,12 @@ import {
   type IFsProgressEvent,
   type ModelSetupData,
   type MLDriverData,
-  type MLProgressTrial,
 } from "./api";
+import {
+  MLProgressChart,
+  normalizeProgressTrials,
+  type ChartPoint,
+} from "./MLProgressChart";
 
 const REQUIRED_INPUT_SHEETS = ["AnalFunc", "TablFunc", "IFsVar", "DataDict"];
 
@@ -61,6 +65,130 @@ type MLJobStatus = {
   } | null;
 };
 
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  if (maxLength <= 3) {
+    return value.slice(0, maxLength);
+  }
+
+  const ellipsis = "...";
+  const visibleCharacters = maxLength - ellipsis.length;
+  const startLength = Math.ceil(visibleCharacters * 0.55);
+  const endLength = Math.max(1, visibleCharacters - startLength);
+  return `${value.slice(0, startLength)}${ellipsis}${value.slice(-endLength)}`;
+}
+
+function OverflowAwareMiddleTruncate({
+  value,
+  className,
+  title,
+}: {
+  value: string;
+  className?: string;
+  title?: string;
+}) {
+  const visibleRef = useRef<HTMLSpanElement | null>(null);
+  const measureRef = useRef<HTMLSpanElement | null>(null);
+  const [displayValue, setDisplayValue] = useState(value);
+
+  useEffect(() => {
+    let frameId: number | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+
+    const updateDisplayValue = () => {
+      const visible = visibleRef.current;
+      const measure = measureRef.current;
+      if (!visible || !measure) {
+        return;
+      }
+
+      const availableWidth = visible.clientWidth;
+      if (availableWidth <= 0) {
+        setDisplayValue(value);
+        return;
+      }
+
+      measure.textContent = value;
+      const fullWidth = measure.getBoundingClientRect().width;
+      if (fullWidth <= availableWidth + 0.5) {
+        setDisplayValue(value);
+        return;
+      }
+
+      let low = 4;
+      let high = Math.max(4, value.length - 1);
+      let bestFit = truncateMiddle(value, 4);
+
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const candidate = truncateMiddle(value, mid);
+        measure.textContent = candidate;
+        const candidateWidth = measure.getBoundingClientRect().width;
+
+        if (candidateWidth <= availableWidth + 0.5) {
+          bestFit = candidate;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+
+      setDisplayValue(bestFit);
+    };
+
+    const scheduleUpdate = () => {
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      frameId = window.requestAnimationFrame(updateDisplayValue);
+    };
+
+    scheduleUpdate();
+
+    const handleResize = () => {
+      scheduleUpdate();
+    };
+
+    window.addEventListener("resize", handleResize);
+
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        scheduleUpdate();
+      });
+
+      if (visibleRef.current) {
+        resizeObserver.observe(visibleRef.current);
+      }
+
+      if (visibleRef.current?.parentElement) {
+        resizeObserver.observe(visibleRef.current.parentElement);
+      }
+    }
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      if (frameId != null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      resizeObserver?.disconnect();
+    };
+  }, [value]);
+
+  const combinedClassName = [className, "tune-meta-value"].filter(Boolean).join(" ");
+
+  return (
+    <>
+      <span ref={visibleRef} className={combinedClassName} title={title}>
+        {displayValue}
+      </span>
+      <span ref={measureRef} className={`${combinedClassName} tune-meta-measure`} aria-hidden="true" />
+    </>
+  );
+}
+
 type LogStatus = ApiStatus | "info";
 
 type LogEntry = {
@@ -77,6 +205,9 @@ type TuneIFsPageProps = {
   validatedInputPath: string;
   baseYear?: number | null;
   outputDirectory: string | null;
+  rollingWindow: number;
+  rollingWindowInput: string;
+  onRollingWindowInputChange: (value: string) => void;
   initialMLJobRunning?: boolean;
   initialMLJobProgress?: string | null;
   initialRunConfig?: MLJobStatus["runConfig"];
@@ -85,366 +216,6 @@ type TuneIFsPageProps = {
   initialFinalResult?: MLFinalResult | null;
   initialTerminationReason?: MLTerminationReason | null;
 };
-
-type ChartPoint = {
-  sequenceIndex: number;
-  derivedRoundIndex: number | null;
-  trialIndex: number;
-  batchIndex: number | null;
-  fitPooled: number | null;
-  fitMissing: boolean;
-  bestSoFar: number | null;
-  startedAtUtc: string | null;
-  completedAtUtc: string | null;
-  modelId: string | null;
-  modelStatus: string | null;
-};
-
-function parseProgressTimestamp(value: string | null | undefined): number | null {
-  if (!value) {
-    return null;
-  }
-
-  const parsed = new Date(value);
-  const timestamp = parsed.getTime();
-  return Number.isNaN(timestamp) ? null : timestamp;
-}
-
-function normalizeProgressTrials(trials: MLProgressTrial[]): ChartPoint[] {
-  const sorted = [...trials]
-    .filter(
-      (trial): trial is MLProgressTrial & { trial_index: number } =>
-        typeof trial.trial_index === "number" &&
-        Number.isFinite(trial.trial_index) &&
-        trial.trial_index >= 0,
-    )
-    .sort((left, right) => {
-      const leftSequence =
-        typeof left.sequence_index === "number" &&
-        Number.isFinite(left.sequence_index) &&
-        left.sequence_index > 0
-          ? left.sequence_index
-          : null;
-      const rightSequence =
-        typeof right.sequence_index === "number" &&
-        Number.isFinite(right.sequence_index) &&
-        right.sequence_index > 0
-          ? right.sequence_index
-          : null;
-
-      if (leftSequence != null && rightSequence != null && leftSequence !== rightSequence) {
-        return leftSequence - rightSequence;
-      }
-
-      const leftTimestamp =
-        parseProgressTimestamp(left.started_at_utc) ??
-        parseProgressTimestamp(left.completed_at_utc);
-      const rightTimestamp =
-        parseProgressTimestamp(right.started_at_utc) ??
-        parseProgressTimestamp(right.completed_at_utc);
-
-      if (leftTimestamp != null && rightTimestamp != null && leftTimestamp !== rightTimestamp) {
-        return leftTimestamp - rightTimestamp;
-      }
-
-      if (leftTimestamp == null && rightTimestamp != null) {
-        return 1;
-      }
-
-      if (leftTimestamp != null && rightTimestamp == null) {
-        return -1;
-      }
-
-      if (left.trial_index !== right.trial_index) {
-        return left.trial_index - right.trial_index;
-      }
-
-      return (left.model_id ?? "").localeCompare(right.model_id ?? "");
-    });
-
-  let bestSoFar: number | null = null;
-
-  return sorted.map((trial, index) => {
-    const fitPooled =
-      typeof trial.fit_pooled === "number" && Number.isFinite(trial.fit_pooled)
-        ? trial.fit_pooled
-        : null;
-    const fitMissing = Boolean(trial.fit_missing) || fitPooled == null;
-
-    if (fitPooled != null) {
-      bestSoFar = bestSoFar == null ? fitPooled : Math.min(bestSoFar, fitPooled);
-    }
-
-    return {
-      sequenceIndex:
-        typeof trial.sequence_index === "number" &&
-        Number.isFinite(trial.sequence_index) &&
-        trial.sequence_index > 0
-          ? trial.sequence_index
-          : index + 1,
-      derivedRoundIndex:
-        typeof trial.derived_round_index === "number" &&
-        Number.isFinite(trial.derived_round_index) &&
-        trial.derived_round_index > 0
-          ? trial.derived_round_index
-          : null,
-      trialIndex: trial.trial_index,
-      batchIndex:
-        typeof trial.batch_index === "number" && Number.isFinite(trial.batch_index)
-          ? trial.batch_index
-          : null,
-      fitPooled,
-      fitMissing,
-      bestSoFar,
-      startedAtUtc: trial.started_at_utc ?? null,
-      completedAtUtc: trial.completed_at_utc ?? null,
-      modelId: trial.model_id ?? null,
-      modelStatus: trial.model_status ?? null,
-    };
-  });
-}
-
-function formatUtcTimestamp(value: string | null): string {
-  if (!value) {
-    return "In progress";
-  }
-
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
-}
-
-function formatFitValue(value: number | null, fitMissing = false): string {
-  if (fitMissing || value == null) {
-    return "Missing";
-  }
-
-  return value.toFixed(4);
-}
-
-function percentile(values: number[], quantile: number): number {
-  if (values.length === 0) {
-    return Number.NaN;
-  }
-
-  const sorted = [...values].sort((left, right) => left - right);
-  const clampedQuantile = Math.min(1, Math.max(0, quantile));
-  const index = (sorted.length - 1) * clampedQuantile;
-  const lowerIndex = Math.floor(index);
-  const upperIndex = Math.ceil(index);
-
-  if (lowerIndex === upperIndex) {
-    return sorted[lowerIndex];
-  }
-
-  const weight = index - lowerIndex;
-  return sorted[lowerIndex] * (1 - weight) + sorted[upperIndex] * weight;
-}
-
-function MLProgressChart({
-  points,
-  referenceFitPooled,
-  referenceModelId,
-}: {
-  points: ChartPoint[];
-  referenceFitPooled: number | null;
-  referenceModelId: string | null;
-}) {
-  const fitValues = points.flatMap((point) =>
-    typeof point.fitPooled === "number" && Number.isFinite(point.fitPooled)
-      ? [point.fitPooled]
-      : [],
-  );
-
-  if (points.length === 0 || fitValues.length === 0) {
-    return <div className="progress-text">No successful completed trials to plot yet.</div>;
-  }
-
-  const width = 760;
-  const height = 280;
-  const padding = { top: 24, right: 20, bottom: 40, left: 56 };
-  const plotWidth = width - padding.left - padding.right;
-  const plotHeight = height - padding.top - padding.bottom;
-  const xMin = Math.min(...points.map((point) => point.sequenceIndex));
-  const xMax = Math.max(...points.map((point) => point.sequenceIndex));
-  const xRangeActual = Math.max(1, xMax - xMin);
-  const xRightPadding = Math.max(8, xRangeActual * 0.03);
-  const xDisplayMax = xMax + xRightPadding;
-  const yMin = Math.min(...fitValues);
-  const q1 = percentile(fitValues, 0.25);
-  const q3 = percentile(fitValues, 0.75);
-  const iqr =
-    Number.isFinite(q1) && Number.isFinite(q3) ? Math.max(0, q3 - q1) : 0;
-  const yCapBaseCandidate =
-    Number.isFinite(q3) && Number.isFinite(iqr)
-      ? q3 + 1.5 * iqr
-      : Number.NaN;
-  const yCapBase =
-    Number.isFinite(yCapBaseCandidate) && yCapBaseCandidate >= yMin
-      ? yCapBaseCandidate
-      : Math.max(...fitValues);
-  const displaySpanBase = Math.max(yCapBase - yMin, Math.abs(yCapBase), 1e-9);
-  const yBottomPadding = displaySpanBase * 0.1;
-  const yHeadroom = displaySpanBase * 0.05;
-  const yMinDisplay = yMin - yBottomPadding;
-  const yMaxDisplay = yCapBase + yHeadroom;
-  const hasOutliers = fitValues.some((value) => value > yCapBase);
-  const referenceFitValue =
-    typeof referenceFitPooled === "number" && Number.isFinite(referenceFitPooled)
-      ? referenceFitPooled
-      : null;
-  const bestPoint = points.reduce<ChartPoint | null>((best, point) => {
-    if (point.fitPooled == null) {
-      return best;
-    }
-    if (best == null || best.fitPooled == null) {
-      return point;
-    }
-    if (point.fitPooled < best.fitPooled) {
-      return point;
-    }
-    if (point.fitPooled === best.fitPooled && point.sequenceIndex > best.sequenceIndex) {
-      return point;
-    }
-    return best;
-  }, null);
-  const xRange = Math.max(1, xDisplayMax - xMin);
-  const yRange = Math.max(1e-9, yMaxDisplay - yMinDisplay);
-  const referenceFitInRange =
-    referenceFitValue != null &&
-    referenceFitValue >= yMinDisplay &&
-    referenceFitValue <= yMaxDisplay;
-
-  const xFor = (sequenceIndex: number) =>
-    padding.left + ((sequenceIndex - xMin) / xRange) * plotWidth;
-  const yFor = (value: number) =>
-    padding.top + plotHeight - ((value - yMinDisplay) / yRange) * plotHeight;
-
-  const yTicks = Array.from(
-    { length: 5 },
-    (_, index) => yMinDisplay + ((yMaxDisplay - yMinDisplay) * index) / 4,
-  );
-  const xTicks = points.length <= 6
-    ? points.map((point) => point.sequenceIndex)
-    : Array.from({ length: 6 }, (_, index) => Math.round(xMin + (xRangeActual * index) / 5));
-
-  return (
-    <div className="ml-progress-chart-shell">
-      <div className="chart-note">
-        Showing an adaptive IQR-capped y-axis for readability
-        {hasOutliers ? ` at ${yCapBase.toFixed(4)}` : ""}.
-      </div>
-      {referenceFitValue != null && !referenceFitInRange ? (
-        <div className="chart-note">
-          IFs default baseline: {referenceFitValue.toFixed(4)} (outside displayed range)
-        </div>
-      ) : null}
-      <svg
-        className="ml-progress-chart"
-        viewBox={`0 0 ${width} ${height}`}
-        role="img"
-        aria-label="ML convergence chart"
-      >
-        <rect x={padding.left} y={padding.top} width={plotWidth} height={plotHeight} className="chart-plot-bg" />
-        {yTicks.map((tick) => {
-          const y = yFor(tick);
-          return (
-            <g key={`y-${tick}`}>
-              <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} className="chart-grid-line" />
-              <text x={padding.left - 8} y={y + 4} textAnchor="end" className="chart-axis-label">
-                {tick.toFixed(3)}
-              </text>
-            </g>
-          );
-        })}
-        {xTicks.map((tick) => {
-          const x = xFor(tick);
-          return (
-            <g key={`x-${tick}`}>
-              <line x1={x} x2={x} y1={padding.top} y2={height - padding.bottom} className="chart-grid-line chart-grid-line-vertical" />
-              <text x={x} y={height - padding.bottom + 18} textAnchor="middle" className="chart-axis-label">
-                {tick}
-              </text>
-            </g>
-          );
-        })}
-        {referenceFitInRange ? (
-          <g>
-            <line
-              x1={padding.left}
-              x2={width - padding.right}
-              y1={yFor(referenceFitValue!)}
-              y2={yFor(referenceFitValue!)}
-              className="chart-reference-line"
-            />
-            <title>
-              {`IFs default baseline\nModel ${referenceModelId ?? "unknown"}\nFit ${referenceFitValue!.toFixed(4)}`}
-            </title>
-          </g>
-        ) : null}
-        {points.map((point) => {
-          if (point.fitPooled == null) {
-            return null;
-          }
-
-          const x = xFor(point.sequenceIndex);
-          const isOutlier = point.fitPooled > yCapBase;
-          const y = yFor(isOutlier ? yCapBase : point.fitPooled);
-          const eventTimestamp = point.completedAtUtc ?? point.startedAtUtc;
-          return (
-            <g key={`point-${point.sequenceIndex}-${point.modelId ?? "unknown"}`}>
-              {isOutlier ? (
-                <polygon
-                  points={`${x},${y - 3.5} ${x - 2.75},${y + 1.5} ${x + 2.75},${y + 1.5}`}
-                  className="chart-outlier"
-                />
-              ) : (
-                <circle cx={x} cy={y} r={1.8} className="chart-point" />
-              )}
-              <title>
-                {`Sequence ${point.sequenceIndex}\nRound ${point.derivedRoundIndex ?? "N/A"}\nTrial ${point.trialIndex}\nFit ${formatFitValue(point.fitPooled, point.fitMissing)}${isOutlier ? " (above displayed range)" : ""}\nBest ${formatFitValue(point.bestSoFar)}\nStatus ${point.modelStatus ?? "unknown"}\nBatch ${point.batchIndex ?? "N/A"}\n${formatUtcTimestamp(eventTimestamp)}`}
-              </title>
-            </g>
-          );
-        })}
-        {bestPoint && bestPoint.fitPooled != null ? (
-          <g key={`best-point-${bestPoint.sequenceIndex}`}>
-            <circle
-              cx={xFor(bestPoint.sequenceIndex)}
-              cy={yFor(Math.min(bestPoint.fitPooled, yCapBase))}
-              r={2.2}
-              className="chart-point chart-point-best"
-            />
-            <title>
-              {`Best model\nSequence ${bestPoint.sequenceIndex}\nRound ${bestPoint.derivedRoundIndex ?? "N/A"}\nTrial ${bestPoint.trialIndex}\nFit ${formatFitValue(bestPoint.fitPooled, bestPoint.fitMissing)}\nStatus ${bestPoint.modelStatus ?? "unknown"}\nBatch ${bestPoint.batchIndex ?? "N/A"}\n${formatUtcTimestamp(bestPoint.completedAtUtc ?? bestPoint.startedAtUtc)}`}
-            </title>
-          </g>
-        ) : null}
-        <text x={width / 2} y={height - 6} textAnchor="middle" className="chart-title">
-          Dataset Run Sequence
-        </text>
-        <text
-          x={18}
-          y={height / 2}
-          textAnchor="middle"
-          className="chart-title"
-          transform={`rotate(-90 18 ${height / 2})`}
-        >
-          Final Fit Metric (Adaptive Capped View)
-        </text>
-      </svg>
-      <div className="chart-legend">
-        <span className="legend-item"><span className="legend-swatch fit" /> Trial fit</span>
-        <span className="legend-item"><span className="legend-swatch best" /> Best model</span>
-        {referenceFitInRange ? (
-          <span className="legend-item"><span className="legend-swatch reference" /> IFs default</span>
-        ) : null}
-        {hasOutliers ? (
-          <span className="legend-item"><span className="legend-swatch outlier" /> Above displayed range</span>
-        ) : null}
-      </div>
-    </div>
-  );
-}
 
 function calculateProgressPercentage(
   currentYear: number,
@@ -479,6 +250,9 @@ function TuneIFsPage({
   validatedInputPath,
   baseYear,
   outputDirectory,
+  rollingWindow,
+  rollingWindowInput,
+  onRollingWindowInputChange,
   initialMLJobRunning,
   initialMLJobProgress,
   initialRunConfig,
@@ -1382,52 +1156,58 @@ function TuneIFsPage({
   const progressEmptyMessage = progressDatasetId
     ? `No runs found for dataset ${progressDatasetId} yet. Previous runs will appear here when they share this exact dataset.`
     : "No runs found for the current dataset yet.";
+  const outputDirectoryDisplay = outputDirectory ?? "No folder selected";
 
   return (
     <section className="tune-container">
       <div className="tune-header">
-        <h2>Tune IFs</h2>
         <p className="tune-description">
           Launch an IFs simulation and monitor its progress in real time.
         </p>
-        <p className="tune-path">
-          <span className="label">Validated folder:</span> {validatedPath || "Unknown"}
-        </p>
-        {effectiveBaseYear != null && (
-          <p className="tune-base">Base year detected: {effectiveBaseYear}</p>
-        )}
-        <p className="tune-output">
-          <span className="label">Output folder:</span>{" "}
-          {outputDirectory ?? "No folder selected"}
-        </p>
+        <div className="tune-meta" aria-label="Tuning configuration summary">
+          <div className="tune-meta-row">
+            {effectiveBaseYear != null ? (
+              <div className="tune-meta-item tune-meta-item-base">
+                <span className="tune-meta-label">Base year:</span>
+                <span className="tune-meta-value">{effectiveBaseYear}</span>
+              </div>
+              ) : null}
+              <div className="tune-meta-item tune-meta-item-path" title={outputDirectoryDisplay}>
+                <span className="tune-meta-label">Output folder:</span>
+                <OverflowAwareMiddleTruncate value={outputDirectoryDisplay} title={outputDirectoryDisplay} />
+              </div>
+            </div>
+          </div>
       </div>
 
       <div className="tune-controls">
         <div className="end-year-control">
-          <label className="label" htmlFor="end-year-input">
-            End Year
-          </label>
           <div className="end-year-inputs">
-            <input
-              id="end-year-input"
-              type="number"
-              className="path-input end-year-number"
-              value={endYearInput}
-              onChange={handleEndYearInputChange}
-              onBlur={handleEndYearBlur}
-              min={minEndYear}
-              max={MAX_END_YEAR}
-              disabled={running}
-            />
-            <input
-              type="range"
-              className="end-year-slider"
-              value={endYear}
-              onChange={handleSliderChange}
-              min={minEndYear}
-              max={MAX_END_YEAR}
-              disabled={running}
-            />
+            <div className="end-year-entry-row">
+              <label className="label end-year-label" htmlFor="end-year-input">
+                End Year
+              </label>
+              <input
+                id="end-year-input"
+                type="number"
+                className="path-input end-year-number"
+                value={endYearInput}
+                onChange={handleEndYearInputChange}
+                onBlur={handleEndYearBlur}
+                min={minEndYear}
+                max={MAX_END_YEAR}
+                disabled={running}
+              />
+              <input
+                type="range"
+                className="end-year-slider"
+                value={endYear}
+                onChange={handleSliderChange}
+                min={minEndYear}
+                max={MAX_END_YEAR}
+                disabled={running}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -1552,9 +1332,9 @@ function TuneIFsPage({
               aria-selected={lowerPanelView === "progress"}
               onClick={() => handleLowerPanelViewChange("progress")}
               disabled={!outputDirectory}
-              title={!outputDirectory ? "Choose an output folder to view ML progress." : undefined}
+              title={!outputDirectory ? "Choose an output folder to view ML optimization visualization." : undefined}
             >
-              ML Progress
+              ML Optimization Viz
             </button>
           </div>
         </div>
@@ -1575,14 +1355,11 @@ function TuneIFsPage({
               )}
             </div>
           </div>
-        ) : (
-          <div className="ml-progress-panel">
-            <p className="modal-subtitle">
-              This is read-only and refreshes live while ML Optimization keeps running.
-            </p>
-            <div className="ml-progress-summary">
-              <span>
-                <strong>Points:</strong> {progressTrials.length}
+          ) : (
+            <div className="ml-progress-panel">
+              <div className="ml-progress-summary">
+                <span>
+                  <strong>Points:</strong> {progressTrials.length}
               </span>
               <span>
                 <strong>Latest best:</strong>{" "}
@@ -1603,14 +1380,17 @@ function TuneIFsPage({
                 ) : null}
                 {progressEmptyMessage}
               </div>
-            ) : (
-              <MLProgressChart
-                points={progressTrials}
-                referenceFitPooled={progressReferenceFitPooled}
-                referenceModelId={progressReferenceModelId}
-              />
-            )}
-          </div>
+              ) : (
+                <MLProgressChart
+                  points={progressTrials}
+                  referenceFitPooled={progressReferenceFitPooled}
+                  referenceModelId={progressReferenceModelId}
+                  rollingWindow={rollingWindow}
+                  rollingWindowInput={rollingWindowInput}
+                  onRollingWindowInputChange={onRollingWindowInputChange}
+                />
+              )}
+            </div>
         )}
       </div>
 
@@ -1632,6 +1412,8 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("validate");
+  const [vizRollingWindow, setVizRollingWindow] = useState(50);
+  const [vizRollingWindowInput, setVizRollingWindowInput] = useState("50");
   const [mlJobStatus, setMLJobStatus] = useState<MLJobStatus | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [nativeFolderPickerAvailable, setNativeFolderPickerAvailable] =
@@ -2009,22 +1791,32 @@ function App() {
     missingSheetNames.length > 0
       ? `Missing sheets: ${missingSheetNames.join(", ")}`
       : null;
+  const windowTitle =
+    view === "validate"
+      ? "BIGPOPA - IFs Folder Check - Browse to your IFs folder"
+      : "BIGPOPA - Tune IFs - Configure and run ML optimization";
+
+  const handleVizRollingWindowInputChange = (value: string) => {
+    setVizRollingWindowInput(value);
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      return;
+    }
+
+    const parsed = Number(trimmed);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      setVizRollingWindow(parsed);
+    }
+  };
+
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.title = windowTitle;
+    }
+  }, [windowTitle]);
 
   return (
     <div className="container">
-      <header className="header">
-        <h1>
-          {view === "validate"
-            ? "BIGPOPA - IFs Folder Check"
-            : "BIGPOPA - Tune IFs"}
-        </h1>
-        <p className="subtitle">
-          {view === "validate"
-            ? "Browse to your IFs installation folder and validate it against the backend API."
-            : "Configure and launch ML Optimization runs with live progress tracking."}
-        </p>
-      </header>
-
       {view === "validate" && (
         <>
           <form className="form" onSubmit={handleSubmit}>
@@ -2290,6 +2082,9 @@ function App() {
           }
           baseYear={result?.base_year ?? mlJobStatus?.runConfig?.baseYear ?? null}
           outputDirectory={outputDirectory ?? mlJobStatus?.outputDir ?? null}
+          rollingWindow={vizRollingWindow}
+          rollingWindowInput={vizRollingWindowInput}
+          onRollingWindowInputChange={handleVizRollingWindowInputChange}
           initialMLJobRunning={Boolean(mlJobStatus?.running)}
           initialMLJobProgress={mlJobStatus?.progress?.text ?? null}
           initialRunConfig={mlJobStatus?.runConfig ?? null}
