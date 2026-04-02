@@ -774,6 +774,13 @@ export function MLProgressChart({
   const meanPath = buildLinePath(derivedMetrics.points, xFor, yFor, (point) => point.rollingMean);
   const medianPath = buildLinePath(derivedMetrics.points, xFor, yFor, (point) => point.rollingMedian);
   const bandPath = buildBandPath(derivedMetrics.points, xFor, yFor);
+  const latestPlottedPoint = [...derivedMetrics.points]
+    .reverse()
+    .find((point) => point.plottedFit != null) ?? null;
+  const latestPointId =
+    latestPlottedPoint == null
+      ? null
+      : `${latestPlottedPoint.sequenceIndex}-${latestPlottedPoint.modelId ?? "unknown"}`;
   const referenceFitVisible =
     referenceFitValue != null &&
     referenceFitValue >= visibleViewport.yMin &&
@@ -1147,33 +1154,46 @@ export function MLProgressChart({
               />
             ) : null}
 
-            {derivedMetrics.points.map((point) => {
+            {derivedMetrics.points.map((point, pointIndex) => {
               if (point.plottedFit == null) {
                 return null;
               }
 
-              const pointIndex = derivedMetrics.points.indexOf(point);
               const bestPoint = isBestSoFarPoint(
                 point,
                 pointIndex > 0 ? derivedMetrics.points[pointIndex - 1] : null,
               );
               const pointId = `${point.sequenceIndex}-${point.modelId ?? "unknown"}`;
+              const latestPoint = pointId === latestPointId;
               const x = xFor(point.sequenceIndex);
               const y = yFor(point.isOutlier ? derivedMetrics.clippedMarkerY : point.plottedFit);
+              const pointClassName = [
+                "chart-point",
+                bestPoint ? "chart-point-best" : "",
+                latestPoint ? "chart-point-latest" : "",
+              ]
+                .filter(Boolean)
+                .join(" ");
+              const pointRadius = latestPoint ? 5 : bestPoint ? 4 : 2;
 
               return (
                 <g key={`point-${pointId}`}>
                   {point.isOutlier ? (
-                    <polygon
-                      points={`${x.toFixed(2)},${(y - 4).toFixed(2)} ${(x - 3.6).toFixed(2)},${(y + 2).toFixed(2)} ${(x + 3.6).toFixed(2)},${(y + 2).toFixed(2)}`}
-                      className="chart-outlier"
-                    />
+                    <>
+                      {latestPoint ? (
+                        <circle cx={x} cy={y} r={5} className="chart-point chart-point-latest" />
+                      ) : null}
+                      <polygon
+                        points={`${x.toFixed(2)},${(y - 4).toFixed(2)} ${(x - 3.6).toFixed(2)},${(y + 2).toFixed(2)} ${(x + 3.6).toFixed(2)},${(y + 2).toFixed(2)}`}
+                        className="chart-outlier"
+                      />
+                    </>
                   ) : (
                     <circle
                       cx={x}
                       cy={y}
-                      r={bestPoint ? 4 : 2}
-                      className={bestPoint ? "chart-point chart-point-best" : "chart-point"}
+                      r={pointRadius}
+                      className={pointClassName}
                     />
                   )}
                   <circle
@@ -1295,6 +1315,9 @@ export function MLProgressChart({
         </span>
         <span className="legend-item">
           <span className="legend-swatch best-point" /> Best so far
+        </span>
+        <span className="legend-item">
+          <span className="legend-swatch latest" /> Latest result
         </span>
         <span className="legend-item">
           <span className="legend-swatch median" /> Median

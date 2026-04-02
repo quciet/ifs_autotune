@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 import ml_driver
 import model_setup
-from ml_method import load_required_ml_method
+from ml_method import load_required_ml_method, normalize_ml_method
 from model_status import (
     FALLBACK_FIT_POOLED,
     FIT_EVALUATED,
@@ -28,11 +28,29 @@ from optimization.ensemble_training import ensemble_predict, train_ensemble, val
 from optimization.surrogate_models import BoundsScaler, LogClippedTargetTransform
 
 
-def _write_workbook(path: Path, *, ml_method: str | None) -> None:
+def _write_workbook(
+    path: Path,
+    *,
+    ml_method: str | None,
+    n_sample: int = 10,
+    n_max_iteration: int = 1,
+    n_convergence: int | None = None,
+    min_convergence_pct: float | None = None,
+) -> None:
     rows: list[dict[str, object]] = [
-        {"Method": "general", "Parameter": "n_sample", "Value": 10},
-        {"Method": "general", "Parameter": "n_max_iteration", "Value": 1},
+        {"Method": "general", "Parameter": "n_sample", "Value": n_sample},
+        {"Method": "general", "Parameter": "n_max_iteration", "Value": n_max_iteration},
     ]
+    if n_convergence is not None:
+        rows.append({"Method": "general", "Parameter": "n_convergence", "Value": n_convergence})
+    if min_convergence_pct is not None:
+        rows.append(
+            {
+                "Method": "general",
+                "Parameter": "min_convergence_pct",
+                "Value": min_convergence_pct,
+            }
+        )
     if ml_method is not None:
         rows.append({"Method": "general", "Parameter": "ml_method", "Value": ml_method})
 
@@ -108,6 +126,12 @@ def _create_bigpopa_db(
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_bigpopa_schema(path: Path) -> None:
+    with sqlite3.connect(path) as conn:
+        model_setup.ensure_bigpopa_schema(conn.cursor())
+        conn.commit()
 
 
 def _dimension() -> ml_driver.SearchDimension:
@@ -325,6 +349,306 @@ def test_active_learning_requires_explicit_model_type() -> None:
             Y_obs=np.asarray([0.0], dtype=float),
             X_grid=np.asarray([[0.0]], dtype=float),
         )
+
+
+def test_active_learning_uses_iteration_offset_for_candidate_generation_and_state_updates() -> None:
+    seen_iterations: list[int] = []
+    state_updates: list[dict[str, float]] = []
+
+    class FakeModel:
+        def predict(self, X: np.ndarray) -> np.ndarray:
+            X = np.asarray(X, dtype=float)
+            return np.zeros(len(X), dtype=float)
+
+    original_train_ensemble = active_learning.train_ensemble
+    active_learning.train_ensemble = lambda *args, **kwargs: [FakeModel(), FakeModel()]
+    try:
+        x_obs, y_obs, history, _, _ = active_learning.active_learning_loop(
+            f=lambda x: float(np.atleast_1d(x)[0]) + 0.5,
+            X_obs=np.asarray([[0.0]], dtype=float),
+            Y_obs=np.asarray([2.5], dtype=float),
+            X_grid=None,
+            n_iters=2,
+            model_type="tree",
+            iteration_offset=7,
+            initial_no_improve_counter=2,
+            on_state_update=lambda state: state_updates.append(dict(state)),
+            candidate_generator=lambda **kwargs: (
+                seen_iterations.append(int(kwargs["iteration"])) or np.asarray(
+                    [[float(kwargs["iteration"]) + 1.0]],
+                    dtype=float,
+                )
+            ),
+        )
+    finally:
+        active_learning.train_ensemble = original_train_ensemble
+
+    assert seen_iterations == [7, 8]
+    assert state_updates[0]["effective_iteration_count"] == 7
+    assert state_updates[0]["no_improve_counter"] == 2
+    assert state_updates[-1]["effective_iteration_count"] == 9
+    assert history.shape[0] == 2
+    assert np.array_equal(x_obs, np.asarray([[0.0], [8.0], [9.0]], dtype=float))
+    assert np.array_equal(y_obs, np.asarray([2.5, 8.5, 9.5], dtype=float))
+
+
+def test_ensure_bigpopa_schema_creates_ml_resume_state_table_idempotently() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        cursor = conn.cursor()
+        model_setup.ensure_bigpopa_schema(cursor)
+        model_setup.ensure_bigpopa_schema(cursor)
+        cursor.execute("PRAGMA table_info(ml_resume_state)")
+        columns = {row[1] for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+    assert {
+        "cohort_key",
+        "dataset_id",
+        "base_year",
+        "end_year",
+        "settings_signature",
+        "settings_payload",
+        "proposal_seed",
+        "effective_iteration_count",
+        "no_improve_counter",
+        "best_y_prev",
+        "updated_at_utc",
+    }.issubset(columns)
+
+
+def test_ensure_bigpopa_schema_upgrades_existing_db_with_ml_resume_state_table(tmp_path: Path) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    _create_bigpopa_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        before = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ml_resume_state'"
+        ).fetchone()
+    assert before is None
+
+    _ensure_bigpopa_schema(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        after = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ml_resume_state'"
+        ).fetchone()
+    assert after == ("ml_resume_state",)
+
+
+def test_ml_driver_resumes_search_state_when_settings_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    workbook_path = tmp_path / "StartingPointTable.xlsx"
+    _create_bigpopa_db(db_path, persisted_ml_method="tree")
+    _write_workbook(workbook_path, ml_method="tree", n_sample=10, n_max_iteration=1)
+    _ensure_bigpopa_schema(db_path)
+
+    search_space = [_dimension()]
+    settings_signature, settings_payload = ml_driver._build_resume_settings_payload(
+        ml_method_config=normalize_ml_method("tree"),
+        n_sample=10,
+        n_convergence=10,
+        min_convergence_pct=0.01 / 100.0,
+        proposal_mode=ml_driver.DEFAULT_PROPOSAL_MODE,
+        explicit_random_seed=None,
+        search_space=search_space,
+    )
+    with sqlite3.connect(db_path) as conn:
+        ml_driver._persist_resume_state(
+            conn,
+            cohort_key=ml_driver._build_resume_cohort_key(
+                dataset_id="dataset-1",
+                base_year=2020,
+                end_year=2030,
+            ),
+            dataset_id="dataset-1",
+            base_year=2020,
+            end_year=2030,
+            settings_signature=settings_signature,
+            settings_payload=settings_payload,
+            proposal_seed=4242,
+            effective_iteration_count=4,
+            no_improve_counter=3,
+            best_y_prev=1.5,
+        )
+
+    monkeypatch.setattr(
+        ml_driver.dataset_utils,
+        "load_compatible_training_samples",
+        lambda *args, **kwargs: [
+            {
+                "model_id": "prior-model",
+                "input_param": {"a": 0.25},
+                "input_coef": {},
+                "output_set": {"fit": 1},
+                "fit_pooled": 1.5,
+            }
+        ],
+    )
+    monkeypatch.setattr(ml_driver, "_build_search_space", lambda *args, **kwargs: search_space)
+
+    captured: dict[str, object] = {}
+
+    def fake_active_learning_loop(**kwargs):
+        captured["iteration_offset"] = kwargs["iteration_offset"]
+        captured["initial_no_improve_counter"] = kwargs["initial_no_improve_counter"]
+        captured["x_obs"] = np.asarray(kwargs["X_obs"], dtype=float).copy()
+        kwargs["on_state_update"](
+            {
+                "effective_iteration_count": 5,
+                "no_improve_counter": 4,
+                "best_y_prev": 1.5,
+            }
+        )
+        return (
+            np.asarray([[0.25]], dtype=float),
+            np.asarray([1.5], dtype=float),
+            np.asarray([], dtype=object),
+            {},
+            False,
+        )
+
+    monkeypatch.setattr(ml_driver, "active_learning_loop", fake_active_learning_loop)
+
+    exit_code = ml_driver.main(
+        [
+            "--ifs-root",
+            str(tmp_path),
+            "--end-year",
+            "2030",
+            "--output-folder",
+            str(output_dir),
+            "--initial-model-id",
+            "initial-model",
+            "--starting-point-table",
+            str(workbook_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["iteration_offset"] == 4
+    assert captured["initial_no_improve_counter"] == 3
+    assert np.array_equal(captured["x_obs"], np.asarray([[0.25]], dtype=float))
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT proposal_seed, effective_iteration_count, no_improve_counter FROM ml_resume_state"
+        ).fetchone()
+
+    assert row == (4242, 5, 4)
+
+
+def test_ml_driver_resets_search_state_but_keeps_training_data_when_settings_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    db_path = output_dir / "bigpopa.db"
+    workbook_path = tmp_path / "StartingPointTable.xlsx"
+    _create_bigpopa_db(db_path, persisted_ml_method="tree")
+    _write_workbook(workbook_path, ml_method="tree", n_sample=25, n_max_iteration=1)
+    _ensure_bigpopa_schema(db_path)
+
+    search_space = [_dimension()]
+    old_signature, old_payload = ml_driver._build_resume_settings_payload(
+        ml_method_config=normalize_ml_method("tree"),
+        n_sample=10,
+        n_convergence=10,
+        min_convergence_pct=0.01 / 100.0,
+        proposal_mode=ml_driver.DEFAULT_PROPOSAL_MODE,
+        explicit_random_seed=None,
+        search_space=search_space,
+    )
+    with sqlite3.connect(db_path) as conn:
+        ml_driver._persist_resume_state(
+            conn,
+            cohort_key=ml_driver._build_resume_cohort_key(
+                dataset_id="dataset-1",
+                base_year=2020,
+                end_year=2030,
+            ),
+            dataset_id="dataset-1",
+            base_year=2020,
+            end_year=2030,
+            settings_signature=old_signature,
+            settings_payload=old_payload,
+            proposal_seed=4242,
+            effective_iteration_count=7,
+            no_improve_counter=5,
+            best_y_prev=1.25,
+        )
+
+    monkeypatch.setattr(
+        ml_driver.dataset_utils,
+        "load_compatible_training_samples",
+        lambda *args, **kwargs: [
+            {
+                "model_id": "prior-model",
+                "input_param": {"a": 0.75},
+                "input_coef": {},
+                "output_set": {"fit": 1},
+                "fit_pooled": 1.25,
+            }
+        ],
+    )
+    monkeypatch.setattr(ml_driver, "_build_search_space", lambda *args, **kwargs: search_space)
+
+    captured: dict[str, object] = {}
+
+    def fake_active_learning_loop(**kwargs):
+        captured["iteration_offset"] = kwargs["iteration_offset"]
+        captured["initial_no_improve_counter"] = kwargs["initial_no_improve_counter"]
+        captured["x_obs"] = np.asarray(kwargs["X_obs"], dtype=float).copy()
+        kwargs["on_state_update"](
+            {
+                "effective_iteration_count": 1,
+                "no_improve_counter": 0,
+                "best_y_prev": 1.25,
+            }
+        )
+        return (
+            np.asarray([[0.75]], dtype=float),
+            np.asarray([1.25], dtype=float),
+            np.asarray([], dtype=object),
+            {},
+            False,
+        )
+
+    monkeypatch.setattr(ml_driver, "active_learning_loop", fake_active_learning_loop)
+
+    exit_code = ml_driver.main(
+        [
+            "--ifs-root",
+            str(tmp_path),
+            "--end-year",
+            "2030",
+            "--output-folder",
+            str(output_dir),
+            "--initial-model-id",
+            "initial-model",
+            "--starting-point-table",
+            str(workbook_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["iteration_offset"] == 0
+    assert captured["initial_no_improve_counter"] == 0
+    assert np.array_equal(captured["x_obs"], np.asarray([[0.75]], dtype=float))
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT proposal_seed, effective_iteration_count, no_improve_counter FROM ml_resume_state"
+        ).fetchone()
+
+    assert row == (4242, 1, 0)
 
 
 def test_chunked_candidate_selection_matches_full_scan() -> None:

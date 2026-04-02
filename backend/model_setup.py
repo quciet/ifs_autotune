@@ -85,6 +85,7 @@ def ensure_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
         """
     )
     ensure_model_output_tracking_columns(cursor)
+    ensure_ml_resume_state_table(cursor)
 
 
 def ensure_model_output_tracking_columns(cursor: sqlite3.Cursor) -> None:
@@ -100,6 +101,26 @@ def ensure_model_output_tracking_columns(cursor: sqlite3.Cursor) -> None:
     for column_name, statement in required_columns.items():
         if column_name not in existing_columns:
             cursor.execute(statement)
+
+
+def ensure_ml_resume_state_table(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_resume_state (
+            cohort_key TEXT PRIMARY KEY,
+            dataset_id TEXT,
+            base_year INTEGER,
+            end_year INTEGER NOT NULL,
+            settings_signature TEXT NOT NULL,
+            settings_payload TEXT NOT NULL,
+            proposal_seed INTEGER NOT NULL,
+            effective_iteration_count INTEGER NOT NULL DEFAULT 0,
+            no_improve_counter INTEGER NOT NULL DEFAULT 0,
+            best_y_prev REAL,
+            updated_at_utc TEXT NOT NULL
+        )
+        """
+    )
 
 
 def _row_enabled(value: Any) -> bool:

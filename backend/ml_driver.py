@@ -10,6 +10,7 @@ directly.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import json
 import os
@@ -38,7 +39,7 @@ from model_status import (
     MODEL_REUSED,
     cached_result_status,
 )
-from model_setup import canonical_config, ensure_model_output_tracking_columns, hash_model_id
+from model_setup import canonical_config, ensure_bigpopa_schema, ensure_model_output_tracking_columns, hash_model_id
 from optimization.active_learning import active_learning_loop
 from optimization.ensemble_training import (
     estimate_prediction_chunk_size,
@@ -85,6 +86,20 @@ class SearchDimension:
     maximum: float
     step: float | None = None
     level_count: int | None = None
+
+
+@dataclass(frozen=True)
+class ResumeState:
+    cohort_key: str
+    dataset_id: str | None
+    base_year: int | None
+    end_year: int
+    settings_signature: str
+    settings_payload: str
+    proposal_seed: int
+    effective_iteration_count: int
+    no_improve_counter: int
+    best_y_prev: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +273,207 @@ def _model_input_has_dataset_id(conn: sqlite3.Connection) -> bool:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _build_resume_cohort_key(
+    *,
+    dataset_id: str | None,
+    base_year: int | None,
+    end_year: int,
+) -> str:
+    payload = {
+        "dataset_id": dataset_id,
+        "base_year": int(base_year) if base_year is not None else None,
+        "end_year": int(end_year),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _build_search_space_signature(search_space: list[SearchDimension]) -> str:
+    payload = [
+        {
+            "key": list(dimension.key),
+            "kind": dimension.kind,
+            "default": float(dimension.default),
+            "minimum": float(dimension.minimum),
+            "maximum": float(dimension.maximum),
+            "step": None if dimension.step is None else float(dimension.step),
+            "level_count": dimension.level_count,
+        }
+        for dimension in search_space
+    ]
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _build_resume_settings_payload(
+    *,
+    ml_method_config,
+    n_sample: int,
+    n_convergence: int,
+    min_convergence_pct: float,
+    proposal_mode: str,
+    explicit_random_seed: int | None,
+    search_space: list[SearchDimension],
+) -> tuple[str, str]:
+    payload = {
+        "model_type": ml_method_config.model_type,
+        "ml_method": ml_method_config.normalized_value,
+        "n_sample": int(n_sample),
+        "n_convergence": int(n_convergence),
+        "min_convergence_pct": float(min_convergence_pct),
+        "proposal_mode": str(proposal_mode),
+        "explicit_random_seed": explicit_random_seed,
+        "candidate_refresh_interval": int(DEFAULT_CANDIDATE_REFRESH_INTERVAL),
+        "max_pool_regenerations": int(DEFAULT_MAX_POOL_REGENERATIONS),
+        "distance_penalty_enabled": bool(ENABLE_DEFAULT_DISTANCE_PENALTY),
+        "distance_penalty_strength": float(DEFAULT_DISTANCE_PENALTY_STRENGTH),
+        "search_space_signature": _build_search_space_signature(search_space),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    signature = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return signature, serialized
+
+
+def _load_resume_state(
+    conn: sqlite3.Connection,
+    *,
+    cohort_key: str,
+) -> ResumeState | None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            cohort_key,
+            dataset_id,
+            base_year,
+            end_year,
+            settings_signature,
+            settings_payload,
+            proposal_seed,
+            effective_iteration_count,
+            no_improve_counter,
+            best_y_prev
+        FROM ml_resume_state
+        WHERE cohort_key = ?
+        LIMIT 1
+        """,
+        (cohort_key,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return ResumeState(
+        cohort_key=str(row[0]),
+        dataset_id=row[1],
+        base_year=int(row[2]) if row[2] is not None else None,
+        end_year=int(row[3]),
+        settings_signature=str(row[4]),
+        settings_payload=str(row[5]),
+        proposal_seed=int(row[6]),
+        effective_iteration_count=max(0, int(row[7] or 0)),
+        no_improve_counter=max(0, int(row[8] or 0)),
+        best_y_prev=float(row[9]) if row[9] is not None else None,
+    )
+
+
+def _persist_resume_state(
+    conn: sqlite3.Connection,
+    *,
+    cohort_key: str,
+    dataset_id: str | None,
+    base_year: int | None,
+    end_year: int,
+    settings_signature: str,
+    settings_payload: str,
+    proposal_seed: int,
+    effective_iteration_count: int,
+    no_improve_counter: int,
+    best_y_prev: float | None,
+) -> None:
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO ml_resume_state (
+                cohort_key,
+                dataset_id,
+                base_year,
+                end_year,
+                settings_signature,
+                settings_payload,
+                proposal_seed,
+                effective_iteration_count,
+                no_improve_counter,
+                best_y_prev,
+                updated_at_utc
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cohort_key) DO UPDATE SET
+                dataset_id=excluded.dataset_id,
+                base_year=excluded.base_year,
+                end_year=excluded.end_year,
+                settings_signature=excluded.settings_signature,
+                settings_payload=excluded.settings_payload,
+                proposal_seed=excluded.proposal_seed,
+                effective_iteration_count=excluded.effective_iteration_count,
+                no_improve_counter=excluded.no_improve_counter,
+                best_y_prev=excluded.best_y_prev,
+                updated_at_utc=excluded.updated_at_utc
+            """,
+            (
+                cohort_key,
+                dataset_id,
+                base_year,
+                end_year,
+                settings_signature,
+                settings_payload,
+                int(proposal_seed),
+                max(0, int(effective_iteration_count)),
+                max(0, int(no_improve_counter)),
+                None if best_y_prev is None else float(best_y_prev),
+                _utc_now_iso(),
+            ),
+        )
+
+
+def _resolve_resume_behavior(
+    conn: sqlite3.Connection,
+    *,
+    dataset_id: str | None,
+    base_year: int | None,
+    end_year: int,
+    settings_signature: str,
+    settings_payload: str,
+    explicit_random_seed: int | None,
+) -> tuple[ResumeState | None, int, int, int, str]:
+    cohort_key = _build_resume_cohort_key(
+        dataset_id=dataset_id,
+        base_year=base_year,
+        end_year=end_year,
+    )
+    existing_state = _load_resume_state(conn, cohort_key=cohort_key)
+
+    if explicit_random_seed is not None:
+        proposal_seed = int(explicit_random_seed)
+    elif existing_state is not None:
+        proposal_seed = int(existing_state.proposal_seed)
+    else:
+        proposal_seed = _resolve_run_seed(None)
+
+    if existing_state is None:
+        return None, proposal_seed, 0, 0, "fresh"
+
+    if existing_state.settings_signature == settings_signature:
+        return (
+            existing_state,
+            proposal_seed,
+            existing_state.effective_iteration_count,
+            existing_state.no_improve_counter,
+            "resume_search_state",
+        )
+
+    return existing_state, proposal_seed, 0, 0, "reset_search_state"
 
 
 def _upsert_model_output_tracking(
@@ -1471,7 +1687,7 @@ def _run_model(
 
     with sqlite3.connect(bigpopa_db) as conn:
         cursor = conn.cursor()
-        ensure_model_output_tracking_columns(cursor)
+        ensure_bigpopa_schema(cursor)
         if not dataset_id_supported:
             raise RuntimeError("model_input.dataset_id column is required for ML runs")
         cursor.execute(
@@ -1641,6 +1857,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     with conn:
+        ensure_bigpopa_schema(conn.cursor())
         dataset_id_supported = _model_input_has_dataset_id(conn)
         (
             ifs_id,
@@ -1684,7 +1901,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         memory_budget_bytes = _memory_budget_bytes()
-        run_seed = _resolve_run_seed(args.random_seed)
         ml_method_config = _load_persisted_ml_method(conn, ifs_id)
         (
             n_sample,
@@ -1693,17 +1909,6 @@ def main(argv: list[str] | None = None) -> int:
             min_convergence_pct,
         ) = _load_ml_settings(starting_point_table)
         user_param_configs, user_coef_configs = _load_user_search_configs(starting_point_table)
-        print(
-            (
-                "Using ML method from bigpopa.db: "
-                f"persisted='{ml_method_config.raw_value}', "
-                f"normalized='{ml_method_config.normalized_value}', "
-                f"runtime_model='{ml_method_config.model_type}', "
-                f"run_seed={run_seed}, "
-                f"memory_budget_mb={memory_budget_bytes / 1024 / 1024:.1f}"
-            ),
-            flush=True,
-        )
 
         structure = dataset_utils.extract_structure_keys(input_param, input_coef, output_set)
         samples = dataset_utils.load_compatible_training_samples(
@@ -1748,10 +1953,47 @@ def main(argv: list[str] | None = None) -> int:
             user_coef_configs,
         )
         proposal_mode = DEFAULT_PROPOSAL_MODE
+        settings_signature, settings_payload = _build_resume_settings_payload(
+            ml_method_config=ml_method_config,
+            n_sample=n_sample,
+            n_convergence=n_convergence,
+            min_convergence_pct=min_convergence_pct,
+            proposal_mode=proposal_mode,
+            explicit_random_seed=args.random_seed,
+            search_space=search_space,
+        )
+        (
+            existing_resume_state,
+            proposal_seed,
+            iteration_offset,
+            initial_no_improve_counter,
+            resume_mode,
+        ) = _resolve_resume_behavior(
+            conn,
+            dataset_id=dataset_id,
+            base_year=args.base_year,
+            end_year=args.end_year,
+            settings_signature=settings_signature,
+            settings_payload=settings_payload,
+            explicit_random_seed=args.random_seed,
+        )
+        print(
+            (
+                "Using ML method from bigpopa.db: "
+                f"persisted='{ml_method_config.raw_value}', "
+                f"normalized='{ml_method_config.normalized_value}', "
+                f"runtime_model='{ml_method_config.model_type}', "
+                f"proposal_seed={proposal_seed}, "
+                f"resume_mode='{resume_mode}', "
+                f"iteration_offset={iteration_offset}, "
+                f"memory_budget_mb={memory_budget_bytes / 1024 / 1024:.1f}"
+            ),
+            flush=True,
+        )
         candidate_generator = _build_proposal_generator(
             search_space=search_space,
             n_samples=n_sample,
-            run_seed=run_seed,
+            run_seed=proposal_seed,
             memory_budget_bytes=memory_budget_bytes,
             proposal_mode=proposal_mode,
         )
@@ -1776,6 +2018,14 @@ def main(argv: list[str] | None = None) -> int:
             model_type=ml_method_config.model_type,
             memory_budget_bytes=memory_budget_bytes,
         )
+
+        resume_state_snapshot = {
+            "effective_iteration_count": iteration_offset,
+            "no_improve_counter": initial_no_improve_counter,
+            "best_y_prev": float(np.min(np.asarray(Y_obs, dtype=float)))
+            if Y_obs
+            else (existing_resume_state.best_y_prev if existing_resume_state is not None else None),
+        }
 
         trial_counter = {"value": 0}
 
@@ -1810,6 +2060,9 @@ def main(argv: list[str] | None = None) -> int:
             min_improve_pct=min_convergence_pct,
             prediction_chunk_size=prediction_chunk_size,
             memory_budget_bytes=memory_budget_bytes,
+            iteration_offset=iteration_offset,
+            initial_no_improve_counter=initial_no_improve_counter,
+            on_state_update=resume_state_snapshot.update,
             should_stop=lambda: stop_requested(stop_file),
             candidate_generator=candidate_generator,
             candidate_refresh_interval=DEFAULT_CANDIDATE_REFRESH_INTERVAL,
@@ -1817,6 +2070,24 @@ def main(argv: list[str] | None = None) -> int:
             x_scaler=x_scaler,
             y_transformer=y_transformer,
             proposal_penalty_fn=proposal_penalty_fn,
+        )
+
+        _persist_resume_state(
+            conn,
+            cohort_key=_build_resume_cohort_key(
+                dataset_id=dataset_id,
+                base_year=args.base_year,
+                end_year=args.end_year,
+            ),
+            dataset_id=dataset_id,
+            base_year=args.base_year,
+            end_year=args.end_year,
+            settings_signature=settings_signature,
+            settings_payload=settings_payload,
+            proposal_seed=proposal_seed,
+            effective_iteration_count=resume_state_snapshot["effective_iteration_count"],
+            no_improve_counter=resume_state_snapshot["no_improve_counter"],
+            best_y_prev=resume_state_snapshot["best_y_prev"],
         )
 
         best_index = int(np.argmin(Y_obs_arr))

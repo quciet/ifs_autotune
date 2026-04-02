@@ -31,8 +31,6 @@ type View = "validate" | "tune";
 
 type StatusLevel = "info" | "success" | "error";
 
-type LowerPanelView = "log" | "progress";
-
 type MLTerminationReason = "completed" | "stopped_gracefully";
 
 type MLFinalResult = {
@@ -315,11 +313,7 @@ function TuneIFsPage({
   const [statusMessage, setStatusMessage] = useState("Waiting to start.");
   const [statusLevel, setStatusLevel] = useState<StatusLevel>("info");
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
-  const [mlLogEntries, setMLLogEntries] = useState<string[]>([]);
-  const ML_LOG_MAX_LINES = 300;
-  const AUTO_SCROLL_BOTTOM_EPS_PX = 24;
   const [currentModelProgress, setCurrentModelProgress] = useState<string | null>(null);
-  const [lowerPanelView, setLowerPanelView] = useState<LowerPanelView>("log");
   const [progressTrials, setProgressTrials] = useState<ChartPoint[]>([]);
   const [progressHistoryLoading, setProgressHistoryLoading] = useState(false);
   const [progressHistoryError, setProgressHistoryError] = useState<string | null>(null);
@@ -332,17 +326,7 @@ function TuneIFsPage({
   const coefficientRef = useRef<Record<string, unknown>>({});
   const paramDimensionRef = useRef<Record<string, unknown>>({});
   const logIdRef = useRef(0);
-  const mlConsoleBodyRef = useRef<HTMLDivElement | null>(null);
-  const mlAutoScrollRef = useRef(true);
   const previousInitialMLJobRunningRef = useRef(Boolean(initialMLJobRunning));
-
-  const scrollMLLogToBottom = () => {
-    const el = mlConsoleBodyRef.current;
-    if (!el) {
-      return;
-    }
-    el.scrollTop = el.scrollHeight;
-  };
 
   const refreshMLJobStatus = async () => {
     if (!onMLJobStatusRefresh) {
@@ -527,7 +511,6 @@ function TuneIFsPage({
     setProgressYear(null);
     setProgressPercent(0);
     setError(null);
-    setLowerPanelView("log");
   }, [
     validatedPath,
     validatedInputPath,
@@ -599,13 +582,6 @@ function TuneIFsPage({
     }
 
     const unsubscribe = subscribe((line: string) => {
-      setMLLogEntries((prev) => {
-        const next = [...prev, line];
-        return next.length > ML_LOG_MAX_LINES
-          ? next.slice(-ML_LOG_MAX_LINES)
-          : next;
-      });
-
       const match = line.match(/\[(\d+)\/(\d+)\]/);
       if (match) {
         setCurrentModelProgress(`${match[1]}/${match[2]}`);
@@ -614,27 +590,6 @@ function TuneIFsPage({
 
     return () => unsubscribe?.();
   }, []);
-
-  useEffect(() => {
-    if (mlAutoScrollRef.current) {
-      scrollMLLogToBottom();
-    }
-  }, [mlLogEntries]);
-
-  useEffect(() => {
-    if (lowerPanelView !== "log") {
-      return;
-    }
-
-    mlAutoScrollRef.current = true;
-    const frame = window.requestAnimationFrame(() => {
-      scrollMLLogToBottom();
-    });
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-    };
-  }, [lowerPanelView]);
 
   useEffect(() => {
     if (!window.electron?.on) {
@@ -667,10 +622,6 @@ function TuneIFsPage({
   }, []);
 
   useEffect(() => {
-    if (lowerPanelView !== "progress") {
-      return;
-    }
-
     if (!outputDirectory) {
       setProgressTrials([]);
       setProgressReferenceFitPooled(null);
@@ -753,7 +704,7 @@ function TuneIFsPage({
         window.clearInterval(intervalId);
       }
     };
-  }, [lowerPanelView, outputDirectory, progressDatasetId, progressReferenceModelId, running]);
+  }, [outputDirectory, progressDatasetId, progressReferenceModelId, running]);
 
   const resetModelSetupState = () => {
     setModelSetupResult(null);
@@ -761,17 +712,6 @@ function TuneIFsPage({
     setProgressReferenceModelId(null);
     setProgressReferenceFitPooled(null);
     setRunResult(null);
-  };
-
-  const handleMLScroll = () => {
-    const el = mlConsoleBodyRef.current;
-    if (!el) return;
-
-    const distanceFromBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight;
-
-    mlAutoScrollRef.current =
-      distanceFromBottom <= AUTO_SCROLL_BOTTOM_EPS_PX;
   };
 
   const handleEndYearInputChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -944,8 +884,6 @@ function TuneIFsPage({
     setRunResult(null);
     setProgressYear(null);
     setProgressPercent(0);
-    setMLLogEntries([]);
-    mlAutoScrollRef.current = true;
     setCurrentModelProgress(null);
     setStopRequested(false);
     setStopAcknowledged(false);
@@ -1099,21 +1037,6 @@ function TuneIFsPage({
         setRunning(false);
       }
       await refreshMLJobStatus();
-    }
-  };
-
-  const handleLowerPanelViewChange = (nextView: LowerPanelView) => {
-    setLowerPanelView(nextView);
-    void window.electron?.invoke?.("ml:lowerPanelViewChanged", {
-      view: nextView,
-      datasetId: progressDatasetId,
-    });
-    if (nextView === "progress") {
-      setProgressHistoryError(
-        progressDatasetId
-          ? null
-          : "Run model setup first so progress can be scoped to a dataset.",
-      );
     }
   };
 
@@ -1314,84 +1237,41 @@ function TuneIFsPage({
       </div>
 
       <div className="ml-lower-panel">
-        <div className="ml-lower-panel-header">
-          <div className="ml-panel-tabs" role="tablist" aria-label="ML lower panel views">
-            <button
-              type="button"
-              role="tab"
-              className={`ml-panel-tab ${lowerPanelView === "log" ? "active" : ""}`}
-              aria-selected={lowerPanelView === "log"}
-              onClick={() => handleLowerPanelViewChange("log")}
-            >
-              ML Optimization Log
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className={`ml-panel-tab ${lowerPanelView === "progress" ? "active" : ""}`}
-              aria-selected={lowerPanelView === "progress"}
-              onClick={() => handleLowerPanelViewChange("progress")}
-              disabled={!outputDirectory}
-              title={!outputDirectory ? "Choose an output folder to view ML optimization visualization." : undefined}
-            >
-              ML Optimization Viz
-            </button>
+        <div className="ml-progress-panel">
+          <div className="ml-progress-summary">
+            <span>
+              <strong>Points:</strong> {progressTrials.length}
+            </span>
+            <span>
+              <strong>Latest best:</strong>{" "}
+              {latestBestFit != null ? latestBestFit.toFixed(4) : "N/A"}
+            </span>
           </div>
-        </div>
-
-        {lowerPanelView === "log" ? (
-          <div className="ml-console">
-            <div
-              className="ml-console-body"
-              ref={mlConsoleBodyRef}
-              onScroll={handleMLScroll}
-            >
-              {mlLogEntries.length === 0 ? (
-                <div className="progress-text">Waiting for ML output...</div>
-              ) : (
-                mlLogEntries.map((entry, index) => (
-                  <div key={`${index}-${entry.slice(0, 12)}`}>{entry}</div>
-                ))
-              )}
+          {progressHistoryLoading ? (
+            <div className="progress-text">Loading ML progress history...</div>
+          ) : progressHistoryError ? (
+            <div className="progress-text error">{progressHistoryError}</div>
+          ) : progressTrials.length === 0 ? (
+            <div className="progress-text">
+              {progressDatasetId ? (
+                <>
+                  <strong>Dataset ID:</strong> {progressDatasetId}
+                  <br />
+                </>
+              ) : null}
+              {progressEmptyMessage}
             </div>
-          </div>
           ) : (
-            <div className="ml-progress-panel">
-              <div className="ml-progress-summary">
-                <span>
-                  <strong>Points:</strong> {progressTrials.length}
-              </span>
-              <span>
-                <strong>Latest best:</strong>{" "}
-                {latestBestFit != null ? latestBestFit.toFixed(4) : "N/A"}
-              </span>
-            </div>
-            {progressHistoryLoading ? (
-              <div className="progress-text">Loading ML progress history...</div>
-            ) : progressHistoryError ? (
-              <div className="progress-text error">{progressHistoryError}</div>
-            ) : progressTrials.length === 0 ? (
-              <div className="progress-text">
-                {progressDatasetId ? (
-                  <>
-                    <strong>Dataset ID:</strong> {progressDatasetId}
-                    <br />
-                  </>
-                ) : null}
-                {progressEmptyMessage}
-              </div>
-              ) : (
-                <MLProgressChart
-                  points={progressTrials}
-                  referenceFitPooled={progressReferenceFitPooled}
-                  referenceModelId={progressReferenceModelId}
-                  rollingWindow={rollingWindow}
-                  rollingWindowInput={rollingWindowInput}
-                  onRollingWindowInputChange={onRollingWindowInputChange}
-                />
-              )}
-            </div>
-        )}
+            <MLProgressChart
+              points={progressTrials}
+              referenceFitPooled={progressReferenceFitPooled}
+              referenceModelId={progressReferenceModelId}
+              rollingWindow={rollingWindow}
+              rollingWindowInput={rollingWindowInput}
+              onRollingWindowInputChange={onRollingWindowInputChange}
+            />
+          )}
+        </div>
       </div>
 
     </section>

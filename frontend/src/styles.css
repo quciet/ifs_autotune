@@ -617,70 +617,6 @@ body {
   padding: 1rem;
 }
 
-.ml-lower-panel-header {
-  margin-bottom: 1rem;
-}
-
-.ml-panel-tabs {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  background: rgba(226, 232, 240, 0.8);
-  padding: 0.3rem;
-  border-radius: 9999px;
-}
-
-.ml-panel-tab {
-  border: 0;
-  border-radius: 9999px;
-  padding: 0.65rem 1rem;
-  background: transparent;
-  color: #475569;
-  font-weight: 700;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.ml-panel-tab:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.7);
-  color: #1e293b;
-}
-
-.ml-panel-tab.active {
-  background: #ffffff;
-  color: #1d4ed8;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.12);
-}
-
-.ml-panel-tab:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.ml-console {
-  margin-top: 1.5rem;
-  background: #1a1a1a;
-  color: #e2e8f0;
-  border-radius: 0.75rem;
-  padding: 1rem;
-  font-family: monospace;
-}
-
-.ml-lower-panel .ml-console {
-  margin-top: 0;
-}
-
-.ml-console-title {
-  font-weight: 700;
-  margin-bottom: 0.5rem;
-}
-
-.ml-console-body {
-  height: 250px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-}
-
 .ml-progress-panel {
   padding-top: 0.25rem;
 }
@@ -1009,6 +945,13 @@ body {
   opacity: 0.96;
 }
 
+.chart-point-latest {
+  fill: #7c3aed;
+  stroke: #ffffff;
+  stroke-width: 1.25;
+  opacity: 0.98;
+}
+
 .chart-outlier {
   fill: #8c2d04;
   stroke: #ffffff;
@@ -1106,6 +1049,14 @@ body {
   background: #c62828;
   border: 2px solid #ffffff;
   box-shadow: 0 0 0 1px rgba(198, 40, 40, 0.28);
+}
+
+.legend-swatch.latest {
+  width: 14px;
+  height: 14px;
+  background: #7c3aed;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.28);
 }
 
 .legend-swatch.median {

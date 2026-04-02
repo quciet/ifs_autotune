@@ -60,6 +60,9 @@ def active_learning_loop(
     x_scaler: BoundsScaler | None = None,
     y_transformer: LogClippedTargetTransform | None = None,
     proposal_penalty_fn=None,
+    iteration_offset: int = 0,
+    initial_no_improve_counter: int = 0,
+    on_state_update=None,
 ):
     """Active-learning optimization loop using ensemble-based surrogates."""
     if not model_type:
@@ -80,9 +83,14 @@ def active_learning_loop(
     results_cache = {
         tuple(np.round(np.atleast_1d(x), 6)): float(y) for x, y in zip(X_obs, Y_obs)
     }
-    kappas = np.linspace(kappa_start, kappa_end, n_iters)
+    kappas = _build_kappa_schedule(
+        n_iters=n_iters,
+        iteration_offset=iteration_offset,
+        kappa_start=kappa_start,
+        kappa_end=kappa_end,
+    )
     history = []
-    no_improve_counter = 0
+    no_improve_counter = max(0, int(initial_no_improve_counter))
     stop_honored = False
 
     best_y_prev = float(np.min(Y_obs))
@@ -95,11 +103,22 @@ def active_learning_loop(
         f"{ml_prefix}Surrogate='{model_type}'",
         f"prediction_chunk_size={prediction_chunk_size}",
     ]
+    if iteration_offset > 0:
+        details.append(f"resume_iteration_offset={iteration_offset}")
+    if no_improve_counter > 0:
+        details.append(f"resume_no_improve_counter={no_improve_counter}")
     if memory_budget_bytes is not None:
         details.append(f"memory_budget_mb={memory_budget_bytes / 1024 / 1024:.1f}")
     print(", ".join(details), flush=True)
+    _emit_state_update(
+        on_state_update=on_state_update,
+        effective_iteration_count=iteration_offset,
+        no_improve_counter=no_improve_counter,
+        best_y_prev=best_y_prev,
+    )
 
     for t in range(n_iters):
+        effective_iteration = iteration_offset + t
         if should_stop is not None and should_stop():
             print(
                 f"{ml_prefix}Graceful stop acknowledged; stopping before the next candidate.",
@@ -128,7 +147,7 @@ def active_learning_loop(
                 candidate_generator(
                     X_obs=X_obs,
                     Y_obs=Y_obs,
-                    iteration=t,
+                    iteration=effective_iteration,
                     refresh_attempt=0,
                 )
             )
@@ -156,7 +175,7 @@ def active_learning_loop(
                     candidate_generator(
                         X_obs=X_obs,
                         Y_obs=Y_obs,
-                        iteration=t,
+                        iteration=effective_iteration,
                         refresh_attempt=regeneration_attempt,
                     )
                 )
@@ -208,14 +227,6 @@ def active_learning_loop(
             flush=True,
         )
 
-        if should_stop is not None and should_stop():
-            print(
-                f"{ml_prefix}Graceful stop acknowledged; stopping after the current evaluation.",
-                flush=True,
-            )
-            stop_honored = True
-            break
-
         if min_improve_pct is not None:
             rel_change = abs(best_y_curr - best_y_prev) / (abs(best_y_prev) + 1e-8)
             if rel_change < min_improve_pct:
@@ -223,6 +234,13 @@ def active_learning_loop(
             else:
                 no_improve_counter = 0
             if no_improve_counter >= patience:
+                best_y_prev = best_y_curr
+                _emit_state_update(
+                    on_state_update=on_state_update,
+                    effective_iteration_count=effective_iteration + 1,
+                    no_improve_counter=no_improve_counter,
+                    best_y_prev=best_y_prev,
+                )
                 print(
                     f"{ml_prefix}Stopping early: no improvement > "
                     f"{format_percent_adaptive(min_improve_pct * 100)} for "
@@ -231,8 +249,65 @@ def active_learning_loop(
                 )
                 break
         best_y_prev = best_y_curr
+        _emit_state_update(
+            on_state_update=on_state_update,
+            effective_iteration_count=effective_iteration + 1,
+            no_improve_counter=no_improve_counter,
+            best_y_prev=best_y_prev,
+        )
+        if should_stop is not None and should_stop():
+            print(
+                f"{ml_prefix}Graceful stop acknowledged; stopping after the current evaluation.",
+                flush=True,
+            )
+            stop_honored = True
+            break
 
     return X_obs, Y_obs, np.array(history, dtype=object), results_cache, stop_honored
+
+
+def _build_kappa_schedule(
+    *,
+    n_iters: int,
+    iteration_offset: int,
+    kappa_start: float,
+    kappa_end: float,
+) -> np.ndarray:
+    if n_iters <= 0:
+        return np.asarray([], dtype=float)
+
+    if n_iters == 1 and iteration_offset <= 0:
+        return np.asarray([float(kappa_start)], dtype=float)
+
+    total_steps = max(1, int(iteration_offset) + int(n_iters))
+    indices = np.arange(int(iteration_offset), total_steps, dtype=float)
+    if total_steps <= 1:
+        return np.asarray([float(kappa_start)], dtype=float)
+
+    span = float(kappa_end) - float(kappa_start)
+    return np.asarray(
+        [float(kappa_start) + span * (index / float(total_steps - 1)) for index in indices],
+        dtype=float,
+    )
+
+
+def _emit_state_update(
+    *,
+    on_state_update,
+    effective_iteration_count: int,
+    no_improve_counter: int,
+    best_y_prev: float,
+) -> None:
+    if on_state_update is None:
+        return
+
+    on_state_update(
+        {
+            "effective_iteration_count": max(0, int(effective_iteration_count)),
+            "no_improve_counter": max(0, int(no_improve_counter)),
+            "best_y_prev": float(best_y_prev),
+        }
+    )
 
 
 def _coerce_candidate_pool(X_grid) -> np.ndarray:
