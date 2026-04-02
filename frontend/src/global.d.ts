@@ -21,6 +21,7 @@ declare global {
     dataset_id?: string | null;
     sequence_index?: number | null;
     derived_round_index?: number | null;
+    progress_rowid?: number | null;
   }
 
   interface Window {
@@ -59,6 +60,7 @@ declare global {
         outputDir?: string | null,
         datasetId?: string | null,
         modelId?: string | null,
+        sinceOutputRowId?: number | null,
       ) => Promise<{
         status?: string;
         stage?: string;
@@ -67,6 +69,7 @@ declare global {
           dataset_id?: string | null;
           reference_model_id?: string | null;
           reference_fit_pooled?: number | null;
+          latest_output_rowid?: number | null;
           trials?: MLProgressTrial[];
         };
       }>;

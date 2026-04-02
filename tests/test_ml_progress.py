@@ -116,6 +116,7 @@ def test_main_normalizes_failed_trials_as_missing(tmp_path: Path, capsys) -> Non
     assert payload["data"]["dataset_id"] == "dataset-1"
     assert payload["data"]["reference_model_id"] == "seed-model"
     assert payload["data"]["reference_fit_pooled"] is None
+    assert payload["data"]["latest_output_rowid"] == 2
     assert payload["data"]["trials"] == [
         {
             "model_id": "trial-ok",
@@ -129,6 +130,7 @@ def test_main_normalizes_failed_trials_as_missing(tmp_path: Path, capsys) -> Non
             "dataset_id": "dataset-1",
             "sequence_index": 1,
             "derived_round_index": 1,
+            "progress_rowid": 1,
         },
         {
             "model_id": "trial-failed",
@@ -142,8 +144,107 @@ def test_main_normalizes_failed_trials_as_missing(tmp_path: Path, capsys) -> Non
             "dataset_id": "dataset-1",
             "sequence_index": 2,
             "derived_round_index": 1,
+            "progress_rowid": 2,
         },
     ]
+
+
+def test_main_can_return_incremental_trials_since_output_rowid(
+    tmp_path: Path, capsys
+) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_progress_db(db_path)
+
+    exit_code = ml_progress.main(
+        [
+            "--bigpopa-db",
+            str(db_path),
+            "--dataset-id",
+            "dataset-1",
+            "--since-output-rowid",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["latest_output_rowid"] == 2
+    assert payload["data"]["trials"] == [
+        {
+            "model_id": "trial-ok",
+            "model_status": "completed",
+            "fit_pooled": 12.5,
+            "fit_missing": False,
+            "trial_index": 1,
+            "batch_index": 1,
+            "started_at_utc": "2026-03-12T10:00:00Z",
+            "completed_at_utc": "2026-03-12T10:05:00Z",
+            "dataset_id": "dataset-1",
+            "sequence_index": 1,
+            "derived_round_index": 1,
+            "progress_rowid": 1,
+        },
+        {
+            "model_id": "trial-failed",
+            "model_status": "failed",
+            "fit_pooled": None,
+            "fit_missing": True,
+            "trial_index": 2,
+            "batch_index": 1,
+            "started_at_utc": "2026-03-12T10:06:00Z",
+            "completed_at_utc": "2026-03-12T10:07:00Z",
+            "dataset_id": "dataset-1",
+            "sequence_index": 2,
+            "derived_round_index": 1,
+            "progress_rowid": 2,
+        },
+    ]
+
+
+def test_main_reports_latest_output_rowid_even_when_no_new_trials(
+    tmp_path: Path, capsys
+) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_progress_db(db_path)
+
+    exit_code = ml_progress.main(
+        [
+            "--bigpopa-db",
+            str(db_path),
+            "--dataset-id",
+            "dataset-1",
+            "--since-output-rowid",
+            "3",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["latest_output_rowid"] == 2
+    assert payload["data"]["trials"] == []
+
+
+def test_main_replays_cursor_tail_row_for_incremental_overlap(
+    tmp_path: Path, capsys
+) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_progress_db(db_path)
+
+    exit_code = ml_progress.main(
+        [
+            "--bigpopa-db",
+            str(db_path),
+            "--dataset-id",
+            "dataset-1",
+            "--since-output-rowid",
+            "2",
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["latest_output_rowid"] == 2
+    assert [trial["progress_rowid"] for trial in payload["data"]["trials"]] == [2]
 
 
 def test_repair_batch_indexes_is_idempotent(tmp_path: Path) -> None:
@@ -544,6 +645,7 @@ def test_main_hides_fallback_fit_for_new_missing_fit_statuses(
             "dataset_id": "dataset-1",
             "sequence_index": 1,
             "derived_round_index": 1,
+            "progress_rowid": 1,
         },
         {
             "model_id": "fit-missing",
@@ -557,6 +659,7 @@ def test_main_hides_fallback_fit_for_new_missing_fit_statuses(
             "dataset_id": "dataset-1",
             "sequence_index": 2,
             "derived_round_index": 1,
+            "progress_rowid": 2,
         },
         {
             "model_id": "fit-ok",
@@ -570,6 +673,7 @@ def test_main_hides_fallback_fit_for_new_missing_fit_statuses(
             "dataset_id": "dataset-1",
             "sequence_index": 3,
             "derived_round_index": 1,
+            "progress_rowid": 3,
         },
     ]
 

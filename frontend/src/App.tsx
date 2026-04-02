@@ -18,9 +18,11 @@ import {
   type IFsProgressEvent,
   type ModelSetupData,
   type MLDriverData,
+  type MLProgressTrial,
 } from "./api";
 import {
   MLProgressChart,
+  appendNormalizedProgressTrials,
   normalizeProgressTrials,
   type ChartPoint,
 } from "./MLProgressChart";
@@ -187,6 +189,63 @@ function OverflowAwareMiddleTruncate({
   );
 }
 
+function parseSequenceIndex(trial: MLProgressTrial): number | null {
+  return typeof trial.sequence_index === "number" &&
+    Number.isFinite(trial.sequence_index) &&
+    trial.sequence_index > 0
+    ? trial.sequence_index
+    : null;
+}
+
+function parseProgressRowId(trial: MLProgressTrial): number | null {
+  return typeof trial.progress_rowid === "number" &&
+    Number.isFinite(trial.progress_rowid) &&
+    trial.progress_rowid > 0
+    ? trial.progress_rowid
+    : null;
+}
+
+function canMergeIncrementalTrials(
+  existing: ChartPoint[],
+  incoming: MLProgressTrial[],
+  sinceOutputRowId: number,
+): boolean {
+  if (incoming.length === 0) {
+    return true;
+  }
+
+  const firstSequenceIndex = parseSequenceIndex(incoming[0]);
+  if (firstSequenceIndex == null || firstSequenceIndex < 1 || firstSequenceIndex > existing.length + 1) {
+    return false;
+  }
+
+  return incoming.every((trial, index) => {
+    const sequenceIndex = parseSequenceIndex(trial);
+    const progressRowId = parseProgressRowId(trial);
+    return (
+      sequenceIndex === firstSequenceIndex + index &&
+      (progressRowId == null || progressRowId >= sinceOutputRowId)
+    );
+  });
+}
+
+function mergeIncrementalProgressTrials(
+  existing: ChartPoint[],
+  incoming: MLProgressTrial[],
+): ChartPoint[] {
+  if (incoming.length === 0) {
+    return existing;
+  }
+
+  const firstSequenceIndex = parseSequenceIndex(incoming[0]);
+  if (firstSequenceIndex == null || firstSequenceIndex < 1) {
+    return normalizeProgressTrials(incoming);
+  }
+
+  const preservedPrefix = existing.slice(0, Math.max(0, firstSequenceIndex - 1));
+  return appendNormalizedProgressTrials(preservedPrefix, incoming);
+}
+
 type LogStatus = ApiStatus | "info";
 
 type LogEntry = {
@@ -315,6 +374,7 @@ function TuneIFsPage({
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [currentModelProgress, setCurrentModelProgress] = useState<string | null>(null);
   const [progressTrials, setProgressTrials] = useState<ChartPoint[]>([]);
+  const [progressLatestOutputRowId, setProgressLatestOutputRowId] = useState<number | null>(null);
   const [progressHistoryLoading, setProgressHistoryLoading] = useState(false);
   const [progressHistoryError, setProgressHistoryError] = useState<string | null>(null);
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
@@ -325,6 +385,8 @@ function TuneIFsPage({
   const parameterRef = useRef<Record<string, unknown>>({});
   const coefficientRef = useRef<Record<string, unknown>>({});
   const paramDimensionRef = useRef<Record<string, unknown>>({});
+  const progressTrialsRef = useRef<ChartPoint[]>([]);
+  const progressLatestOutputRowIdRef = useRef<number | null>(null);
   const logIdRef = useRef(0);
   const previousInitialMLJobRunningRef = useRef(Boolean(initialMLJobRunning));
 
@@ -427,6 +489,14 @@ function TuneIFsPage({
   }, [baseYear]);
 
   useEffect(() => {
+    progressTrialsRef.current = progressTrials;
+  }, [progressTrials]);
+
+  useEffect(() => {
+    progressLatestOutputRowIdRef.current = progressLatestOutputRowId;
+  }, [progressLatestOutputRowId]);
+
+  useEffect(() => {
     const nextRunning = Boolean(initialMLJobRunning);
     const wasRunning = previousInitialMLJobRunningRef.current;
     previousInitialMLJobRunningRef.current = nextRunning;
@@ -505,6 +575,7 @@ function TuneIFsPage({
         : null,
     );
     setProgressReferenceFitPooled(null);
+    setProgressLatestOutputRowId(null);
     setRunResult(initialRunResult);
     setLogEntries([]);
     logIdRef.current = 0;
@@ -624,6 +695,7 @@ function TuneIFsPage({
   useEffect(() => {
     if (!outputDirectory) {
       setProgressTrials([]);
+      setProgressLatestOutputRowId(null);
       setProgressReferenceFitPooled(null);
       setProgressHistoryLoading(false);
       setProgressHistoryError("Choose an output folder to view ML progress.");
@@ -632,6 +704,7 @@ function TuneIFsPage({
 
     if (!progressDatasetId) {
       setProgressTrials([]);
+      setProgressLatestOutputRowId(null);
       setProgressReferenceFitPooled(null);
       setProgressHistoryLoading(false);
       setProgressHistoryError(
@@ -649,10 +722,12 @@ function TuneIFsPage({
       }
 
       try {
-        const history = await getMLProgressHistory(
+        const sinceOutputRowId = progressLatestOutputRowIdRef.current;
+        let history = await getMLProgressHistory(
           outputDirectory,
           progressDatasetId,
           progressReferenceModelId,
+          sinceOutputRowId,
         );
         if (cancelled) {
           return;
@@ -677,13 +752,58 @@ function TuneIFsPage({
             ? history.reference_fit_pooled
             : null,
         );
+
+        const latestOutputRowId =
+          typeof history.latest_output_rowid === "number" &&
+          Number.isFinite(history.latest_output_rowid)
+            ? history.latest_output_rowid
+            : null;
+        const shouldAppend =
+          sinceOutputRowId != null && progressTrialsRef.current.length > 0;
+
+        if (shouldAppend) {
+          const incomingTrials = Array.isArray(history.trials) ? history.trials : [];
+          const currentTrials = progressTrialsRef.current;
+          const hasAppendContinuity = canMergeIncrementalTrials(
+            currentTrials,
+            incomingTrials,
+            sinceOutputRowId,
+          );
+
+          if (hasAppendContinuity) {
+            if (incomingTrials.length > 0) {
+              setProgressTrials((current) => mergeIncrementalProgressTrials(current, incomingTrials));
+            }
+            setProgressLatestOutputRowId(latestOutputRowId);
+            setProgressHistoryError(null);
+            return;
+          }
+
+          history = await getMLProgressHistory(
+            outputDirectory,
+            progressDatasetId,
+            progressReferenceModelId,
+            null,
+          );
+          if (cancelled) {
+            return;
+          }
+        }
+
         setProgressTrials(normalizeProgressTrials(history.trials));
+        setProgressLatestOutputRowId(
+          typeof history.latest_output_rowid === "number" &&
+            Number.isFinite(history.latest_output_rowid)
+            ? history.latest_output_rowid
+            : null,
+        );
         setProgressHistoryError(null);
       } catch (error) {
         if (cancelled) {
           return;
         }
         setProgressReferenceFitPooled(null);
+        setProgressLatestOutputRowId(null);
         setProgressHistoryError("Unable to load ML progress history.");
       } finally {
         if (!cancelled) {
@@ -711,6 +831,7 @@ function TuneIFsPage({
     setProgressDatasetId(null);
     setProgressReferenceModelId(null);
     setProgressReferenceFitPooled(null);
+    setProgressLatestOutputRowId(null);
     setRunResult(null);
   };
 

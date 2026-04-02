@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent as ReactChangeEvent,
+  type FocusEvent as ReactFocusEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -22,6 +23,7 @@ export type ChartPoint = {
   completedAtUtc: string | null;
   modelId: string | null;
   modelStatus: string | null;
+  progressRowId: number | null;
 };
 
 type RollingMetricPoint = ChartPoint & {
@@ -62,6 +64,15 @@ type DerivedMetrics = {
   outlierCount: number;
 };
 
+type DerivedMetricsCache = {
+  derivedMetrics: DerivedMetrics;
+  rollingWindow: number;
+  sourceLength: number;
+  lastProgressRowId: number | null;
+  validFitValues: number[];
+  sortedFitValues: number[];
+};
+
 type DragState = {
   pointerId: number;
   startSvgX: number;
@@ -69,13 +80,23 @@ type DragState = {
   startViewport: Viewport;
 };
 
-type HoveredPointMeta = {
+type SelectedPointMeta = {
   id: string;
   point: RollingMetricPoint;
   x: number;
   y: number;
   alignLeft: boolean;
   alignAbove: boolean;
+};
+
+type CanvasPointEntry = {
+  id: string;
+  point: RollingMetricPoint;
+  x: number;
+  y: number;
+  isOutlier: boolean;
+  isBestPoint: boolean;
+  isLatestPoint: boolean;
 };
 
 const CHART_WIDTH = 860;
@@ -102,8 +123,8 @@ function formatViewportInput(value: number, digits: number): string {
 
 function buildRangeInputs(viewport: Viewport): RangeInputs {
   return {
-    xMin: formatViewportInput(viewport.xMin, 2),
-    xMax: formatViewportInput(viewport.xMax, 2),
+    xMin: formatViewportInput(Math.round(viewport.xMin), 0),
+    xMax: formatViewportInput(Math.round(viewport.xMax), 0),
     yMin: formatViewportInput(viewport.yMin, 4),
     yMax: formatViewportInput(viewport.yMax, 4),
   };
@@ -117,6 +138,27 @@ function parseRangeInput(value: string): number | null {
 
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function roundToDecimals(value: number, digits: number): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+function normalizeRangeNumber(field: keyof RangeInputs, value: number): number {
+  if (field === "xMin" || field === "xMax") {
+    return Math.round(value);
+  }
+
+  return roundToDecimals(value, 4);
+}
+
+function normalizeRangeDisplay(field: keyof RangeInputs, value: number): string {
+  if (field === "xMin" || field === "xMax") {
+    return formatViewportInput(Math.round(value), 0);
+  }
+
+  return formatViewportInput(roundToDecimals(value, 4), 4);
 }
 
 function areRangeInputsEqual(left: RangeInputs, right: RangeInputs): boolean {
@@ -228,8 +270,74 @@ export function normalizeProgressTrials(trials: MLProgressTrial[]): ChartPoint[]
       completedAtUtc: trial.completed_at_utc ?? null,
       modelId: trial.model_id ?? null,
       modelStatus: trial.model_status ?? null,
+      progressRowId:
+        typeof trial.progress_rowid === "number" &&
+        Number.isFinite(trial.progress_rowid) &&
+        trial.progress_rowid > 0
+          ? trial.progress_rowid
+          : null,
     };
   });
+}
+
+export function appendNormalizedProgressTrials(
+  existing: ChartPoint[],
+  trials: MLProgressTrial[],
+): ChartPoint[] {
+  if (trials.length === 0) {
+    return existing;
+  }
+
+  let bestSoFar = existing.length > 0 ? existing[existing.length - 1].bestSoFar : null;
+  const appended = trials.map((trial, index) => {
+    const fitPooled =
+      typeof trial.fit_pooled === "number" && Number.isFinite(trial.fit_pooled)
+        ? trial.fit_pooled
+        : null;
+    const fitMissing = Boolean(trial.fit_missing) || fitPooled == null;
+
+    if (fitPooled != null) {
+      bestSoFar = bestSoFar == null ? fitPooled : Math.min(bestSoFar, fitPooled);
+    }
+
+    return {
+      sequenceIndex:
+        typeof trial.sequence_index === "number" &&
+        Number.isFinite(trial.sequence_index) &&
+        trial.sequence_index > 0
+          ? trial.sequence_index
+          : existing.length + index + 1,
+      derivedRoundIndex:
+        typeof trial.derived_round_index === "number" &&
+        Number.isFinite(trial.derived_round_index) &&
+        trial.derived_round_index > 0
+          ? trial.derived_round_index
+          : null,
+      trialIndex:
+        typeof trial.trial_index === "number" && Number.isFinite(trial.trial_index)
+          ? trial.trial_index
+          : existing.length + index,
+      batchIndex:
+        typeof trial.batch_index === "number" && Number.isFinite(trial.batch_index)
+          ? trial.batch_index
+          : null,
+      fitPooled,
+      fitMissing,
+      bestSoFar,
+      startedAtUtc: trial.started_at_utc ?? null,
+      completedAtUtc: trial.completed_at_utc ?? null,
+      modelId: trial.model_id ?? null,
+      modelStatus: trial.model_status ?? null,
+      progressRowId:
+        typeof trial.progress_rowid === "number" &&
+        Number.isFinite(trial.progress_rowid) &&
+        trial.progress_rowid > 0
+          ? trial.progress_rowid
+          : null,
+    };
+  });
+
+  return [...existing, ...appended];
 }
 
 function percentile(values: number[], quantile: number): number {
@@ -238,6 +346,14 @@ function percentile(values: number[], quantile: number): number {
   }
 
   const sorted = [...values].sort((left, right) => left - right);
+  return percentileSorted(sorted, quantile);
+}
+
+function percentileSorted(sorted: number[], quantile: number): number {
+  if (sorted.length === 0) {
+    return Number.NaN;
+  }
+
   const clampedQuantile = Math.min(1, Math.max(0, quantile));
   const index = (sorted.length - 1) * clampedQuantile;
   const lowerIndex = Math.floor(index);
@@ -249,6 +365,22 @@ function percentile(values: number[], quantile: number): number {
 
   const weight = index - lowerIndex;
   return sorted[lowerIndex] * (1 - weight) + sorted[upperIndex] * weight;
+}
+
+function insertSortedValue(values: number[], value: number): void {
+  let low = 0;
+  let high = values.length;
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (values[mid] <= value) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  values.splice(low, 0, value);
 }
 
 function rollingWindowValues(
@@ -263,22 +395,23 @@ function rollingWindowValues(
   return result;
 }
 
-function buildDerivedMetrics(points: ChartPoint[], rollingWindow: number): DerivedMetrics {
-  const validEntries = points.flatMap((point, index) =>
-    typeof point.fitPooled === "number" && Number.isFinite(point.fitPooled)
-      ? [{ index, value: point.fitPooled }]
-      : [],
-  );
-  const fitValues = validEntries.map((entry) => entry.value);
-
-  if (fitValues.length === 0) {
+function computeDisplayStats(
+  points: ChartPoint[],
+  sortedFitValues: number[],
+): {
+  clippedUpper: number;
+  clippedMarkerY: number;
+  defaultViewport: Viewport;
+  outlierCount: number;
+} {
+  if (sortedFitValues.length === 0) {
     throw new Error("No successful completed trials to plot yet.");
   }
 
-  const lowerBound = Math.min(...fitValues);
-  const actualMax = Math.max(...fitValues);
-  const q1 = percentile(fitValues, 0.25);
-  const q3 = percentile(fitValues, 0.75);
+  const lowerBound = sortedFitValues[0];
+  const actualMax = sortedFitValues[sortedFitValues.length - 1];
+  const q1 = percentileSorted(sortedFitValues, 0.25);
+  const q3 = percentileSorted(sortedFitValues, 0.75);
   const iqr =
     Number.isFinite(q1) && Number.isFinite(q3) ? Math.max(0, q3 - q1) : 0;
   let robustUpper =
@@ -293,12 +426,62 @@ function buildDerivedMetrics(points: ChartPoint[], rollingWindow: number): Deriv
     clippedUpper = actualMax;
   }
 
-  const outlierCount = fitValues.filter((value) => value > clippedUpper).length;
+  const outlierCount = sortedFitValues.filter((value) => value > clippedUpper).length;
   const displaySpan = Math.max(clippedUpper - lowerBound, 1e-6);
   const bottomPadding = Math.max(displaySpan * 0.2, Math.abs(clippedUpper) * 0.04, 0.02);
   const topPadding = Math.max(displaySpan * 0.06, clippedUpper * 0.02, 0.002);
   const clippedMarkerY = clippedUpper + topPadding * 0.45;
+  const xMin = Math.min(...points.map((point) => point.sequenceIndex));
+  const xMax = Math.max(...points.map((point) => point.sequenceIndex));
+  const xRangeActual = Math.max(1, xMax - xMin);
+  const xRightPadding = Math.max(8, xRangeActual * 0.03);
+  const zeroMargin = Math.max(bottomPadding * 0.6, displaySpan * 0.08, 0.01);
+  const yMinCandidate = lowerBound - bottomPadding;
+  const yMaxDisplay = clippedUpper + topPadding;
+  const yMinDisplay =
+    lowerBound >= 0 && yMinCandidate > -zeroMargin ? -zeroMargin : yMinCandidate;
 
+  return {
+    clippedUpper,
+    clippedMarkerY,
+    outlierCount,
+    defaultViewport: {
+      xMin,
+      xMax: xMax + xRightPadding,
+      yMin: yMinDisplay,
+      yMax: yMaxDisplay,
+    },
+  };
+}
+
+function finalizeMetricPoints(
+  metricPoints: RollingMetricPoint[],
+  clippedUpper: number,
+): RollingMetricPoint[] {
+  return metricPoints.map((point) => ({
+    ...point,
+    plottedFit:
+      point.fitPooled == null ? null : Math.min(point.fitPooled, clippedUpper),
+    isOutlier: point.fitPooled != null && point.fitPooled > clippedUpper,
+  }));
+}
+
+function buildDerivedMetricsFromScratch(
+  points: ChartPoint[],
+  rollingWindow: number,
+): DerivedMetricsCache {
+  const validEntries = points.flatMap((point, index) =>
+    typeof point.fitPooled === "number" && Number.isFinite(point.fitPooled)
+      ? [{ index, value: point.fitPooled }]
+      : [],
+  );
+  const fitValues = validEntries.map((entry) => entry.value);
+
+  if (fitValues.length === 0) {
+    throw new Error("No successful completed trials to plot yet.");
+  }
+
+  const displayStats = computeDisplayStats(points, [...fitValues].sort((left, right) => left - right));
   const rollingMean = Array<number | null>(points.length).fill(null);
   const rollingMedian = Array<number | null>(points.length).fill(null);
   const rollingQ1 = Array<number | null>(points.length).fill(null);
@@ -329,38 +512,110 @@ function buildDerivedMetrics(points: ChartPoint[], rollingWindow: number): Deriv
     });
   }
 
-  const metricPoints: RollingMetricPoint[] = points.map((point, index) => ({
+  const metricPoints = points.map((point, index) => ({
     ...point,
     rollingMean: rollingMean[index],
     rollingMedian: rollingMedian[index],
     rollingQ1: rollingQ1[index],
     rollingQ3: rollingQ3[index],
-    plottedFit:
-      point.fitPooled == null ? null : Math.min(point.fitPooled, clippedUpper),
-    isOutlier: point.fitPooled != null && point.fitPooled > clippedUpper,
+    plottedFit: null,
+    isOutlier: false,
   }));
 
-  const xMin = Math.min(...points.map((point) => point.sequenceIndex));
-  const xMax = Math.max(...points.map((point) => point.sequenceIndex));
-  const xRangeActual = Math.max(1, xMax - xMin);
-  const xRightPadding = Math.max(8, xRangeActual * 0.03);
-  const zeroMargin = Math.max(bottomPadding * 0.6, displaySpan * 0.08, 0.01);
-  const yMinCandidate = lowerBound - bottomPadding;
-  const yMaxDisplay = clippedUpper + topPadding;
-  const yMinDisplay =
-    lowerBound >= 0 && yMinCandidate > -zeroMargin ? -zeroMargin : yMinCandidate;
+  const finalizedPoints = finalizeMetricPoints(metricPoints, displayStats.clippedUpper);
 
   return {
-    points: metricPoints,
-    defaultViewport: {
-      xMin,
-      xMax: xMax + xRightPadding,
-      yMin: yMinDisplay,
-      yMax: yMaxDisplay,
+    derivedMetrics: {
+      points: finalizedPoints,
+      defaultViewport: displayStats.defaultViewport,
+      clippedUpper: displayStats.clippedUpper,
+      clippedMarkerY: displayStats.clippedMarkerY,
+      outlierCount: displayStats.outlierCount,
     },
-    clippedUpper,
-    clippedMarkerY,
-    outlierCount,
+    rollingWindow,
+    sourceLength: points.length,
+    lastProgressRowId: points[points.length - 1]?.progressRowId ?? null,
+    validFitValues: fitValues,
+    sortedFitValues: [...fitValues].sort((left, right) => left - right),
+  };
+}
+
+function buildDerivedMetrics(
+  points: ChartPoint[],
+  rollingWindow: number,
+  previousCache: DerivedMetricsCache | null,
+): DerivedMetricsCache {
+  if (
+    previousCache == null ||
+    previousCache.rollingWindow !== rollingWindow ||
+    points.length < previousCache.sourceLength
+  ) {
+    return buildDerivedMetricsFromScratch(points, rollingWindow);
+  }
+
+  if (points.length === previousCache.sourceLength) {
+    return buildDerivedMetricsFromScratch(points, rollingWindow);
+  }
+
+  if (
+    previousCache.sourceLength > 0 &&
+    points[previousCache.sourceLength - 1]?.progressRowId !== previousCache.lastProgressRowId
+  ) {
+    return buildDerivedMetricsFromScratch(points, rollingWindow);
+  }
+
+  const metricPoints = previousCache.derivedMetrics.points.map((point) => ({ ...point }));
+  const validFitValues = previousCache.validFitValues.slice();
+  const sortedFitValues = previousCache.sortedFitValues.slice();
+
+  for (let index = previousCache.sourceLength; index < points.length; index += 1) {
+    const point = points[index];
+    let rollingMean: number | null = null;
+    let rollingMedian: number | null = null;
+    let rollingQ1: number | null = null;
+    let rollingQ3: number | null = null;
+
+    if (typeof point.fitPooled === "number" && Number.isFinite(point.fitPooled)) {
+      validFitValues.push(point.fitPooled);
+      insertSortedValue(sortedFitValues, point.fitPooled);
+
+      if (validFitValues.length >= rollingWindow) {
+        const windowValues = validFitValues.slice(validFitValues.length - rollingWindow);
+        rollingMean =
+          windowValues.reduce((sum, value) => sum + value, 0) / windowValues.length;
+        rollingMedian = percentile(windowValues, 0.5);
+        rollingQ1 = percentile(windowValues, 0.25);
+        rollingQ3 = percentile(windowValues, 0.75);
+      }
+    }
+
+    metricPoints.push({
+      ...point,
+      rollingMean,
+      rollingMedian,
+      rollingQ1,
+      rollingQ3,
+      plottedFit: null,
+      isOutlier: false,
+    });
+  }
+
+  const displayStats = computeDisplayStats(points, sortedFitValues);
+  const finalizedPoints = finalizeMetricPoints(metricPoints, displayStats.clippedUpper);
+
+  return {
+    derivedMetrics: {
+      points: finalizedPoints,
+      defaultViewport: displayStats.defaultViewport,
+      clippedUpper: displayStats.clippedUpper,
+      clippedMarkerY: displayStats.clippedMarkerY,
+      outlierCount: displayStats.outlierCount,
+    },
+    rollingWindow,
+    sourceLength: points.length,
+    lastProgressRowId: points[points.length - 1]?.progressRowId ?? null,
+    validFitValues,
+    sortedFitValues,
   };
 }
 
@@ -616,8 +871,11 @@ export function MLProgressChart({
   rollingWindowInput: string;
   onRollingWindowInputChange: (value: string) => void;
 }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  const dragMovedRef = useRef(false);
+  const derivedMetricsCacheRef = useRef<DerivedMetricsCache | null>(null);
   const [viewport, setViewport] = useState<Viewport | null>(null);
   const [manualViewport, setManualViewport] = useState<Viewport | null>(null);
   const [rangeInputs, setRangeInputs] = useState<RangeInputs>({
@@ -627,7 +885,7 @@ export function MLProgressChart({
     yMax: "",
   });
   const [isDragging, setIsDragging] = useState(false);
-  const [hoveredPointId, setHoveredPointId] = useState<string | null>(null);
+  const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
   const clipPathId = useId();
   const referenceFitValue =
     typeof referenceFitPooled === "number" && Number.isFinite(referenceFitPooled)
@@ -636,15 +894,23 @@ export function MLProgressChart({
 
   const derivedMetrics = useMemo(() => {
     if (points.length === 0) {
+      derivedMetricsCacheRef.current = null;
       return null;
     }
 
     try {
-      return buildDerivedMetrics(points, rollingWindow);
+      const nextCache = buildDerivedMetrics(
+        points,
+        rollingWindow,
+        derivedMetricsCacheRef.current,
+      );
+      derivedMetricsCacheRef.current = nextCache;
+      return nextCache.derivedMetrics;
     } catch {
+      derivedMetricsCacheRef.current = null;
       return null;
     }
-  }, [points, referenceFitValue, rollingWindow]);
+  }, [points, rollingWindow]);
 
   const plotBounds = useMemo<PlotBounds>(
     () => ({
@@ -785,33 +1051,175 @@ export function MLProgressChart({
     referenceFitValue != null &&
     referenceFitValue >= visibleViewport.yMin &&
     referenceFitValue <= visibleViewport.yMax;
-  const hoveredPoint = useMemo<HoveredPointMeta | null>(() => {
-    if (!hoveredPointId) {
+  const canvasPointEntries = useMemo<CanvasPointEntry[]>(() => {
+    return derivedMetrics.points.flatMap((point, pointIndex) => {
+      if (point.plottedFit == null) {
+        return [];
+      }
+
+      const pointId = `${point.sequenceIndex}-${point.modelId ?? "unknown"}`;
+      const isBestPoint = isBestSoFarPoint(
+        point,
+        pointIndex > 0 ? derivedMetrics.points[pointIndex - 1] : null,
+      );
+      const isLatestPoint = pointId === latestPointId;
+      const x = xFor(point.sequenceIndex);
+      const y = yFor(point.isOutlier ? derivedMetrics.clippedMarkerY : point.plottedFit);
+
+      return [
+        {
+          id: pointId,
+          point,
+          x,
+          y,
+          isOutlier: point.isOutlier,
+          isBestPoint,
+          isLatestPoint,
+        },
+      ];
+    });
+  }, [derivedMetrics.points, derivedMetrics.clippedMarkerY, latestPointId, xFor, yFor]);
+
+  const selectedPoint = useMemo<SelectedPointMeta | null>(() => {
+    if (!selectedPointId) {
       return null;
     }
 
-    const point = derivedMetrics.points.find(
-      (candidate) =>
-        `${candidate.sequenceIndex}-${candidate.modelId ?? "unknown"}` === hoveredPointId &&
-        candidate.plottedFit != null,
+    const match = canvasPointEntries.find(
+      (entry) => entry.id === selectedPointId && !entry.isOutlier,
     );
 
-    if (!point || point.plottedFit == null) {
+    if (!match) {
       return null;
     }
 
-    const x = xFor(point.sequenceIndex);
-    const y = yFor(point.isOutlier ? derivedMetrics.clippedMarkerY : point.plottedFit);
-
     return {
-      id: hoveredPointId,
-      point,
-      x,
-      y,
-      alignLeft: x > CHART_WIDTH * 0.68,
-      alignAbove: y > CHART_HEIGHT * 0.42,
+      id: match.id,
+      point: match.point,
+      x: match.x,
+      y: match.y,
+      alignLeft: match.x > CHART_WIDTH * 0.68,
+      alignAbove: match.y > CHART_HEIGHT * 0.42,
     };
-  }, [derivedMetrics, hoveredPointId, xFor, yFor]);
+  }, [canvasPointEntries, selectedPointId]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(CHART_WIDTH * dpr);
+    canvas.height = Math.round(CHART_HEIGHT * dpr);
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, CHART_WIDTH, CHART_HEIGHT);
+
+    context.save();
+    context.beginPath();
+    context.rect(plotBounds.left, plotBounds.top, plotBounds.width, plotBounds.height);
+    context.clip();
+
+    const drawCircle = (
+      x: number,
+      y: number,
+      radius: number,
+      fill: string,
+      stroke: string,
+      lineWidth: number,
+    ) => {
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.fillStyle = fill;
+      context.fill();
+      if (lineWidth > 0) {
+        context.lineWidth = lineWidth;
+        context.strokeStyle = stroke;
+        context.stroke();
+      }
+    };
+
+    const drawTriangle = (
+      x: number,
+      y: number,
+      fill: string,
+      stroke: string,
+      lineWidth: number,
+    ) => {
+      context.beginPath();
+      context.moveTo(x, y - 4);
+      context.lineTo(x - 3.6, y + 2);
+      context.lineTo(x + 3.6, y + 2);
+      context.closePath();
+      context.fillStyle = fill;
+      context.fill();
+      if (lineWidth > 0) {
+        context.lineWidth = lineWidth;
+        context.strokeStyle = stroke;
+        context.stroke();
+      }
+    };
+
+    canvasPointEntries.forEach((entry) => {
+      if (entry.isOutlier || entry.isBestPoint || entry.isLatestPoint) {
+        return;
+      }
+
+      drawCircle(entry.x, entry.y, 2, "#205493", "rgba(255,255,255,0.85)", 0.5);
+    });
+
+    canvasPointEntries.forEach((entry) => {
+      if (entry.isOutlier || !entry.isBestPoint || entry.isLatestPoint) {
+        return;
+      }
+
+      drawCircle(entry.x, entry.y, 4, "#c62828", "#ffffff", 1.15);
+    });
+
+    canvasPointEntries.forEach((entry) => {
+      if (!entry.isLatestPoint || entry.isOutlier) {
+        return;
+      }
+
+      drawCircle(entry.x, entry.y, 5, "#7c3aed", "#ffffff", 1.35);
+    });
+
+    canvasPointEntries.forEach((entry) => {
+      if (!entry.isOutlier) {
+        return;
+      }
+
+      if (entry.isLatestPoint) {
+        drawCircle(entry.x, entry.y, 5, "#7c3aed", "#ffffff", 1.35);
+      }
+
+      drawTriangle(entry.x, entry.y, "#8c2d04", "#ffffff", 0.75);
+    });
+
+    context.restore();
+  }, [canvasPointEntries, plotBounds]);
+
+  useEffect(() => {
+    if (!selectedPointId) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedPointId(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selectedPointId]);
 
   const updateViewport = (
     producer: (current: Viewport, bounds: Viewport) => Viewport,
@@ -849,10 +1257,19 @@ export function MLProgressChart({
     (parsedYMin != null && parsedYMax != null && parsedYMax - parsedYMin < manualMinYSpan);
 
   const applyManualRange = (nextInputs: RangeInputs) => {
-    const nextXMin = parseRangeInput(nextInputs.xMin);
-    const nextXMax = parseRangeInput(nextInputs.xMax);
-    const nextYMin = parseRangeInput(nextInputs.yMin);
-    const nextYMax = parseRangeInput(nextInputs.yMax);
+    const nextXMinRaw = parseRangeInput(nextInputs.xMin);
+    const nextXMaxRaw = parseRangeInput(nextInputs.xMax);
+    const nextYMinRaw = parseRangeInput(nextInputs.yMin);
+    const nextYMaxRaw = parseRangeInput(nextInputs.yMax);
+
+    const nextXMin =
+      nextXMinRaw == null ? null : normalizeRangeNumber("xMin", nextXMinRaw);
+    const nextXMax =
+      nextXMaxRaw == null ? null : normalizeRangeNumber("xMax", nextXMaxRaw);
+    const nextYMin =
+      nextYMinRaw == null ? null : normalizeRangeNumber("yMin", nextYMinRaw);
+    const nextYMax =
+      nextYMaxRaw == null ? null : normalizeRangeNumber("yMax", nextYMaxRaw);
 
     if (
       nextXMin == null ||
@@ -879,7 +1296,7 @@ export function MLProgressChart({
 
     dragRef.current = null;
     setIsDragging(false);
-    setHoveredPointId(null);
+    setSelectedPointId(null);
     setViewport(null);
     setManualViewport(
       viewportEquals(clampedViewport, derivedMetrics.defaultViewport) ? null : clampedViewport,
@@ -893,6 +1310,19 @@ export function MLProgressChart({
       applyManualRange(nextInputs);
     };
 
+  const handleRangeInputBlur =
+    (field: keyof RangeInputs) => (event: ReactFocusEvent<HTMLInputElement>) => {
+      const parsed = parseRangeInput(event.target.value);
+      if (parsed == null) {
+        return;
+      }
+
+      const normalizedValue = normalizeRangeDisplay(field, parsed);
+      const nextInputs = { ...rangeInputs, [field]: normalizedValue };
+      setRangeInputs(nextInputs);
+      applyManualRange(nextInputs);
+    };
+
   const handleZoomButton = (scaleFactor: number) => {
     updateViewport((current, bounds) =>
       zoomViewport(current, bounds, scaleFactor, 0.5, 0.5, minXSpan, minYSpan),
@@ -901,8 +1331,9 @@ export function MLProgressChart({
 
   const handleReset = () => {
     dragRef.current = null;
+    dragMovedRef.current = false;
     setIsDragging(false);
-    setHoveredPointId(null);
+    setSelectedPointId(null);
     setViewport(null);
     setManualViewport(null);
   };
@@ -912,13 +1343,16 @@ export function MLProgressChart({
       return;
     }
 
+    if (!event.ctrlKey) {
+      return;
+    }
+
     const position = getSvgCoordinates(svgRef.current, event.clientX, event.clientY);
     if (!isInsidePlotArea(position, plotBounds)) {
       return;
     }
 
     event.preventDefault();
-    setHoveredPointId(null);
 
     const anchorRatioX = (position.x - plotBounds.left) / plotBounds.width;
     const anchorRatioY = (position.y - plotBounds.top) / plotBounds.height;
@@ -938,12 +1372,20 @@ export function MLProgressChart({
   };
 
   const handlePointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
-    if (!canPan || !svgRef.current) {
+    if (!svgRef.current) {
       return;
     }
 
     const position = getSvgCoordinates(svgRef.current, event.clientX, event.clientY);
     if (!isInsidePlotArea(position, plotBounds)) {
+      return;
+    }
+
+    if (selectedPointId != null) {
+      setSelectedPointId(null);
+    }
+
+    if (!canPan) {
       return;
     }
 
@@ -953,6 +1395,7 @@ export function MLProgressChart({
       startSvgY: position.y,
       startViewport: visibleViewport,
     };
+    dragMovedRef.current = false;
     setIsDragging(true);
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -970,6 +1413,9 @@ export function MLProgressChart({
     const position = getSvgCoordinates(svgRef.current, event.clientX, event.clientY);
     const deltaSvgX = position.x - dragRef.current.startSvgX;
     const deltaSvgY = position.y - dragRef.current.startSvgY;
+    if (Math.abs(deltaSvgX) > 3 || Math.abs(deltaSvgY) > 3) {
+      dragMovedRef.current = true;
+    }
     const startViewport = dragRef.current.startViewport;
     const startXSpan = startViewport.xMax - startViewport.xMin;
     const startYSpan = startViewport.yMax - startViewport.yMin;
@@ -999,8 +1445,43 @@ export function MLProgressChart({
       }
     }
   };
-  const clearHover = () => {
-    setHoveredPointId((current) => (current == null ? current : null));
+
+  const handleDoubleClick = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (!svgRef.current || dragMovedRef.current) {
+      dragMovedRef.current = false;
+      return;
+    }
+
+    const position = getSvgCoordinates(svgRef.current, event.clientX, event.clientY);
+    if (!isInsidePlotArea(position, plotBounds)) {
+      return;
+    }
+
+    const inspectRadius = 12;
+    let nearestPoint: CanvasPointEntry | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    for (const entry of canvasPointEntries) {
+      if (entry.isOutlier) {
+        continue;
+      }
+
+      const dx = entry.x - position.x;
+      const dy = entry.y - position.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance <= inspectRadius && distance < nearestDistance) {
+        nearestPoint = entry;
+        nearestDistance = distance;
+      }
+    }
+
+    if (nearestPoint) {
+      setSelectedPointId(nearestPoint.id);
+    } else {
+      setSelectedPointId(null);
+    }
+
+    dragMovedRef.current = false;
   };
 
   return (
@@ -1013,6 +1494,9 @@ export function MLProgressChart({
               {`Outliers above ${derivedMetrics.clippedUpper.toFixed(4)} are clipped for readability.`}
             </div>
           ) : null}
+          <div className="chart-note chart-note-secondary">
+            Pinch or hold Ctrl while scrolling to zoom the chart.
+          </div>
           {referenceFitValue != null && !referenceFitVisible ? (
             <div className="chart-note chart-note-secondary">
               IFs default baseline: {referenceFitValue.toFixed(4)} (outside the current view)
@@ -1036,6 +1520,13 @@ export function MLProgressChart({
       </div>
 
       <div className="chart-canvas-wrapper">
+        <canvas
+          ref={canvasRef}
+          className="chart-points-canvas"
+          width={CHART_WIDTH}
+          height={CHART_HEIGHT}
+          aria-hidden="true"
+        />
         <svg
           ref={svgRef}
           className={`ml-progress-chart ${isZoomed ? "is-zoomable" : ""} ${isDragging ? "is-dragging" : ""}`}
@@ -1047,11 +1538,7 @@ export function MLProgressChart({
           onPointerMove={handlePointerMove}
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
-          onPointerLeave={() => {
-            if (!isDragging) {
-              clearHover();
-            }
-          }}
+          onDoubleClick={handleDoubleClick}
         >
           <defs>
             <clipPath id={clipPathId}>
@@ -1153,91 +1640,35 @@ export function MLProgressChart({
                 vectorEffect="non-scaling-stroke"
               />
             ) : null}
-
-            {derivedMetrics.points.map((point, pointIndex) => {
-              if (point.plottedFit == null) {
-                return null;
-              }
-
-              const bestPoint = isBestSoFarPoint(
-                point,
-                pointIndex > 0 ? derivedMetrics.points[pointIndex - 1] : null,
-              );
-              const pointId = `${point.sequenceIndex}-${point.modelId ?? "unknown"}`;
-              const latestPoint = pointId === latestPointId;
-              const x = xFor(point.sequenceIndex);
-              const y = yFor(point.isOutlier ? derivedMetrics.clippedMarkerY : point.plottedFit);
-              const pointClassName = [
-                "chart-point",
-                bestPoint ? "chart-point-best" : "",
-                latestPoint ? "chart-point-latest" : "",
-              ]
-                .filter(Boolean)
-                .join(" ");
-              const pointRadius = latestPoint ? 5 : bestPoint ? 4 : 2;
-
-              return (
-                <g key={`point-${pointId}`}>
-                  {point.isOutlier ? (
-                    <>
-                      {latestPoint ? (
-                        <circle cx={x} cy={y} r={5} className="chart-point chart-point-latest" />
-                      ) : null}
-                      <polygon
-                        points={`${x.toFixed(2)},${(y - 4).toFixed(2)} ${(x - 3.6).toFixed(2)},${(y + 2).toFixed(2)} ${(x + 3.6).toFixed(2)},${(y + 2).toFixed(2)}`}
-                        className="chart-outlier"
-                      />
-                    </>
-                  ) : (
-                    <circle
-                      cx={x}
-                      cy={y}
-                      r={pointRadius}
-                      className={pointClassName}
-                    />
-                  )}
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r={10}
-                    className="chart-hit-target"
-                    onPointerEnter={() => {
-                      if (!isDragging) {
-                        setHoveredPointId(pointId);
-                      }
-                    }}
-                    onPointerLeave={() => {
-                      setHoveredPointId((current) => (current === pointId ? null : current));
-                    }}
-                    onPointerDown={(event) => {
-                      event.stopPropagation();
-                      setHoveredPointId(pointId);
-                    }}
-                  />
-                </g>
-              );
-            })}
           </g>
         </svg>
 
-        {hoveredPoint ? (
+        {selectedPoint ? (
           <div
-            className={`chart-tooltip ${hoveredPoint.alignLeft ? "align-left" : "align-right"} ${hoveredPoint.alignAbove ? "align-above" : "align-below"}`}
+            className={`chart-tooltip ${selectedPoint.alignLeft ? "align-left" : "align-right"} ${selectedPoint.alignAbove ? "align-above" : "align-below"}`}
             style={{
-              left: `${(hoveredPoint.x / CHART_WIDTH) * 100}%`,
-              top: `${(hoveredPoint.y / CHART_HEIGHT) * 100}%`,
+              left: `${(selectedPoint.x / CHART_WIDTH) * 100}%`,
+              top: `${(selectedPoint.y / CHART_HEIGHT) * 100}%`,
             }}
           >
+            <button
+              type="button"
+              className="chart-tooltip-close"
+              onClick={() => setSelectedPointId(null)}
+              aria-label="Close point details"
+            >
+              ×
+            </button>
             <div className="chart-tooltip-title">
-              {`Sequence ${hoveredPoint.point.sequenceIndex}`}
+              {`Sequence ${selectedPoint.point.sequenceIndex}`}
             </div>
-            <div>{`Round: ${hoveredPoint.point.derivedRoundIndex ?? "N/A"}`}</div>
-            <div>{`Trial: ${hoveredPoint.point.trialIndex}`}</div>
-            <div>{`Fit: ${formatFitValue(hoveredPoint.point.fitPooled, hoveredPoint.point.fitMissing)}${hoveredPoint.point.isOutlier ? " (clipped)" : ""}`}</div>
-            <div>{`Best: ${formatFitValue(hoveredPoint.point.bestSoFar)}`}</div>
-            <div>{`Status: ${hoveredPoint.point.modelStatus ?? "unknown"}`}</div>
-            <div>{`Batch: ${hoveredPoint.point.batchIndex ?? "N/A"}`}</div>
-            <div>{formatUtcTimestamp(hoveredPoint.point.completedAtUtc ?? hoveredPoint.point.startedAtUtc)}</div>
+            <div>{`Round: ${selectedPoint.point.derivedRoundIndex ?? "N/A"}`}</div>
+            <div>{`Trial: ${selectedPoint.point.trialIndex}`}</div>
+            <div>{`Fit: ${formatFitValue(selectedPoint.point.fitPooled, selectedPoint.point.fitMissing)}`}</div>
+            <div>{`Best: ${formatFitValue(selectedPoint.point.bestSoFar)}`}</div>
+            <div>{`Status: ${selectedPoint.point.modelStatus ?? "unknown"}`}</div>
+            <div>{`Batch: ${selectedPoint.point.batchIndex ?? "N/A"}`}</div>
+            <div>{formatUtcTimestamp(selectedPoint.point.completedAtUtc ?? selectedPoint.point.startedAtUtc)}</div>
           </div>
         ) : null}
       </div>
@@ -1248,10 +1679,11 @@ export function MLProgressChart({
             <span className="chart-range-label">X min</span>
             <input
               type="text"
-              inputMode="decimal"
+              inputMode="numeric"
               className={`chart-range-input ${hasInvalidXRange ? "is-invalid" : ""}`}
               value={rangeInputs.xMin}
               onChange={handleRangeInputChange("xMin")}
+              onBlur={handleRangeInputBlur("xMin")}
               aria-label="Minimum X value"
               aria-invalid={hasInvalidXRange}
             />
@@ -1260,10 +1692,11 @@ export function MLProgressChart({
             <span className="chart-range-label">X max</span>
             <input
               type="text"
-              inputMode="decimal"
+              inputMode="numeric"
               className={`chart-range-input ${hasInvalidXRange ? "is-invalid" : ""}`}
               value={rangeInputs.xMax}
               onChange={handleRangeInputChange("xMax")}
+              onBlur={handleRangeInputBlur("xMax")}
               aria-label="Maximum X value"
               aria-invalid={hasInvalidXRange}
             />
@@ -1276,6 +1709,7 @@ export function MLProgressChart({
               className={`chart-range-input ${hasInvalidYRange ? "is-invalid" : ""}`}
               value={rangeInputs.yMin}
               onChange={handleRangeInputChange("yMin")}
+              onBlur={handleRangeInputBlur("yMin")}
               aria-label="Minimum Y value"
               aria-invalid={hasInvalidYRange}
             />
@@ -1288,6 +1722,7 @@ export function MLProgressChart({
               className={`chart-range-input ${hasInvalidYRange ? "is-invalid" : ""}`}
               value={rangeInputs.yMax}
               onChange={handleRangeInputChange("yMax")}
+              onBlur={handleRangeInputBlur("yMax")}
               aria-label="Maximum Y value"
               aria-invalid={hasInvalidYRange}
             />

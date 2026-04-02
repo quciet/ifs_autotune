@@ -186,6 +186,7 @@ def normalize_trial_row(
         "dataset_id": row[7],
         "sequence_index": sequence_index,
         "derived_round_index": derived_round_index,
+        "progress_rowid": row[9] if isinstance(row[9], int) else None,
     }
 
 
@@ -215,6 +216,12 @@ def main(argv: list[str] | None = None) -> int:
         "--model-id",
         required=False,
         help="Model id used to resolve the dataset_id cohort for progress history.",
+    )
+    parser.add_argument(
+        "--since-output-rowid",
+        required=False,
+        type=int,
+        help="Only return trials whose model_output rowid is newer than this cursor.",
     )
     args = parser.parse_args(argv)
 
@@ -331,6 +338,14 @@ def main(argv: list[str] | None = None) -> int:
         rows = sorted(raw_rows, key=_trial_sort_key)
         trials: list[dict[str, Any]] = []
         derived_round_index = 0
+        latest_output_rowid = max(
+            (
+                row[9]
+                for row in rows
+                if isinstance(row[9], int)
+            ),
+            default=None,
+        )
 
         for sequence_index, row in enumerate(rows, start=1):
             trial_index = row[3]
@@ -338,6 +353,14 @@ def main(argv: list[str] | None = None) -> int:
                 derived_round_index = 1
             elif isinstance(trial_index, int) and trial_index == 1:
                 derived_round_index += 1
+
+            output_rowid = row[9] if isinstance(row[9], int) else None
+            if (
+                args.since_output_rowid is not None
+                and output_rowid is not None
+                and output_rowid < args.since_output_rowid
+            ):
+                continue
 
             trials.append(
                 normalize_trial_row(
@@ -359,6 +382,7 @@ def main(argv: list[str] | None = None) -> int:
                 "dataset_id": dataset_id,
                 "reference_model_id": reference_model_id,
                 "reference_fit_pooled": reference_fit_pooled,
+                "latest_output_rowid": latest_output_rowid,
                 "trials": trials,
             },
         )
