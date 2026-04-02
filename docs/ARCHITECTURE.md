@@ -115,7 +115,7 @@ The central runtime store is `<output>/bigpopa.db`. It holds IFs metadata, canon
 - `backend/log_ifs_version.py`
   Loads IFs parameter and coefficient metadata into `bigpopa.db`.
 - `backend/dataset_utils.py`
-  Computes `dataset_id` and loads structurally compatible prior samples.
+  Computes `dataset_id` and loads exact-cohort prior samples.
 - `backend/ml_progress.py`
   Reads trial history for the renderer's ML progress chart.
 - `backend/optimization/active_learning.py`
@@ -153,13 +153,15 @@ The central runtime store is `<output>/bigpopa.db`. It holds IFs metadata, canon
 - `model_input`
   Canonical model configurations, including `input_param`, `input_coef`, `output_set`, and `dataset_id`.
 - `model_output`
-  Run status, fit metrics, trial tracking columns, and timestamps.
+  Canonical per-model run status and fit metrics.
+- `ml_proposal_history`
+  Append-only ML proposal events used for progress history and trend analysis.
 
 ## ML Runtime Boundaries
 
 The current ML runtime path works like this:
 
-1. `ml_driver.py` loads the baseline configuration plus compatible historical observations.
+1. `ml_driver.py` loads the baseline configuration plus exact-cohort historical observations.
 2. It builds the search space and the proposal generator.
 3. It creates the input scaler and target transformer used by the surrogate ensemble.
 4. It calls `active_learning.py`.
@@ -171,7 +173,7 @@ Important runtime facts:
 - only the current proposal pool lives in RAM
 - the proposal pool is not stored in `bigpopa.db`
 - exact result reuse happens through `model_id`
-- historical warm-start reuse happens through `dataset_id`
+- historical warm-start reuse happens through the exact same `dataset_id`
 
 For the detailed training and acquisition rules, see [ML Process And Neural-Network Search](ML_PROCESS.md).
 

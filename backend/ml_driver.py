@@ -34,12 +34,20 @@ from ml_method import normalize_ml_method
 from model_status import (
     FALLBACK_FIT_POOLED,
     FIT_EVALUATED,
+    IFS_RUN_STARTED,
     IFS_RUN_FAILED,
     IFS_RUN_COMPLETED,
     MODEL_REUSED,
     cached_result_status,
+    visible_fit_pooled,
 )
-from model_setup import canonical_config, ensure_bigpopa_schema, ensure_model_output_tracking_columns, hash_model_id
+from model_setup import (
+    canonical_config,
+    ensure_bigpopa_schema,
+    ensure_ml_proposal_history_table,
+    ensure_model_output_tracking_columns,
+    hash_model_id,
+)
 from optimization.active_learning import active_learning_loop
 from optimization.ensemble_training import (
     estimate_prediction_chunk_size,
@@ -476,6 +484,39 @@ def _resolve_resume_behavior(
     return existing_state, proposal_seed, 0, 0, "reset_search_state"
 
 
+def _upsert_model_output_result(
+    conn: sqlite3.Connection,
+    *,
+    ifs_id: int,
+    model_id: str,
+    model_status: str | None = None,
+    fit_pooled: float | None = None,
+) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO model_output (
+            ifs_id,
+            model_id,
+            model_status,
+            fit_var,
+            fit_pooled
+        )
+        VALUES (?, ?, ?, NULL, ?)
+        ON CONFLICT(model_id) DO UPDATE SET
+            ifs_id=excluded.ifs_id,
+            model_status=COALESCE(excluded.model_status, model_output.model_status),
+            fit_pooled=COALESCE(excluded.fit_pooled, model_output.fit_pooled)
+        """,
+        (
+            ifs_id,
+            model_id,
+            model_status,
+            fit_pooled,
+        ),
+    )
+
+
 def _upsert_model_output_tracking(
     conn: sqlite3.Connection,
     *,
@@ -488,41 +529,98 @@ def _upsert_model_output_tracking(
     model_status: str | None = None,
     fit_pooled: float | None = None,
 ) -> None:
+    del trial_index, batch_index, started_at_utc, completed_at_utc
+    _upsert_model_output_result(
+        conn,
+        ifs_id=ifs_id,
+        model_id=model_id,
+        model_status=model_status,
+        fit_pooled=fit_pooled,
+    )
+
+
+def _insert_proposal_event(
+    conn: sqlite3.Connection,
+    *,
+    ifs_id: int,
+    model_id: str,
+    dataset_id: str | None,
+    trial_index: int,
+    batch_index: int,
+    started_at_utc: str | None,
+    proposal_status: str | None,
+    was_reused: bool,
+    source_status: str | None = None,
+    resolution_note: str | None = None,
+) -> int:
     cursor = conn.cursor()
-    ensure_model_output_tracking_columns(cursor)
+    ensure_ml_proposal_history_table(cursor)
     cursor.execute(
         """
-        INSERT INTO model_output (
+        INSERT INTO ml_proposal_history (
             ifs_id,
             model_id,
-            model_status,
-            fit_var,
-            fit_pooled,
+            dataset_id,
             trial_index,
             batch_index,
+            proposal_status,
             started_at_utc,
-            completed_at_utc
+            was_reused,
+            source_status,
+            resolution_note
         )
-        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)
-        ON CONFLICT(model_id) DO UPDATE SET
-            ifs_id=excluded.ifs_id,
-            model_status=COALESCE(excluded.model_status, model_output.model_status),
-            fit_pooled=COALESCE(excluded.fit_pooled, model_output.fit_pooled),
-            trial_index=excluded.trial_index,
-            batch_index=excluded.batch_index,
-            started_at_utc=COALESCE(excluded.started_at_utc, model_output.started_at_utc),
-            completed_at_utc=COALESCE(excluded.completed_at_utc, model_output.completed_at_utc)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             ifs_id,
             model_id,
-            model_status,
-            fit_pooled,
+            dataset_id,
             trial_index,
             batch_index,
+            proposal_status,
             started_at_utc,
-            completed_at_utc,
+            1 if was_reused else 0,
+            source_status,
+            resolution_note,
         ),
+    )
+    return int(cursor.lastrowid)
+
+
+def _complete_proposal_event(
+    conn: sqlite3.Connection,
+    *,
+    proposal_event_id: int,
+    proposal_status: str | None,
+    completed_at_utc: str | None,
+    fit_pooled_visible: float | None,
+    was_reused: bool | None = None,
+    source_status: str | None = None,
+    resolution_note: str | None = None,
+) -> None:
+    cursor = conn.cursor()
+    ensure_ml_proposal_history_table(cursor)
+    assignments = [
+        "proposal_status = ?",
+        "completed_at_utc = ?",
+        "fit_pooled_visible = ?",
+    ]
+    values: list[object] = [proposal_status, completed_at_utc, fit_pooled_visible]
+
+    if was_reused is not None:
+        assignments.append("was_reused = ?")
+        values.append(1 if was_reused else 0)
+    if source_status is not None:
+        assignments.append("source_status = ?")
+        values.append(source_status)
+    if resolution_note is not None:
+        assignments.append("resolution_note = ?")
+        values.append(resolution_note)
+
+    values.append(proposal_event_id)
+    cursor.execute(
+        f"UPDATE ml_proposal_history SET {', '.join(assignments)} WHERE proposal_event_id = ?",
+        values,
     )
 
 
@@ -532,7 +630,6 @@ def _fetch_model_output_snapshot(
     model_id: str,
 ) -> tuple[str | None, float | None]:
     cursor = conn.cursor()
-    ensure_model_output_tracking_columns(cursor)
     cursor.execute(
         "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ? LIMIT 1",
         (model_id,),
@@ -625,21 +722,6 @@ def _get_ifs_static_id(conn: sqlite3.Connection, ifs_id: int) -> Tuple[int | Non
     if row:
         return int(row[0]) if row[0] is not None else None, int(row[1]) if row[1] is not None else None
     return None, None
-
-
-def _merge_with_template(template_param: dict, template_coef: dict, sample_param: dict, sample_coef: dict):
-    params = {key: sample_param.get(key, template_param[key]) for key in template_param.keys()}
-
-    coef_result: dict = {}
-    for func, x_map in template_coef.items():
-        coef_result[func] = {}
-        sample_func = sample_coef.get(func, {})
-        for x_name, beta_map in x_map.items():
-            coef_result[func][x_name] = {}
-            sample_beta = sample_func.get(x_name, {})
-            for beta, default_val in beta_map.items():
-                coef_result[func][x_name][beta] = sample_beta.get(beta, default_val)
-    return params, coef_result
 
 
 def _build_search_space(
@@ -1626,64 +1708,7 @@ def _run_model(
     canonical = canonical_config(ifs_id, param_values, coef_values, output_set)
     model_id = hash_model_id(canonical)
     started_at_utc = _utc_now_iso()
-
-    with sqlite3.connect(bigpopa_db) as conn:
-        _upsert_model_output_tracking(
-            conn,
-            ifs_id=ifs_id,
-            model_id=model_id,
-            trial_index=trial_index,
-            batch_index=batch_index,
-            started_at_utc=started_at_utc,
-        )
-        # ----------------------------------------------------------------------
-        # HUMAN-READABLE COMMENT (For Codex/GitHub Review)
-        #
-        # BEFORE RUNNING IFS, CHECK FOR CACHED RESULTS
-        # ------------------------------------------------
-        # This block implements caching: if this exact model_id was already
-        # evaluated in the past (i.e., model_output contains fit_pooled),
-        # we should *not* run IFs again. Instead, we immediately return the
-        # stored fit_pooled value.
-        #
-        # Why?
-        # - model_input entries are hashed by canonical_config; so identical
-        #   parameter/coef sets always produce identical model_ids.
-        # - If ml_driver proposes a point we've already evaluated, this ensures
-        #   we reuse previous results and avoid redundant heavy IFs simulations.
-        # - Greatly improves speed & makes ML loop behave deterministically.
-        #
-        # ----------------------------------------------------------------------
-        cur = conn.cursor()
-        existing_status, existing_fit = _fetch_model_output_snapshot(conn, model_id=model_id)
-        if existing_fit is not None:
-            # Found previously evaluated model - reuse stored fit_pooled
-            fit_val = existing_fit
-            reused_status = cached_result_status(existing_status, fit_val)
-            _upsert_model_output_tracking(
-                conn,
-                ifs_id=ifs_id,
-                model_id=model_id,
-                trial_index=trial_index,
-                batch_index=batch_index,
-                started_at_utc=started_at_utc,
-                completed_at_utc=_utc_now_iso(),
-                model_status=reused_status,
-                fit_pooled=fit_val,
-            )
-            point = np.round(flatten_inputs(param_values, coef_values), 6)
-            point_text = _format_point_for_log(point)
-            status_text = reused_status or existing_status or "unknown"
-            print(
-                f"Reusing cached model {model_id} at {point_text} => fit_pooled={fit_val:.6f}, status={status_text}",
-                flush=True,
-            )
-            return fit_val, model_id
-
-    # --------------------------------------------------------------------------
-    # If no cached value was found, proceed to insert this configuration and
-    # prepare for a fresh IFs run.
-    # --------------------------------------------------------------------------
+    proposal_event_id: int | None = None
 
     with sqlite3.connect(bigpopa_db) as conn:
         cursor = conn.cursor()
@@ -1705,6 +1730,64 @@ def _run_model(
                 json.dumps(canonical["output_set"]),
             ),
         )
+        proposal_event_id = _insert_proposal_event(
+            conn,
+            ifs_id=ifs_id,
+            model_id=model_id,
+            dataset_id=dataset_id,
+            trial_index=trial_index,
+            batch_index=batch_index,
+            started_at_utc=started_at_utc,
+            proposal_status=IFS_RUN_STARTED,
+            was_reused=False,
+            resolution_note="pending",
+        )
+        # ----------------------------------------------------------------------
+        # HUMAN-READABLE COMMENT (For Codex/GitHub Review)
+        #
+        # BEFORE RUNNING IFS, CHECK FOR CACHED RESULTS
+        # ------------------------------------------------
+        # This block implements caching: if this exact model_id was already
+        # evaluated in the past (i.e., model_output contains fit_pooled),
+        # we should *not* run IFs again. Instead, we immediately return the
+        # stored fit_pooled value.
+        #
+        # Why?
+        # - model_input entries are hashed by canonical_config; so identical
+        #   parameter/coef sets always produce identical model_ids.
+        # - If ml_driver proposes a point we've already evaluated, this ensures
+        #   we reuse previous results and avoid redundant heavy IFs simulations.
+        # - Greatly improves speed & makes ML loop behave deterministically.
+        #
+        # ----------------------------------------------------------------------
+        existing_status, existing_fit = _fetch_model_output_snapshot(conn, model_id=model_id)
+        if existing_fit is not None:
+            # Found previously evaluated model - reuse stored fit_pooled
+            fit_val = existing_fit
+            reused_status = cached_result_status(existing_status, fit_val)
+            _complete_proposal_event(
+                conn,
+                proposal_event_id=proposal_event_id,
+                proposal_status=reused_status,
+                completed_at_utc=_utc_now_iso(),
+                fit_pooled_visible=visible_fit_pooled(reused_status, fit_val),
+                was_reused=True,
+                source_status=existing_status,
+                resolution_note="cached_result_reused",
+            )
+            point = np.round(flatten_inputs(param_values, coef_values), 6)
+            point_text = _format_point_for_log(point)
+            status_text = reused_status or existing_status or "unknown"
+            print(
+                f"Reusing cached model {model_id} at {point_text} => fit_pooled={fit_val:.6f}, status={status_text}",
+                flush=True,
+            )
+            return fit_val, model_id
+
+    # --------------------------------------------------------------------------
+    # If no cached value was found, proceed to insert this configuration and
+    # prepare for a fresh IFs run.
+    # --------------------------------------------------------------------------
 
     command = [
         sys.executable,
@@ -1741,29 +1824,23 @@ def _run_model(
             status, fit_val = _fetch_model_output_snapshot(conn, model_id=model_id)
             if fit_val is None:
                 fit_val = FAIL_Y
-                _upsert_model_output_tracking(
+                _upsert_model_output_result(
                     conn,
                     ifs_id=ifs_id,
                     model_id=model_id,
-                    trial_index=trial_index,
-                    batch_index=batch_index,
-                    started_at_utc=started_at_utc,
-                    completed_at_utc=_utc_now_iso(),
                     model_status=IFS_RUN_FAILED,
                     fit_pooled=fit_val,
                 )
                 status = IFS_RUN_FAILED
-            else:
-                _upsert_model_output_tracking(
-                    conn,
-                    ifs_id=ifs_id,
-                    model_id=model_id,
-                    trial_index=trial_index,
-                    batch_index=batch_index,
-                    started_at_utc=started_at_utc,
-                    completed_at_utc=_utc_now_iso(),
-                    fit_pooled=fit_val,
-                )
+            _complete_proposal_event(
+                conn,
+                proposal_event_id=proposal_event_id,
+                proposal_status=status or IFS_RUN_FAILED,
+                completed_at_utc=_utc_now_iso(),
+                fit_pooled_visible=visible_fit_pooled(status or IFS_RUN_FAILED, fit_val),
+                source_status=status,
+                resolution_note="ifs_runtime_non_zero",
+            )
         print(
             f"IFs runtime exited non-zero for model_id={model_id} (return_code={process.returncode}); "
             f"using recorded fit_pooled={fit_val:.6f}, status={status or IFS_RUN_FAILED}",
@@ -1775,15 +1852,14 @@ def _run_model(
         status, fit_val = _fetch_model_output_snapshot(conn, model_id=model_id)
         if fit_val is None:
             raise RuntimeError("fit_pooled not found after IFs run")
-        _upsert_model_output_tracking(
+        _complete_proposal_event(
             conn,
-            ifs_id=ifs_id,
-            model_id=model_id,
-            trial_index=trial_index,
-            batch_index=batch_index,
-            started_at_utc=started_at_utc,
+            proposal_event_id=proposal_event_id,
+            proposal_status=status or FIT_EVALUATED,
             completed_at_utc=_utc_now_iso(),
-            fit_pooled=fit_val,
+            fit_pooled_visible=visible_fit_pooled(status or FIT_EVALUATED, fit_val),
+            source_status=status,
+            resolution_note="fresh_evaluation_completed",
         )
 
     point = np.round(flatten_inputs(param_values, coef_values), 6)
@@ -1910,17 +1986,9 @@ def main(argv: list[str] | None = None) -> int:
         ) = _load_ml_settings(starting_point_table)
         user_param_configs, user_coef_configs = _load_user_search_configs(starting_point_table)
 
-        structure = dataset_utils.extract_structure_keys(input_param, input_coef, output_set)
         samples = dataset_utils.load_compatible_training_samples(
-            str(bigpopa_db), structure, dataset_id
+            str(bigpopa_db), (), dataset_id
         )
-
-        repaired_rows = _normalize_model_output_batch_indexes(conn)
-        if repaired_rows:
-            print(
-                f"Normalized batch_index to 1 for {repaired_rows} tracked model_output rows.",
-                flush=True,
-            )
 
         param_template = input_param
         coef_template = input_coef
@@ -1933,10 +2001,7 @@ def main(argv: list[str] | None = None) -> int:
             fit_val = sample.get("fit_pooled")
             if fit_val is None:
                 continue
-            merged_param, merged_coef = _merge_with_template(
-                param_template, coef_template, sample.get("input_param", {}), sample.get("input_coef", {})
-            )
-            vec = flatten_inputs(merged_param, merged_coef)
+            vec = flatten_inputs(sample.get("input_param", {}), sample.get("input_coef", {}))
             X_obs.append(vec)
             Y_obs.append(float(fit_val))
             vector_to_model_id[tuple(np.round(vec, 6))] = sample["model_id"]

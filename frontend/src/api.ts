@@ -115,7 +115,7 @@ export type MLProgressHistoryData = {
   dataset_id: string | null;
   reference_model_id?: string | null;
   reference_fit_pooled?: number | null;
-  latest_output_rowid?: number | null;
+  latest_progress_rowid?: number | null;
   trials: MLProgressTrial[];
 };
 
@@ -362,14 +362,14 @@ export async function getMLProgressHistory(
   outputDir?: string | null,
   datasetId?: string | null,
   modelId?: string | null,
-  sinceOutputRowId?: number | null,
+  sinceProgressRowId?: number | null,
 ): Promise<MLProgressHistoryData> {
   if (!window.electron?.getMLProgressHistory) {
     return {
       dataset_id: datasetId ?? null,
       reference_model_id: modelId ?? null,
       reference_fit_pooled: null,
-      latest_output_rowid: null,
+      latest_progress_rowid: null,
       trials: [],
     };
   }
@@ -379,7 +379,7 @@ export async function getMLProgressHistory(
       outputDir ?? null,
       datasetId ?? null,
       modelId ?? null,
-      sinceOutputRowId ?? null,
+      sinceProgressRowId ?? null,
     );
     const responseDatasetId =
       typeof response?.data?.dataset_id === "string" || response?.data?.dataset_id === null
@@ -398,18 +398,22 @@ export async function getMLProgressHistory(
           ? null
           : null;
     const trials = response?.data?.trials;
-    const latestOutputRowId =
-      typeof response?.data?.latest_output_rowid === "number" &&
-      Number.isFinite(response.data.latest_output_rowid)
-        ? response.data.latest_output_rowid
-        : response?.data?.latest_output_rowid === null
+    const latestProgressRowId =
+      typeof response?.data?.latest_progress_rowid === "number" &&
+      Number.isFinite(response.data.latest_progress_rowid)
+        ? response.data.latest_progress_rowid
+        : typeof response?.data?.latest_output_rowid === "number" &&
+            Number.isFinite(response.data.latest_output_rowid)
+          ? response.data.latest_output_rowid
+          : response?.data?.latest_progress_rowid === null ||
+              response?.data?.latest_output_rowid === null
           ? null
           : null;
     return {
       dataset_id: responseDatasetId,
       reference_model_id: referenceModelId,
       reference_fit_pooled: referenceFitPooled,
-      latest_output_rowid: latestOutputRowId,
+      latest_progress_rowid: latestProgressRowId,
       trials: Array.isArray(trials) ? (trials as MLProgressTrial[]) : [],
     };
   } catch {
@@ -417,7 +421,7 @@ export async function getMLProgressHistory(
       dataset_id: datasetId ?? null,
       reference_model_id: modelId ?? null,
       reference_fit_pooled: null,
-      latest_output_rowid: null,
+      latest_progress_rowid: null,
       trials: [],
     };
   }

@@ -56,23 +56,24 @@ declare global {
           datasetId?: string | null;
         } | null;
       }>;
-      getMLProgressHistory: (
-        outputDir?: string | null,
-        datasetId?: string | null,
-        modelId?: string | null,
-        sinceOutputRowId?: number | null,
-      ) => Promise<{
-        status?: string;
-        stage?: string;
-        message?: string;
-        data?: {
-          dataset_id?: string | null;
-          reference_model_id?: string | null;
-          reference_fit_pooled?: number | null;
-          latest_output_rowid?: number | null;
-          trials?: MLProgressTrial[];
-        };
-      }>;
+    getMLProgressHistory: (
+      outputDir?: string | null,
+      datasetId?: string | null,
+      modelId?: string | null,
+      sinceProgressRowId?: number | null,
+    ) => Promise<{
+      status?: string;
+      stage?: string;
+      message?: string;
+      data?: {
+        dataset_id?: string | null;
+        reference_model_id?: string | null;
+        reference_fit_pooled?: number | null;
+        latest_progress_rowid?: number | null;
+        latest_output_rowid?: number | null;
+        trials?: MLProgressTrial[];
+      };
+    }>;
       requestMLStop: () => Promise<{
         accepted: boolean;
         alreadyRequested?: boolean;

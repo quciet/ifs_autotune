@@ -74,9 +74,7 @@ def resolve_reference_fit(
                 (? IS NULL AND mi.dataset_id IS NULL)
                 OR mi.dataset_id = ?
               )
-          AND mo.trial_index IS NULL
         ORDER BY
-            CASE WHEN mo.rowid IS NULL THEN 1 ELSE 0 END,
             mi.rowid ASC,
             mo.rowid ASC
         """,
@@ -152,14 +150,14 @@ def _trial_sort_key(row: tuple[Any, ...]) -> tuple[Any, ...]:
     completed_at = _parse_iso_timestamp(row[6])
     primary_timestamp = started_at if started_at is not None else completed_at
     input_rowid = row[8]
-    output_rowid = row[9]
+    progress_rowid = row[9]
 
     return (
         0 if primary_timestamp is not None else 1,
         primary_timestamp or datetime.max.replace(tzinfo=timezone.utc),
         0 if started_at is not None else 1,
         input_rowid if isinstance(input_rowid, int) else sys.maxsize,
-        output_rowid if isinstance(output_rowid, int) else sys.maxsize,
+        progress_rowid if isinstance(progress_rowid, int) else sys.maxsize,
         row[0] or "",
     )
 
@@ -204,6 +202,125 @@ def emit_response(status: str, stage: str, message: str, data: dict[str, Any]) -
     sys.stdout.flush()
 
 
+def _table_columns(cursor: sqlite3.Cursor, table_name: str) -> set[str]:
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return {row[1] for row in cursor.fetchall()}
+
+
+def _has_proposal_history_table(cursor: sqlite3.Cursor) -> bool:
+    columns = _table_columns(cursor, "ml_proposal_history")
+    required = {
+        "proposal_event_id",
+        "model_id",
+        "dataset_id",
+        "trial_index",
+        "batch_index",
+        "proposal_status",
+        "fit_pooled_visible",
+        "started_at_utc",
+        "completed_at_utc",
+    }
+    return required.issubset(columns)
+
+
+def _load_progress_rows_from_history(
+    cursor: sqlite3.Cursor,
+    *,
+    dataset_id: str | None,
+) -> list[tuple[Any, ...]]:
+    if dataset_id is None:
+        rows = cursor.execute(
+            """
+            SELECT
+                mph.model_id,
+                mph.proposal_status,
+                mph.fit_pooled_visible,
+                mph.trial_index,
+                mph.batch_index,
+                mph.started_at_utc,
+                mph.completed_at_utc,
+                mph.dataset_id,
+                mi.rowid,
+                mph.proposal_event_id
+            FROM ml_proposal_history mph
+            LEFT JOIN model_input mi ON mi.model_id = mph.model_id
+            WHERE mph.dataset_id IS NULL
+            """
+        ).fetchall()
+    else:
+        rows = cursor.execute(
+            """
+            SELECT
+                mph.model_id,
+                mph.proposal_status,
+                mph.fit_pooled_visible,
+                mph.trial_index,
+                mph.batch_index,
+                mph.started_at_utc,
+                mph.completed_at_utc,
+                mph.dataset_id,
+                mi.rowid,
+                mph.proposal_event_id
+            FROM ml_proposal_history mph
+            LEFT JOIN model_input mi ON mi.model_id = mph.model_id
+            WHERE mph.dataset_id = ?
+            """,
+            (dataset_id,),
+        ).fetchall()
+
+    return sorted(rows, key=_trial_sort_key)
+
+
+def _load_progress_rows_from_model_output(
+    cursor: sqlite3.Cursor,
+    *,
+    dataset_id: str | None,
+) -> list[tuple[Any, ...]]:
+    if dataset_id is None:
+        rows = cursor.execute(
+            """
+            SELECT
+                mo.model_id,
+                mo.model_status,
+                mo.fit_pooled,
+                mo.trial_index,
+                mo.batch_index,
+                mo.started_at_utc,
+                mo.completed_at_utc,
+                mi.dataset_id,
+                mi.rowid,
+                mo.rowid
+            FROM model_output mo
+            JOIN model_input mi ON mi.model_id = mo.model_id
+            WHERE mo.trial_index IS NOT NULL
+              AND mi.dataset_id IS NULL
+            """
+        ).fetchall()
+    else:
+        rows = cursor.execute(
+            """
+            SELECT
+                mo.model_id,
+                mo.model_status,
+                mo.fit_pooled,
+                mo.trial_index,
+                mo.batch_index,
+                mo.started_at_utc,
+                mo.completed_at_utc,
+                mi.dataset_id,
+                mi.rowid,
+                mo.rowid
+            FROM model_output mo
+            JOIN model_input mi ON mi.model_id = mo.model_id
+            WHERE mo.trial_index IS NOT NULL
+              AND mi.dataset_id = ?
+            """,
+            (dataset_id,),
+        ).fetchall()
+
+    return sorted(rows, key=_trial_sort_key)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read ML progress history")
     parser.add_argument("--bigpopa-db", required=True, help="Path to bigpopa.db")
@@ -218,10 +335,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Model id used to resolve the dataset_id cohort for progress history.",
     )
     parser.add_argument(
+        "--since-progress-rowid",
         "--since-output-rowid",
+        dest="since_progress_rowid",
         required=False,
         type=int,
-        help="Only return trials whose model_output rowid is newer than this cursor.",
+        help="Only return trials whose progress event rowid is newer than this cursor.",
     )
     args = parser.parse_args(argv)
 
@@ -257,24 +376,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(model_output)")
-        columns = {row[1] for row in cursor.fetchall()}
-
-        required = {"trial_index", "batch_index", "started_at_utc", "completed_at_utc"}
-        if not required.issubset(columns):
-            emit_response(
-                "success",
-                "ml_progress",
-                "ML progress tracking columns are not available yet.",
-                {
-                    "reference_model_id": None,
-                    "reference_fit_pooled": None,
-                    "trials": [],
-                },
-            )
-            return 0
-
-        repair_model_output_batch_indexes(conn)
         try:
             dataset_id = resolve_dataset_id(cursor, args.dataset_id, args.model_id)
         except LookupError:
@@ -310,40 +411,20 @@ def main(argv: list[str] | None = None) -> int:
             args.model_id,
         )
 
-        raw_rows = cursor.execute(
-            """
-            SELECT
-                mo.model_id,
-                mo.model_status,
-                mo.fit_pooled,
-                mo.trial_index,
-                mo.batch_index,
-                mo.started_at_utc,
-                mo.completed_at_utc,
-                mi.dataset_id,
-                mi.rowid,
-                mo.rowid
-            FROM model_output mo
-            JOIN model_input mi ON mi.model_id = mo.model_id
-            WHERE mo.trial_index IS NOT NULL
-              AND (
-                (? IS NULL AND mi.dataset_id IS NULL)
-                OR mi.dataset_id = ?
-              )
-            """
-            ,
-            (dataset_id, dataset_id),
-        ).fetchall()
+        use_proposal_history = _has_proposal_history_table(cursor)
+        if use_proposal_history:
+            rows = _load_progress_rows_from_history(cursor, dataset_id=dataset_id)
+            if not rows:
+                repair_model_output_batch_indexes(conn)
+                rows = _load_progress_rows_from_model_output(cursor, dataset_id=dataset_id)
+        else:
+            repair_model_output_batch_indexes(conn)
+            rows = _load_progress_rows_from_model_output(cursor, dataset_id=dataset_id)
 
-        rows = sorted(raw_rows, key=_trial_sort_key)
         trials: list[dict[str, Any]] = []
         derived_round_index = 0
-        latest_output_rowid = max(
-            (
-                row[9]
-                for row in rows
-                if isinstance(row[9], int)
-            ),
+        latest_progress_rowid = max(
+            (row[9] for row in rows if isinstance(row[9], int)),
             default=None,
         )
 
@@ -354,11 +435,11 @@ def main(argv: list[str] | None = None) -> int:
             elif isinstance(trial_index, int) and trial_index == 1:
                 derived_round_index += 1
 
-            output_rowid = row[9] if isinstance(row[9], int) else None
+            progress_rowid = row[9] if isinstance(row[9], int) else None
             if (
-                args.since_output_rowid is not None
-                and output_rowid is not None
-                and output_rowid < args.since_output_rowid
+                args.since_progress_rowid is not None
+                and progress_rowid is not None
+                and progress_rowid < args.since_progress_rowid
             ):
                 continue
 
@@ -382,7 +463,8 @@ def main(argv: list[str] | None = None) -> int:
                 "dataset_id": dataset_id,
                 "reference_model_id": reference_model_id,
                 "reference_fit_pooled": reference_fit_pooled,
-                "latest_output_rowid": latest_output_rowid,
+                "latest_progress_rowid": latest_progress_rowid,
+                "latest_output_rowid": latest_progress_rowid,
                 "trials": trials,
             },
         )

@@ -1288,11 +1288,15 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
       ? mlJobState.runConfig.initialModelId.trim()
       : null
     : null;
-  const sinceOutputRowId =
-    typeof payload?.sinceOutputRowId === "number" &&
-    Number.isFinite(payload.sinceOutputRowId) &&
-    payload.sinceOutputRowId > 0
-      ? Math.trunc(payload.sinceOutputRowId)
+  const rawSinceProgressRowId =
+    typeof payload?.sinceProgressRowId === "number"
+      ? payload.sinceProgressRowId
+      : payload?.sinceOutputRowId;
+  const sinceProgressRowId =
+    typeof rawSinceProgressRowId === "number" &&
+    Number.isFinite(rawSinceProgressRowId) &&
+    rawSinceProgressRowId > 0
+      ? Math.trunc(rawSinceProgressRowId)
       : null;
 
   if (!outputDir) {
@@ -1324,8 +1328,8 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
     args.push("--model-id", modelId);
   }
 
-  if (sinceOutputRowId != null) {
-    args.push("--since-output-rowid", String(sinceOutputRowId));
+  if (sinceProgressRowId != null) {
+    args.push("--since-progress-rowid", String(sinceProgressRowId));
   }
 
   return runPythonScript("ml_progress.py", args, { quiet: true });

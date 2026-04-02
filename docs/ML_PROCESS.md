@@ -10,7 +10,7 @@ When `ml_driver.py` starts, it does not begin from an empty training set.
 
 The initial observed data includes:
 - the scored baseline model created during model setup
-- any structurally compatible prior runs from the same `dataset_id` cohort that already have `fit_pooled`
+- any prior runs from the exact same `dataset_id` cohort that already have `fit_pooled`
 
 Those observations become:
 - `X_obs`
@@ -246,7 +246,7 @@ If the selected candidate hashes to a `model_id` that already has a stored `fit_
 
 ### Historical reuse
 
-Before the first new iteration, BIGPOPA also loads prior compatible runs from the same `dataset_id`.
+Before the first new iteration, BIGPOPA also loads prior runs from the exact same `dataset_id`.
 
 So the surrogate learns from:
 - the baseline

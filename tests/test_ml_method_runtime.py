@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
+import dataset_utils
 import ml_driver
 import model_setup
 from ml_method import load_required_ml_method, normalize_ml_method
@@ -160,6 +161,63 @@ def _args_namespace(tmp_path: Path, output_dir: Path) -> argparse.Namespace:
 def _canonical_model_id(*, ifs_id: int, param_values: dict, coef_values: dict, output_set: dict) -> str:
     canonical = model_setup.canonical_config(ifs_id, param_values, coef_values, output_set)
     return model_setup.hash_model_id(canonical)
+
+
+def test_load_compatible_training_samples_uses_exact_dataset_id_only(tmp_path: Path) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE model_input (
+                ifs_id INTEGER,
+                model_id TEXT PRIMARY KEY,
+                dataset_id TEXT,
+                input_param TEXT,
+                input_coef TEXT,
+                output_set TEXT
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE model_output (
+                ifs_id INTEGER,
+                model_id TEXT PRIMARY KEY,
+                model_status TEXT,
+                fit_var TEXT,
+                fit_pooled REAL
+            )
+            """
+        )
+        cursor.executemany(
+            """
+            INSERT INTO model_input (ifs_id, model_id, dataset_id, input_param, input_coef, output_set)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "same-dataset", "dataset-1", json.dumps({"a": 0.1}), json.dumps({}), json.dumps({"fit": 1})),
+                (1, "other-dataset", "dataset-2", json.dumps({"a": 0.2}), json.dumps({}), json.dumps({"fit": 1})),
+            ],
+        )
+        cursor.executemany(
+            """
+            INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
+            VALUES (?, ?, ?, NULL, ?)
+            """,
+            [
+                (1, "same-dataset", FIT_EVALUATED, 1.5),
+                (1, "other-dataset", FIT_EVALUATED, 2.5),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    samples = dataset_utils.load_compatible_training_samples(str(db_path), (), "dataset-1")
+
+    assert [sample["model_id"] for sample in samples] == ["same-dataset"]
 
 
 @pytest.mark.parametrize(
@@ -1100,10 +1158,20 @@ def test_run_model_marks_cached_result_as_reused_without_launching_ifs(
             "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
             (model_id,),
         ).fetchone()
+        proposal_rows = conn.execute(
+            """
+            SELECT proposal_status, was_reused, fit_pooled_visible
+            FROM ml_proposal_history
+            WHERE model_id = ?
+            ORDER BY proposal_event_id
+            """,
+            (model_id,),
+        ).fetchall()
 
     assert fit_val == 12.5
     assert returned_model_id == model_id
-    assert row == (MODEL_REUSED, 12.5)
+    assert row == (FIT_EVALUATED, 12.5)
+    assert proposal_rows == [(MODEL_REUSED, 1, 12.5)]
 
 
 def test_run_model_persists_fallback_fit_when_ifs_run_fails(

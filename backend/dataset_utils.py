@@ -33,15 +33,10 @@ def extract_structure_keys(input_param: dict, input_coef: dict, output_set: dict
     return (param, coef, out)
 
 
-def is_subset_dataset(structA, structB):
-    PA, CA, OA = structA
-    PB, CB, OB = structB
-    return PA.issubset(PB) and CA.issubset(CB) and OA.issubset(OB)
-
-
 def load_compatible_training_samples(
     db_path: str, current_structure: tuple, dataset_id: str | None
 ):
+    del current_structure
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
@@ -58,7 +53,7 @@ def load_compatible_training_samples(
         )
     rows = cur.fetchall()
 
-    compatible = []
+    samples = []
     for model_id, ipjs, icjs, osjs, _ in rows:
         try:
             ip = json.loads(ipjs)
@@ -66,13 +61,6 @@ def load_compatible_training_samples(
             os = json.loads(osjs)
         except Exception:
             continue
-
-        structA = extract_structure_keys(ip, ic, os)
-        if is_subset_dataset(structA, current_structure):
-            compatible.append((model_id, ip, ic, os))
-
-    samples = []
-    for mid, ip, ic, os in compatible:
         if dataset_id is None:
             cur.execute(
                 """
@@ -81,7 +69,7 @@ def load_compatible_training_samples(
                 JOIN model_input mi ON mo.model_id = mi.model_id
                 WHERE mi.model_id = ? AND mi.dataset_id IS NULL
                 """,
-                (mid,),
+                (model_id,),
             )
         else:
             cur.execute(
@@ -91,14 +79,14 @@ def load_compatible_training_samples(
                 JOIN model_input mi ON mo.model_id = mi.model_id
                 WHERE mi.model_id = ? AND mi.dataset_id = ?
                 """,
-                (mid, dataset_id),
+                (model_id, dataset_id),
             )
 
         fr = cur.fetchone()
         fit = fr[0] if fr else None
 
         samples.append({
-            "model_id": mid,
+            "model_id": model_id,
             "input_param": ip,
             "input_coef": ic,
             "output_set": os,

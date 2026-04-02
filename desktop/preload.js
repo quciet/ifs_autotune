@@ -8,12 +8,12 @@ contextBridge.exposeInMainWorld('electron', {
   getDefaultOutputDir: () => ipcRenderer.invoke('get-default-output-dir'),
   getDefaultInputFile: () => ipcRenderer.invoke('get-default-input-file'),
   getMLJobStatus: () => ipcRenderer.invoke('ml:jobStatus'),
-  getMLProgressHistory: (outputDir, datasetId, modelId, sinceOutputRowId) =>
+  getMLProgressHistory: (outputDir, datasetId, modelId, sinceProgressRowId) =>
     ipcRenderer.invoke('ml:getProgressHistory', {
       outputDir,
       datasetId,
       modelId,
-      sinceOutputRowId,
+      sinceProgressRowId,
     }),
   requestMLStop: () => ipcRenderer.invoke('ml:requestStop'),
   invoke: (channel, data) => ipcRenderer.invoke(channel, data),

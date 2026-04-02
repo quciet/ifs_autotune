@@ -85,6 +85,7 @@ def ensure_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
         """
     )
     ensure_model_output_tracking_columns(cursor)
+    ensure_ml_proposal_history_table(cursor)
     ensure_ml_resume_state_table(cursor)
 
 
@@ -101,6 +102,42 @@ def ensure_model_output_tracking_columns(cursor: sqlite3.Cursor) -> None:
     for column_name, statement in required_columns.items():
         if column_name not in existing_columns:
             cursor.execute(statement)
+
+
+def ensure_ml_proposal_history_table(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_proposal_history (
+            proposal_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ifs_id INTEGER,
+            model_id TEXT NOT NULL,
+            dataset_id TEXT,
+            trial_index INTEGER NOT NULL,
+            batch_index INTEGER NOT NULL,
+            proposal_status TEXT,
+            fit_pooled_visible REAL,
+            started_at_utc TEXT,
+            completed_at_utc TEXT,
+            was_reused INTEGER NOT NULL DEFAULT 0,
+            source_status TEXT,
+            resolution_note TEXT,
+            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id),
+            FOREIGN KEY (model_id) REFERENCES model_input(model_id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_proposal_history_dataset_event
+        ON ml_proposal_history (dataset_id, proposal_event_id)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ml_proposal_history_model_event
+        ON ml_proposal_history (model_id, proposal_event_id)
+        """
+    )
 
 
 def ensure_ml_resume_state_table(cursor: sqlite3.Cursor) -> None:

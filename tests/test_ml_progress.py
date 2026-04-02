@@ -79,6 +79,24 @@ def build_progress_db(
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE ml_proposal_history (
+            proposal_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_id TEXT NOT NULL,
+            dataset_id TEXT,
+            trial_index INTEGER NOT NULL,
+            batch_index INTEGER NOT NULL,
+            proposal_status TEXT,
+            fit_pooled_visible REAL,
+            started_at_utc TEXT,
+            completed_at_utc TEXT,
+            was_reused INTEGER NOT NULL DEFAULT 0,
+            source_status TEXT,
+            resolution_note TEXT
+        )
+        """
+    )
     conn.executemany(
         "INSERT INTO model_input (model_id, dataset_id) VALUES (?, ?)",
         input_rows,
@@ -98,6 +116,45 @@ def build_progress_db(
         """,
         output_rows,
     )
+    dataset_lookup = {model_id: dataset_id for model_id, dataset_id in input_rows}
+    conn.executemany(
+        """
+        INSERT INTO ml_proposal_history (
+            model_id,
+            dataset_id,
+            trial_index,
+            batch_index,
+            proposal_status,
+            fit_pooled_visible,
+            started_at_utc,
+            completed_at_utc,
+            was_reused
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+        """,
+        [
+            (
+                model_id,
+                dataset_lookup.get(model_id),
+                trial_index,
+                1,
+                model_status,
+                fit_pooled,
+                started_at_utc,
+                completed_at_utc,
+            )
+            for (
+                model_id,
+                model_status,
+                fit_pooled,
+                trial_index,
+                _batch_index,
+                started_at_utc,
+                completed_at_utc,
+            ) in output_rows
+            if trial_index is not None
+        ],
+    )
     conn.commit()
     conn.close()
 
@@ -116,7 +173,7 @@ def test_main_normalizes_failed_trials_as_missing(tmp_path: Path, capsys) -> Non
     assert payload["data"]["dataset_id"] == "dataset-1"
     assert payload["data"]["reference_model_id"] == "seed-model"
     assert payload["data"]["reference_fit_pooled"] is None
-    assert payload["data"]["latest_output_rowid"] == 2
+    assert payload["data"]["latest_progress_rowid"] == 2
     assert payload["data"]["trials"] == [
         {
             "model_id": "trial-ok",
@@ -149,7 +206,7 @@ def test_main_normalizes_failed_trials_as_missing(tmp_path: Path, capsys) -> Non
     ]
 
 
-def test_main_can_return_incremental_trials_since_output_rowid(
+def test_main_can_return_incremental_trials_since_progress_rowid(
     tmp_path: Path, capsys
 ) -> None:
     db_path = tmp_path / "bigpopa.db"
@@ -161,14 +218,14 @@ def test_main_can_return_incremental_trials_since_output_rowid(
             str(db_path),
             "--dataset-id",
             "dataset-1",
-            "--since-output-rowid",
+            "--since-progress-rowid",
             "1",
         ]
     )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["latest_output_rowid"] == 2
+    assert payload["data"]["latest_progress_rowid"] == 2
     assert payload["data"]["trials"] == [
         {
             "model_id": "trial-ok",
@@ -201,7 +258,7 @@ def test_main_can_return_incremental_trials_since_output_rowid(
     ]
 
 
-def test_main_reports_latest_output_rowid_even_when_no_new_trials(
+def test_main_reports_latest_progress_rowid_even_when_no_new_trials(
     tmp_path: Path, capsys
 ) -> None:
     db_path = tmp_path / "bigpopa.db"
@@ -213,14 +270,14 @@ def test_main_reports_latest_output_rowid_even_when_no_new_trials(
             str(db_path),
             "--dataset-id",
             "dataset-1",
-            "--since-output-rowid",
+            "--since-progress-rowid",
             "3",
         ]
     )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["latest_output_rowid"] == 2
+    assert payload["data"]["latest_progress_rowid"] == 2
     assert payload["data"]["trials"] == []
 
 
@@ -236,15 +293,111 @@ def test_main_replays_cursor_tail_row_for_incremental_overlap(
             str(db_path),
             "--dataset-id",
             "dataset-1",
-            "--since-output-rowid",
+            "--since-progress-rowid",
             "2",
         ]
     )
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["latest_output_rowid"] == 2
+    assert payload["data"]["latest_progress_rowid"] == 2
     assert [trial["progress_rowid"] for trial in payload["data"]["trials"]] == [2]
+
+
+def test_main_returns_reused_proposals_as_separate_progress_events(
+    tmp_path: Path, capsys
+) -> None:
+    db_path = tmp_path / "bigpopa.db"
+    build_progress_db(
+        db_path,
+        input_rows=[
+            ("seed-model", "dataset-1"),
+            ("reused-model", "dataset-1"),
+        ],
+        output_rows=[
+            (
+                "reused-model",
+                FIT_EVALUATED,
+                12.5,
+                1,
+                1,
+                "2026-03-12T10:00:00Z",
+                "2026-03-12T10:05:00Z",
+            ),
+        ],
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DELETE FROM ml_proposal_history")
+        conn.execute(
+            """
+            INSERT INTO ml_proposal_history (
+                model_id,
+                dataset_id,
+                trial_index,
+                batch_index,
+                proposal_status,
+                fit_pooled_visible,
+                started_at_utc,
+                completed_at_utc,
+                was_reused
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "reused-model",
+                "dataset-1",
+                1,
+                1,
+                FIT_EVALUATED,
+                12.5,
+                "2026-03-12T10:00:00Z",
+                "2026-03-12T10:05:00Z",
+                0,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO ml_proposal_history (
+                model_id,
+                dataset_id,
+                trial_index,
+                batch_index,
+                proposal_status,
+                fit_pooled_visible,
+                started_at_utc,
+                completed_at_utc,
+                was_reused
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "reused-model",
+                "dataset-1",
+                2,
+                1,
+                "model_reused",
+                12.5,
+                "2026-03-12T11:00:00Z",
+                "2026-03-12T11:00:01Z",
+                1,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    exit_code = ml_progress.main(
+        ["--bigpopa-db", str(db_path), "--dataset-id", "dataset-1"]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [trial["model_status"] for trial in payload["data"]["trials"]] == [
+        FIT_EVALUATED,
+        "model_reused",
+    ]
+    assert [trial["trial_index"] for trial in payload["data"]["trials"]] == [1, 2]
 
 
 def test_repair_batch_indexes_is_idempotent(tmp_path: Path) -> None:

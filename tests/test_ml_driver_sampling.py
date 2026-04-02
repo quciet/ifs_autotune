@@ -176,7 +176,7 @@ def test_hybrid_grid_cannot_exceed_target_sample_count() -> None:
         ml_driver._generate_hybrid_candidate_grid(search_space, n_samples=99)
 
 
-def test_normalize_batch_indexes_commits_before_second_connection_writes(tmp_path: Path) -> None:
+def test_normalize_batch_indexes_commits_before_second_connection_appends_proposal_event(tmp_path: Path) -> None:
     db_path = tmp_path / "bigpopa.db"
 
     conn_a = sqlite3.connect(db_path)
@@ -194,6 +194,7 @@ def test_normalize_batch_indexes_commits_before_second_connection_writes(tmp_pat
             """
         )
         ml_driver.ensure_model_output_tracking_columns(cursor)
+        ml_driver.ensure_ml_proposal_history_table(cursor)
         cursor.execute(
             """
             INSERT INTO model_output (
@@ -217,26 +218,30 @@ def test_normalize_batch_indexes_commits_before_second_connection_writes(tmp_pat
 
         conn_b = sqlite3.connect(db_path, timeout=0)
         try:
-            ml_driver._upsert_model_output_tracking(
+            proposal_event_id = ml_driver._insert_proposal_event(
                 conn_b,
                 ifs_id=2,
                 model_id="new-model",
+                dataset_id="dataset-a",
                 trial_index=2,
                 batch_index=1,
                 started_at_utc="2026-03-13T00:00:00+00:00",
-                model_status="running",
+                proposal_status="running",
+                was_reused=False,
             )
             conn_b.commit()
         finally:
             conn_b.close()
 
-        rows = conn_a.execute(
-            "SELECT model_id, batch_index FROM model_output ORDER BY model_id"
+        rows = conn_a.execute("SELECT model_id, batch_index FROM model_output").fetchall()
+        proposal_rows = conn_a.execute(
+            "SELECT proposal_event_id, trial_index, batch_index FROM ml_proposal_history"
         ).fetchall()
     finally:
         conn_a.close()
 
-    assert rows == [("existing-model", 1), ("new-model", 1)]
+    assert rows == [("existing-model", 1)]
+    assert proposal_rows == [(proposal_event_id, 2, 1)]
 
 
 def test_candidate_generator_refreshes_continuous_values_and_preserves_discrete_levels() -> None:

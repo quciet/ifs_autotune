@@ -80,7 +80,7 @@ If a selected parameter is missing from the `parameter` table, model setup fails
   A SHA-256 hash of the canonicalized baseline configuration, including rounded numeric values.
 
 These IDs matter later:
-- `dataset_id` controls which prior runs are considered structurally compatible for ML training history
+- `dataset_id` controls which prior runs are considered part of the exact ML training cohort
 - `model_id` controls exact-result reuse for identical configurations
 
 ### Baseline extraction
@@ -94,7 +94,7 @@ Once model setup succeeds, the UI starts `ml_driver.py`.
 The ML driver:
 - loads the selected baseline config from `model_input`
 - loads `ml_method` and `fit_metric` from `ifs_version`
-- loads compatible historical samples using `dataset_id`
+- loads exact-cohort historical samples using `dataset_id`
 - builds parameter and coefficient search bounds
 - builds the refreshed proposal generator
 - runs active learning against a per-iteration candidate pool
@@ -103,7 +103,7 @@ The ML driver:
 
 Before the first new IFs run, the ML process already has observations:
 - the scored baseline model
-- any prior compatible runs from the same `dataset_id` cohort that already have `fit_pooled`
+- any prior runs from the exact same `dataset_id` cohort that already have `fit_pooled`
 
 That observed set becomes the initial training data for the surrogate ensemble.
 
@@ -147,7 +147,7 @@ For each chosen candidate:
 - BIGPOPA reconstructs parameter and coefficient dictionaries from the numeric vector
 - it hashes the canonical configuration into a `model_id`
 - if that `model_id` already has a `fit_pooled` value in `model_output`, BIGPOPA reuses the score instead of running IFs again
-- otherwise it inserts the config into `model_input` and launches `run_ifs.py`
+- every proposal attempt is appended to `ml_proposal_history`, and only new exact models launch `run_ifs.py`
 
 ## 4. IFs Execution
 
@@ -209,12 +209,10 @@ Typical contents:
 
 ## Model Status Meanings
 
-The backend uses several statuses in `model_output`:
+The backend uses canonical statuses in `model_output` plus per-attempt statuses in `ml_proposal_history`:
 
 - `running`
   The ML driver has selected the candidate and is currently evaluating it.
-- `reused`
-  BIGPOPA found a previously evaluated identical `model_id` and reused its stored `fit_pooled`.
 - `completed`
   IFs execution finished and artifacts were copied, but extraction may still be running.
 - `evaluated`
@@ -224,7 +222,7 @@ The backend uses several statuses in `model_output`:
 - `error`
   Extraction or comparison failed.
 
-In practice, the final success state for a scored model is `evaluated`.
+In practice, the final success state for a scored canonical model is `evaluated`. Reused ML proposals are tracked as separate proposal-history events instead of rewriting the canonical model row.
 
 ## Current Limitations
 

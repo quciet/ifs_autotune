@@ -69,6 +69,21 @@ def _trial_sort_key(row: tuple[object, ...]) -> tuple[object, ...]:
 
 
 def ensure_tracking_columns(cursor: sqlite3.Cursor) -> None:
+    cursor.execute("PRAGMA table_info(ml_proposal_history)")
+    proposal_columns = {row[1] for row in cursor.fetchall()}
+    proposal_required = {
+        "proposal_event_id",
+        "dataset_id",
+        "trial_index",
+        "batch_index",
+        "proposal_status",
+        "fit_pooled_visible",
+        "started_at_utc",
+        "completed_at_utc",
+    }
+    if proposal_required.issubset(proposal_columns):
+        return
+
     cursor.execute("PRAGMA table_info(model_output)")
     columns = {row[1] for row in cursor.fetchall()}
     required = {"trial_index", "batch_index", "started_at_utc", "completed_at_utc"}
@@ -76,11 +91,40 @@ def ensure_tracking_columns(cursor: sqlite3.Cursor) -> None:
     if missing:
         missing_text = ", ".join(sorted(missing))
         raise RuntimeError(
-            f"model_output is missing required ML tracking columns: {missing_text}"
+            "Neither ml_proposal_history nor model_output contains the required "
+            f"ML tracking columns: {missing_text}"
         )
 
 
+def _has_proposal_history_table(cursor: sqlite3.Cursor) -> bool:
+    cursor.execute("PRAGMA table_info(ml_proposal_history)")
+    proposal_columns = {row[1] for row in cursor.fetchall()}
+    required = {
+        "proposal_event_id",
+        "dataset_id",
+        "trial_index",
+        "batch_index",
+        "proposal_status",
+        "fit_pooled_visible",
+        "started_at_utc",
+        "completed_at_utc",
+    }
+    return required.issubset(proposal_columns)
+
+
 def resolve_latest_dataset_id(cursor: sqlite3.Cursor) -> str | None:
+    if _has_proposal_history_table(cursor):
+        row = cursor.execute(
+            """
+            SELECT mph.dataset_id
+            FROM ml_proposal_history mph
+            ORDER BY COALESCE(mph.completed_at_utc, mph.started_at_utc) DESC, mph.proposal_event_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is not None:
+            return row[0]
+
     row = cursor.execute(
         """
         SELECT mi.dataset_id
@@ -92,7 +136,7 @@ def resolve_latest_dataset_id(cursor: sqlite3.Cursor) -> str | None:
         """
     ).fetchone()
     if row is None:
-        raise RuntimeError("No tracked model runs with trial_index were found.")
+        raise RuntimeError("No tracked model runs were found.")
     return row[0]
 
 
@@ -191,6 +235,55 @@ def flatten_run_inputs(row: RunRecord) -> dict[str, float]:
 
 
 def load_dataset_rows(cursor: sqlite3.Cursor, dataset_id: str | None) -> list[tuple[object, ...]]:
+    if _has_proposal_history_table(cursor):
+        if dataset_id is None:
+            rows = cursor.execute(
+                """
+                SELECT
+                    mph.model_id,
+                    mph.dataset_id,
+                    mph.proposal_status,
+                    mph.fit_pooled_visible,
+                    mph.trial_index,
+                    mph.batch_index,
+                    mph.started_at_utc,
+                    mph.completed_at_utc,
+                    mi.input_param,
+                    mi.input_coef,
+                    mi.rowid,
+                    mph.proposal_event_id
+                FROM ml_proposal_history mph
+                LEFT JOIN model_input mi ON mi.model_id = mph.model_id
+                WHERE mph.dataset_id IS NULL
+                """
+            ).fetchall()
+        else:
+            rows = cursor.execute(
+                """
+                SELECT
+                    mph.model_id,
+                    mph.dataset_id,
+                    mph.proposal_status,
+                    mph.fit_pooled_visible,
+                    mph.trial_index,
+                    mph.batch_index,
+                    mph.started_at_utc,
+                    mph.completed_at_utc,
+                    mi.input_param,
+                    mi.input_coef,
+                    mi.rowid,
+                    mph.proposal_event_id
+                FROM ml_proposal_history mph
+                LEFT JOIN model_input mi ON mi.model_id = mph.model_id
+                WHERE mph.dataset_id = ?
+                """,
+                (dataset_id,),
+            ).fetchall()
+        if rows:
+            return sorted(rows, key=_trial_sort_key)
+        # Fall back to legacy model_output tracking when the table exists but has
+        # not been populated yet in older local databases.
+
     if dataset_id is None:
         rows = cursor.execute(
             """
