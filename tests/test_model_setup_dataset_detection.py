@@ -10,6 +10,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 import model_setup
+from model_run_store import insert_model_run
+from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
 
 
 def _parameter_db() -> sqlite3.Connection:
@@ -123,33 +125,22 @@ def test_dataset_id_changes_when_selected_parameter_set_changes() -> None:
 
 def test_diagnose_structure_drift_reports_parameter_changes() -> None:
     conn = sqlite3.connect(":memory:")
-    conn.execute(
-        """
-        CREATE TABLE model_input (
-            ifs_id INTEGER,
-            model_id TEXT PRIMARY KEY,
-            input_param TEXT,
-            input_coef TEXT,
-            output_set TEXT,
-            dataset_id TEXT
-        )
-        """
+    ensure_current_bigpopa_schema(conn.cursor())
+    insert_model_run(
+        conn,
+        ifs_id=2,
+        model_id="existing-model",
+        dataset_id="existing-dataset",
+        input_param={"gdprext": 1.0, "tfrconv": 2.0},
+        input_coef={"demo": {"x": {"a": 10.0}}},
+        output_set={"POP": "Population"},
+        model_status="completed",
+        fit_pooled=1.0,
+        trial_index=1,
+        batch_index=1,
+        started_at_utc="2026-03-24T00:00:00Z",
+        completed_at_utc="2026-03-24T00:01:00Z",
     )
-    conn.execute(
-        """
-        INSERT INTO model_input (ifs_id, model_id, input_param, input_coef, output_set, dataset_id)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            2,
-            "existing-model",
-            json.dumps({"gdprext": 1.0, "tfrconv": 2.0}),
-            json.dumps({"demo": {"x": {"a": 10.0}}}),
-            json.dumps({"POP": "Population"}),
-            "existing-dataset",
-        ),
-    )
-
     try:
         diagnostics = model_setup.diagnose_structure_drift(
             conn.cursor(),

@@ -12,6 +12,7 @@ from typing import Dict, List
 import pandas as pd
 
 from combine_var_hist import combine_var_hist
+from model_run_store import find_active_run_id_for_model, load_model_definition, update_model_run
 from model_setup import ensure_bigpopa_schema
 from model_status import FALLBACK_FIT_POOLED, FIT_EVALUATED, IFS_RUN_COMPLETED
 
@@ -52,7 +53,7 @@ def format_metric(value: float | None) -> str:
     return f"{value:.3e}" if abs(value) < 1e-3 else f"{value:.6f}"
 
 
-def _upsert_model_output(
+def _update_model_run_result(
     bp: sqlite3.Connection,
     *,
     ifs_id: int,
@@ -61,28 +62,22 @@ def _upsert_model_output(
     fit_var: str | None,
     fit_pooled: float | None,
 ) -> None:
+    del ifs_id
     with bp:
-        cursor = bp.cursor()
-        cursor.execute(
-            """
-            UPDATE model_output
-            SET model_status=?, fit_var=?, fit_pooled=?
-            WHERE model_id=?
-            """,
-            (model_status, fit_var, fit_pooled, model_id),
+        run_id = find_active_run_id_for_model(bp, model_id=model_id)
+        if run_id is None:
+            raise RuntimeError(f"No model_run row exists for model_id={model_id}.")
+        update_model_run(
+            bp,
+            run_id=run_id,
+            model_status=model_status,
+            fit_var=fit_var,
+            fit_pooled=fit_pooled,
         )
-        if cursor.rowcount == 0:
-            cursor.execute(
-                """
-                INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (ifs_id, model_id, model_status, fit_var, fit_pooled),
-            )
 
 
 def _persist_fit_unavailable(bp: sqlite3.Connection, *, ifs_id: int, model_id: str) -> None:
-    _upsert_model_output(
+    _update_model_run_result(
         bp,
         ifs_id=ifs_id,
         model_id=model_id,
@@ -201,11 +196,13 @@ def main() -> int:
     try:
         bc = bp.cursor()
         ensure_bigpopa_schema(bc)
-        bc.execute(
-            "SELECT model_status FROM model_output WHERE model_id = ?",
-            (model_id,),
-        )
-        existing_status_row = bc.fetchone()
+        active_run_id = find_active_run_id_for_model(bp, model_id=model_id)
+        if active_run_id is None:
+            raise RuntimeError(f"No model_run row exists for model_id={model_id}.")
+        existing_status_row = bc.execute(
+            "SELECT model_status FROM model_run WHERE run_id = ?",
+            (active_run_id,),
+        ).fetchone()
         log(
             "debug",
             "Fetched existing model status",
@@ -225,43 +222,30 @@ def main() -> int:
 
     try:
         log("info", "Reading output_set from BIGPOPA database")
-        cursor = bp.cursor()
-        cursor.execute("SELECT output_set FROM model_input WHERE model_id = ?", (model_id,))
-        row = cursor.fetchone()
+        definition = load_model_definition(bp, model_id)
 
-        cursor.execute(
+        bc.execute(
             "SELECT fit_metric FROM ifs_version WHERE ifs_id = ? LIMIT 1",
             (ifs_id,),
         )
-        fit_metric_row = cursor.fetchone()
+        fit_metric_row = bc.fetchone()
         fit_metric_value = fit_metric_row[0] if fit_metric_row else None
         fit_metric = str(fit_metric_value).strip().lower() if fit_metric_value is not None else ""
         if not fit_metric:
             fit_metric = "mse"
 
-        if not row or not row[0]:
-            log("error", "No output_set found in model_input for this model_id", model_id=model_id)
+        if not definition.output_set:
+            log("error", "No output_set found in model_run for this model_id", model_id=model_id)
             _persist_fit_unavailable(bp, ifs_id=ifs_id, model_id=model_id)
             emit_stage_response(
                 "error",
                 "extract_compare",
-                "No output_set found in model_input for this model.",
+                "No output_set found in model_run for this model.",
                 {"model_id": model_id},
             )
             return 1
 
-        try:
-            output_set = json.loads(row[0])
-        except Exception as exc:
-            log("error", f"Failed to parse output_set JSON: {exc}", model_id=model_id)
-            _persist_fit_unavailable(bp, ifs_id=ifs_id, model_id=model_id)
-            emit_stage_response(
-                "error",
-                "extract_compare",
-                "Failed to parse output_set JSON.",
-                {"model_id": model_id, "error": str(exc)},
-            )
-            return 1
+        output_set = definition.output_set
 
         if not output_set:
             log("warn", "Output_set is empty; nothing to extract", model_id=model_id)
@@ -502,7 +486,7 @@ def main() -> int:
             return 0
 
         fit_var_json = json.dumps(metric_map)
-        _upsert_model_output(
+        _update_model_run_result(
             bp,
             ifs_id=ifs_id,
             model_id=model_id,

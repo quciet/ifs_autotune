@@ -15,9 +15,11 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from model_run_store import find_active_run_id_for_model, load_model_definition, update_model_run
 from model_status import (
     FALLBACK_FIT_POOLED,
     IFS_CONFIG_APPLIED,
@@ -26,6 +28,7 @@ from model_status import (
     IFS_RUN_STARTED,
 )
 from prepare_coeff_param import apply_config_to_ifs_files
+from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
 
 
 # Emit a structured response for Electron consumption.
@@ -87,7 +90,11 @@ def build_command(args: argparse.Namespace) -> List[str]:
     return command
 
 
-def _upsert_model_output(
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _update_model_run_status(
     conn: sqlite3.Connection,
     ifs_id: int,
     model_id: str,
@@ -96,20 +103,20 @@ def _upsert_model_output(
     fit_pooled: float | None = None,
     fit_var: str | None = None,
 ) -> None:
+    del ifs_id
     with conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(model_id) DO UPDATE SET
-                ifs_id=excluded.ifs_id,
-                model_status=excluded.model_status,
-                fit_var=excluded.fit_var,
-                fit_pooled=excluded.fit_pooled
-            """,
-            (ifs_id, model_id, model_status, fit_var, fit_pooled),
-        )
+        run_id = find_active_run_id_for_model(conn, model_id=model_id)
+        if run_id is None:
+            raise RuntimeError(f"No model_run row exists for model_id={model_id}.")
+        update_kwargs: dict[str, object] = {
+            "run_id": run_id,
+            "model_status": model_status,
+            "fit_var": fit_var,
+            "fit_pooled": fit_pooled,
+        }
+        if model_status in {IFS_RUN_FAILED, IFS_RUN_COMPLETED}:
+            update_kwargs["completed_at_utc"] = _utc_now_iso()
+        update_model_run(conn, **update_kwargs)
 
 
 
@@ -157,19 +164,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         input_param: Dict[str, object] = {}
         input_coef: Dict[str, object] = {}
+        output_set: Dict[str, object] = {}
+        definition = None
 
         try:
             with conn_bp:
                 cursor = conn_bp.cursor()
-                cursor.execute(
-                    """
-                    SELECT input_param, input_coef
-                    FROM model_input
-                    WHERE model_id = ?
-                    """,
-                    (model_id,),
-                )
-                row = cursor.fetchone()
+                ensure_current_bigpopa_schema(cursor)
+                definition = load_model_definition(conn_bp, model_id)
                 cursor.execute(
                     """
                     SELECT ifs_static_id
@@ -180,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                     (ifs_id,),
                 )
                 static_row = cursor.fetchone()
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, RuntimeError) as exc:
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -189,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        if row is None:
+        if definition is None:
             emit_stage_response(
                 "error",
                 "run_ifs",
@@ -198,27 +200,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        try:
-            input_param = json.loads(row[0]) if row[0] else {}
-        except json.JSONDecodeError as exc:
-            emit_stage_response(
-                "error",
-                "run_ifs",
-                f"Unable to parse input_param for model_id={model_id}: {exc}",
-                {"model_id": model_id},
-            )
-            return 1
-
-        try:
-            input_coef = json.loads(row[1]) if row[1] else {}
-        except json.JSONDecodeError as exc:
-            emit_stage_response(
-                "error",
-                "run_ifs",
-                f"Unable to parse input_coef for model_id={model_id}: {exc}",
-                {"model_id": model_id},
-            )
-            return 1
+        input_param = definition.input_param
+        input_coef = definition.input_coef
+        output_set = definition.output_set
 
         if base_year is None:
             emit_stage_response(
@@ -250,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
                 ifs_static_id=int(static_row[0]),
             )
         except Exception as exc:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -265,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        _upsert_model_output(
+        _update_model_run_status(
             conn_bp,
             ifs_id,
             model_id,
@@ -275,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             dyadic_refreshed = _refresh_dyadic_work_database(ifs_root)
         except OSError as exc:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -311,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
                 bufsize=1,
             )
         except Exception as exc:  # pragma: no cover - surface unexpected spawn errors
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -326,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        _upsert_model_output(
+        _update_model_run_status(
             conn_bp,
             ifs_id,
             model_id,
@@ -346,7 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         return_code = process.wait()
 
         if return_code != 0:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -365,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             end_year, w_gdp = _read_progress_summary(progress_path)
         except FileNotFoundError:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -380,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         except ValueError as exc:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -396,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         if end_year != args.end_year:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -421,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
                 model_id=model_id,
             )
         except FileNotFoundError:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -436,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         except OSError as exc:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -454,7 +438,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             _reset_working_database(ifs_root)
         except FileNotFoundError as exc:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -469,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         except OSError as exc:
-            _upsert_model_output(
+            _update_model_run_status(
                 conn_bp,
                 ifs_id,
                 model_id,
@@ -484,7 +468,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        _upsert_model_output(
+        _update_model_run_status(
             conn_bp,
             ifs_id,
             model_id,
@@ -518,51 +502,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
 
-            # === Verify output_set exists in BIGPOPA database ===
+            found_pairs = len(output_set)
             bigpopa_db_path = os.path.join(output_dir, "bigpopa.db")
-            found_pairs = 0
-
-            try:
-                with sqlite3.connect(bigpopa_db_path) as conn:
-                    cur = conn.cursor()
-                    cur.execute(
-                        "SELECT output_set FROM model_input WHERE model_id = ?",
-                        (model_id,),
-                    )
-                    row = cur.fetchone()
-                    if row and row[0]:
-                        output_set = json.loads(row[0])
-                        found_pairs = len(output_set)
-                        emit_stage_response(
-                            "info",
-                            "extract_compare",
-                            f"Located {found_pairs} var:hist pairs in model_input.output_set for model_id={model_id}.",
-                            {"bigpopa_db": bigpopa_db_path, "output_set_size": found_pairs},
-                        )
-                    else:
-                        emit_stage_response(
-                            "error",
-                            "extract_compare",
-                            f"No output_set found for model_id={model_id}; cannot continue extraction.",
-                            {"bigpopa_db": bigpopa_db_path},
-                        )
-                        return 1
-            except sqlite3.Error as exc:
+            if found_pairs <= 0:
                 emit_stage_response(
                     "error",
                     "extract_compare",
-                    f"Database error while reading output_set: {exc}",
+                    f"No output_set found for model_id={model_id}; cannot continue extraction.",
                     {"bigpopa_db": bigpopa_db_path},
                 )
                 return 1
-            except Exception as exc:
-                emit_stage_response(
-                    "error",
-                    "extract_compare",
-                    f"Unexpected error while reading output_set: {exc}",
-                    {"bigpopa_db": bigpopa_db_path},
-                )
-                return 1
+            emit_stage_response(
+                "info",
+                "extract_compare",
+                f"Located {found_pairs} var:hist pairs in model_run.output_set for model_id={model_id}.",
+                {"bigpopa_db": bigpopa_db_path, "output_set_size": found_pairs},
+            )
 
             subprocess.run(
                 [

@@ -10,6 +10,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 import ml_driver
+from model_run_store import insert_model_run
+from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
 
 
 def _dimension(
@@ -176,72 +178,58 @@ def test_hybrid_grid_cannot_exceed_target_sample_count() -> None:
         ml_driver._generate_hybrid_candidate_grid(search_space, n_samples=99)
 
 
-def test_normalize_batch_indexes_commits_before_second_connection_appends_proposal_event(tmp_path: Path) -> None:
+def test_normalize_batch_indexes_is_a_noop_under_unified_model_run_schema(tmp_path: Path) -> None:
     db_path = tmp_path / "bigpopa.db"
 
     conn_a = sqlite3.connect(db_path)
     try:
-        cursor = conn_a.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE model_output (
-                ifs_id INTEGER,
-                model_id TEXT PRIMARY KEY,
-                model_status TEXT,
-                fit_var TEXT,
-                fit_pooled REAL
-            )
-            """
-        )
-        ml_driver.ensure_model_output_tracking_columns(cursor)
-        ml_driver.ensure_ml_proposal_history_table(cursor)
-        cursor.execute(
-            """
-            INSERT INTO model_output (
-                ifs_id,
-                model_id,
-                model_status,
-                fit_var,
-                fit_pooled,
-                trial_index,
-                batch_index
-            )
-            VALUES (?, ?, ?, NULL, ?, ?, ?)
-            """,
-            (2, "existing-model", "completed", 0.25, 1, None),
+        ensure_current_bigpopa_schema(conn_a.cursor())
+        insert_model_run(
+            conn_a,
+            ifs_id=2,
+            model_id="existing-model",
+            dataset_id="dataset-a",
+            input_param={"a": 0.25},
+            input_coef={},
+            output_set={"fit": 1},
+            model_status="completed",
+            fit_pooled=0.25,
+            trial_index=1,
+            batch_index=1,
+            started_at_utc="2026-03-13T00:00:00+00:00",
+            completed_at_utc="2026-03-13T00:01:00+00:00",
         )
         conn_a.commit()
 
         repaired_rows = ml_driver._normalize_model_output_batch_indexes(conn_a)
-
-        assert repaired_rows == 1
+        assert repaired_rows == 0
 
         conn_b = sqlite3.connect(db_path, timeout=0)
         try:
-            proposal_event_id = ml_driver._insert_proposal_event(
+            insert_model_run(
                 conn_b,
                 ifs_id=2,
                 model_id="new-model",
                 dataset_id="dataset-a",
+                input_param={"a": 0.5},
+                input_coef={},
+                output_set={"fit": 1},
                 trial_index=2,
                 batch_index=1,
                 started_at_utc="2026-03-13T00:00:00+00:00",
-                proposal_status="running",
-                was_reused=False,
+                model_status="running",
             )
             conn_b.commit()
         finally:
             conn_b.close()
 
-        rows = conn_a.execute("SELECT model_id, batch_index FROM model_output").fetchall()
-        proposal_rows = conn_a.execute(
-            "SELECT proposal_event_id, trial_index, batch_index FROM ml_proposal_history"
+        rows = conn_a.execute(
+            "SELECT model_id, batch_index FROM model_run ORDER BY run_id"
         ).fetchall()
     finally:
         conn_a.close()
 
-    assert rows == [("existing-model", 1)]
-    assert proposal_rows == [(proposal_event_id, 2, 1)]
+    assert rows == [("existing-model", 1), ("new-model", 1)]
 
 
 def test_candidate_generator_refreshes_continuous_values_and_preserves_discrete_levels() -> None:

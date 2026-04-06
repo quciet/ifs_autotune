@@ -194,7 +194,7 @@ def render_input_trend_plots(
     window: int,
     title_prefix: str,
     value_columns: list[str],
-    max_subplots_per_page: int = 12,
+    max_subplots_per_page: int = 4,
 ) -> list[Path]:
     try:
         import matplotlib

@@ -10,7 +10,9 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 import extract_compare
+from model_run_store import insert_model_run
 from model_status import FALLBACK_FIT_POOLED, IFS_RUN_COMPLETED
+from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
 
 
 def _create_fixture(root: Path, *, fit_metric: str) -> tuple[Path, Path, Path, Path]:
@@ -26,14 +28,7 @@ def _create_fixture(root: Path, *, fit_metric: str) -> tuple[Path, Path, Path, P
     bigpopa_db = output_dir / "bigpopa.db"
 
     with sqlite3.connect(bigpopa_db) as conn:
-        conn.execute(
-            """
-            CREATE TABLE model_input (
-                model_id TEXT PRIMARY KEY,
-                output_set TEXT
-            )
-            """
-        )
+        ensure_current_bigpopa_schema(conn.cursor())
         conn.execute(
             """
             CREATE TABLE ifs_version (
@@ -42,31 +37,24 @@ def _create_fixture(root: Path, *, fit_metric: str) -> tuple[Path, Path, Path, P
             )
             """
         )
-        conn.execute(
-            """
-            CREATE TABLE model_output (
-                ifs_id INTEGER,
-                model_id TEXT PRIMARY KEY,
-                model_status TEXT,
-                fit_var TEXT,
-                fit_pooled REAL
-            )
-            """
-        )
-        conn.execute(
-            "INSERT INTO model_input (model_id, output_set) VALUES (?, ?)",
-            ("model-1", json.dumps({"WGDP": "hist_wgdp"})),
+        insert_model_run(
+            conn,
+            ifs_id=7,
+            model_id="model-1",
+            dataset_id="dataset-1",
+            input_param={},
+            input_coef={},
+            output_set={"WGDP": "hist_wgdp"},
+            model_status=IFS_RUN_COMPLETED,
+            fit_var=None,
+            fit_pooled=FALLBACK_FIT_POOLED,
+            trial_index=1,
+            batch_index=1,
+            started_at_utc="2026-03-12T10:00:00Z",
         )
         conn.execute(
             "INSERT INTO ifs_version (ifs_id, fit_metric) VALUES (?, ?)",
             (7, fit_metric),
-        )
-        conn.execute(
-            """
-            INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-            VALUES (?, ?, ?, NULL, ?)
-            """,
-            (7, "model-1", IFS_RUN_COMPLETED, FALLBACK_FIT_POOLED),
         )
 
     with sqlite3.connect(model_db) as conn:
@@ -141,7 +129,13 @@ def test_main_handles_missing_pooled_mse_fit_as_completed_with_fallback(
 
     with sqlite3.connect(bigpopa_db) as conn:
         row = conn.execute(
-            "SELECT model_status, fit_var, fit_pooled FROM model_output WHERE model_id = ?",
+            """
+            SELECT model_status, fit_var, fit_pooled
+            FROM model_run
+            WHERE model_id = ?
+            ORDER BY run_id DESC
+            LIMIT 1
+            """,
             ("model-1",),
         ).fetchone()
 
@@ -208,7 +202,13 @@ def test_main_handles_missing_pooled_r2_fit_as_completed_with_fallback(
 
     with sqlite3.connect(bigpopa_db) as conn:
         row = conn.execute(
-            "SELECT model_status, fit_var, fit_pooled FROM model_output WHERE model_id = ?",
+            """
+            SELECT model_status, fit_var, fit_pooled
+            FROM model_run
+            WHERE model_id = ?
+            ORDER BY run_id DESC
+            LIMIT 1
+            """,
             ("model-1",),
         ).fetchone()
 

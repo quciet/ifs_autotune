@@ -24,6 +24,15 @@ from dataset_utils import compute_dataset_id, extract_structure_keys
 
 from log_ifs_version import log_version_metadata
 from ml_method import MLMethodConfig, load_required_ml_method
+from model_run_store import (
+    ModelDefinition,
+    fetch_latest_result_for_model,
+    upsert_seed_model_run,
+)
+from tools.db.bigpopa_schema import (
+    ensure_current_bigpopa_schema,
+    ensure_ml_resume_state_table as ensure_unified_ml_resume_state_table,
+)
 
 import pandas as pd
 
@@ -58,105 +67,47 @@ def hash_model_id(config_obj: Dict[str, Any]) -> str:
 
 # Ensure BIGPOPA schema exists without introducing timestamp fields.
 def ensure_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS model_input (
-            ifs_id INTEGER,
-            model_id TEXT PRIMARY KEY,
-            input_param TEXT,
-            input_coef TEXT,
-            output_set TEXT,
-            dataset_id TEXT,
-            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id)
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS model_output (
-            ifs_id INTEGER,
-            model_id TEXT PRIMARY KEY,
-            model_status TEXT,
-            fit_var TEXT,
-            fit_pooled REAL,
-            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id),
-            FOREIGN KEY (model_id) REFERENCES model_input(model_id)
-        )
-        """
-    )
-    ensure_model_output_tracking_columns(cursor)
-    ensure_ml_proposal_history_table(cursor)
-    ensure_ml_resume_state_table(cursor)
+    ensure_current_bigpopa_schema(cursor)
 
 
 def ensure_model_output_tracking_columns(cursor: sqlite3.Cursor) -> None:
-    cursor.execute("PRAGMA table_info(model_output)")
-    existing_columns = {row[1] for row in cursor.fetchall()}
-    required_columns = {
-        "trial_index": "ALTER TABLE model_output ADD COLUMN trial_index INTEGER",
-        "batch_index": "ALTER TABLE model_output ADD COLUMN batch_index INTEGER",
-        "started_at_utc": "ALTER TABLE model_output ADD COLUMN started_at_utc TEXT",
-        "completed_at_utc": "ALTER TABLE model_output ADD COLUMN completed_at_utc TEXT",
-    }
-
-    for column_name, statement in required_columns.items():
-        if column_name not in existing_columns:
-            cursor.execute(statement)
+    del cursor
 
 
 def ensure_ml_proposal_history_table(cursor: sqlite3.Cursor) -> None:
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS ml_proposal_history (
-            proposal_event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ifs_id INTEGER,
-            model_id TEXT NOT NULL,
-            dataset_id TEXT,
-            trial_index INTEGER NOT NULL,
-            batch_index INTEGER NOT NULL,
-            proposal_status TEXT,
-            fit_pooled_visible REAL,
-            started_at_utc TEXT,
-            completed_at_utc TEXT,
-            was_reused INTEGER NOT NULL DEFAULT 0,
-            source_status TEXT,
-            resolution_note TEXT,
-            FOREIGN KEY (ifs_id) REFERENCES ifs_version(ifs_id),
-            FOREIGN KEY (model_id) REFERENCES model_input(model_id)
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_ml_proposal_history_dataset_event
-        ON ml_proposal_history (dataset_id, proposal_event_id)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_ml_proposal_history_model_event
-        ON ml_proposal_history (model_id, proposal_event_id)
-        """
-    )
+    del cursor
 
 
 def ensure_ml_resume_state_table(cursor: sqlite3.Cursor) -> None:
-    cursor.execute(
+    ensure_unified_ml_resume_state_table(cursor)
+
+
+def _fetch_model_result_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    model_id: str,
+) -> tuple[str | None, str | None, float | None, str | None]:
+    row = conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS ml_resume_state (
-            cohort_key TEXT PRIMARY KEY,
-            dataset_id TEXT,
-            base_year INTEGER,
-            end_year INTEGER NOT NULL,
-            settings_signature TEXT NOT NULL,
-            settings_payload TEXT NOT NULL,
-            proposal_seed INTEGER NOT NULL,
-            effective_iteration_count INTEGER NOT NULL DEFAULT 0,
-            no_improve_counter INTEGER NOT NULL DEFAULT 0,
-            best_y_prev REAL,
-            updated_at_utc TEXT NOT NULL
-        )
-        """
+        SELECT model_status, fit_var, fit_pooled, completed_at_utc
+        FROM model_run
+        WHERE model_id = ?
+        ORDER BY
+            CASE WHEN completed_at_utc IS NULL THEN 1 ELSE 0 END,
+            completed_at_utc DESC,
+            run_id DESC
+        LIMIT 1
+        """,
+        (model_id,),
+    ).fetchone()
+    if row is None:
+        status, fit_pooled, fit_var = fetch_latest_result_for_model(conn, model_id=model_id)
+        return status, fit_var, fit_pooled, None
+    return (
+        row[0] if isinstance(row[0], str) or row[0] is None else str(row[0]),
+        row[1] if isinstance(row[1], str) or row[1] is None else str(row[1]),
+        float(row[2]) if row[2] is not None else None,
+        row[3] if isinstance(row[3], str) or row[3] is None else str(row[3]),
     )
 
 
@@ -256,9 +207,9 @@ def diagnose_structure_drift(
     row = cursor.execute(
         """
         SELECT model_id, dataset_id, input_param, input_coef, output_set
-        FROM model_input
+        FROM model_run
         WHERE ifs_id = ?
-        ORDER BY rowid DESC
+        ORDER BY run_id DESC
         LIMIT 1
         """,
         (ifs_id,),
@@ -1224,23 +1175,34 @@ def main(argv: Optional[list[str]] = None) -> int:
                 warning=dataset_warning,
                 **dataset_diagnostics,
             )
-        # Insert configuration row if it does not already exist.
-        cur_bp.execute(
+        existing_seed = cur_bp.execute(
             """
-            INSERT OR IGNORE INTO model_input (
-                ifs_id, model_id, input_param, input_coef, output_set, dataset_id
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            SELECT run_id
+            FROM model_run
+            WHERE model_id = ?
+              AND trial_index IS NULL
+              AND batch_index IS NULL
+              AND resolution_note = 'model_setup_seed'
+            LIMIT 1
             """,
-            (
-                ifs_id,
-                model_id,
-                json.dumps(input_param),
-                json.dumps(input_coef),
-                json.dumps(output_set),
-                dataset_id,
+            (model_id,),
+        ).fetchone()
+        upsert_seed_model_run(
+            conn_bp,
+            definition=ModelDefinition(
+                ifs_id=int(ifs_id),
+                model_id=model_id,
+                dataset_id=dataset_id,
+                input_param=input_param,
+                input_coef=input_coef,
+                output_set=output_set,
             ),
+            model_status=None,
+            fit_var=None,
+            fit_pooled=None,
+            completed_at_utc=None,
         )
-        inserted = cur_bp.rowcount
+        inserted = 0 if existing_seed is not None else 1
         conn_bp.commit()
     finally:
         conn_bp.close()
@@ -1271,7 +1233,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         extract_return = extract_proc.returncode
     except Exception as exc:  # noqa: BLE001
         log("warn", "Failed to execute extract_compare", error=str(exc))
-
     log(
         "success",
         "Model Setup completed successfully",

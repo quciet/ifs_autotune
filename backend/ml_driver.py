@@ -31,6 +31,14 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import dataset_utils
 from ml_method import normalize_ml_method
+from model_run_store import (
+    count_completed_trial_runs,
+    fetch_latest_result_for_model,
+    find_active_run_id_for_model,
+    insert_model_run,
+    load_model_definition,
+    update_model_run,
+)
 from model_status import (
     FALLBACK_FIT_POOLED,
     FIT_EVALUATED,
@@ -44,8 +52,6 @@ from model_status import (
 from model_setup import (
     canonical_config,
     ensure_bigpopa_schema,
-    ensure_ml_proposal_history_table,
-    ensure_model_output_tracking_columns,
     hash_model_id,
 )
 from optimization.active_learning import active_learning_loop
@@ -54,6 +60,7 @@ from optimization.ensemble_training import (
     validate_surrogate_memory,
 )
 from optimization.surrogate_models import BoundsScaler, LogClippedTargetTransform
+from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
 
 
 FAIL_Y: float = FALLBACK_FIT_POOLED
@@ -274,9 +281,9 @@ def unflatten_vector(
 
 
 def _model_input_has_dataset_id(conn: sqlite3.Connection) -> bool:
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(model_input)")
-    return any(row[1] == "dataset_id" for row in cursor.fetchall())
+    # Unified model_run rows always carry dataset_id.
+    del conn
+    return True
 
 
 def _utc_now_iso() -> str:
@@ -469,52 +476,27 @@ def _resolve_resume_behavior(
     else:
         proposal_seed = _resolve_run_seed(None)
 
+    historical_iteration_count = count_completed_trial_runs(conn, dataset_id)
+    if (
+        historical_iteration_count <= 0
+        and existing_state is not None
+        and existing_state.effective_iteration_count > 0
+    ):
+        historical_iteration_count = int(existing_state.effective_iteration_count)
+
     if existing_state is None:
-        return None, proposal_seed, 0, 0, "fresh"
+        return None, proposal_seed, historical_iteration_count, 0, "fresh_history"
 
     if existing_state.settings_signature == settings_signature:
         return (
             existing_state,
             proposal_seed,
-            existing_state.effective_iteration_count,
-            existing_state.no_improve_counter,
-            "resume_search_state",
+            historical_iteration_count,
+            0,
+            "resume_training_history",
         )
 
-    return existing_state, proposal_seed, 0, 0, "reset_search_state"
-
-
-def _upsert_model_output_result(
-    conn: sqlite3.Connection,
-    *,
-    ifs_id: int,
-    model_id: str,
-    model_status: str | None = None,
-    fit_pooled: float | None = None,
-) -> None:
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO model_output (
-            ifs_id,
-            model_id,
-            model_status,
-            fit_var,
-            fit_pooled
-        )
-        VALUES (?, ?, ?, NULL, ?)
-        ON CONFLICT(model_id) DO UPDATE SET
-            ifs_id=excluded.ifs_id,
-            model_status=COALESCE(excluded.model_status, model_output.model_status),
-            fit_pooled=COALESCE(excluded.fit_pooled, model_output.fit_pooled)
-        """,
-        (
-            ifs_id,
-            model_id,
-            model_status,
-            fit_pooled,
-        ),
-    )
+    return existing_state, proposal_seed, historical_iteration_count, 0, "reset_search_state"
 
 
 def _upsert_model_output_tracking(
@@ -529,98 +511,15 @@ def _upsert_model_output_tracking(
     model_status: str | None = None,
     fit_pooled: float | None = None,
 ) -> None:
-    del trial_index, batch_index, started_at_utc, completed_at_utc
-    _upsert_model_output_result(
+    del ifs_id, trial_index, batch_index, started_at_utc, completed_at_utc
+    run_id = find_active_run_id_for_model(conn, model_id=model_id)
+    if run_id is None:
+        raise RuntimeError(f"No model_run row was found for model_id={model_id}.")
+    update_model_run(
         conn,
-        ifs_id=ifs_id,
-        model_id=model_id,
+        run_id=run_id,
         model_status=model_status,
         fit_pooled=fit_pooled,
-    )
-
-
-def _insert_proposal_event(
-    conn: sqlite3.Connection,
-    *,
-    ifs_id: int,
-    model_id: str,
-    dataset_id: str | None,
-    trial_index: int,
-    batch_index: int,
-    started_at_utc: str | None,
-    proposal_status: str | None,
-    was_reused: bool,
-    source_status: str | None = None,
-    resolution_note: str | None = None,
-) -> int:
-    cursor = conn.cursor()
-    ensure_ml_proposal_history_table(cursor)
-    cursor.execute(
-        """
-        INSERT INTO ml_proposal_history (
-            ifs_id,
-            model_id,
-            dataset_id,
-            trial_index,
-            batch_index,
-            proposal_status,
-            started_at_utc,
-            was_reused,
-            source_status,
-            resolution_note
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            ifs_id,
-            model_id,
-            dataset_id,
-            trial_index,
-            batch_index,
-            proposal_status,
-            started_at_utc,
-            1 if was_reused else 0,
-            source_status,
-            resolution_note,
-        ),
-    )
-    return int(cursor.lastrowid)
-
-
-def _complete_proposal_event(
-    conn: sqlite3.Connection,
-    *,
-    proposal_event_id: int,
-    proposal_status: str | None,
-    completed_at_utc: str | None,
-    fit_pooled_visible: float | None,
-    was_reused: bool | None = None,
-    source_status: str | None = None,
-    resolution_note: str | None = None,
-) -> None:
-    cursor = conn.cursor()
-    ensure_ml_proposal_history_table(cursor)
-    assignments = [
-        "proposal_status = ?",
-        "completed_at_utc = ?",
-        "fit_pooled_visible = ?",
-    ]
-    values: list[object] = [proposal_status, completed_at_utc, fit_pooled_visible]
-
-    if was_reused is not None:
-        assignments.append("was_reused = ?")
-        values.append(1 if was_reused else 0)
-    if source_status is not None:
-        assignments.append("source_status = ?")
-        values.append(source_status)
-    if resolution_note is not None:
-        assignments.append("resolution_note = ?")
-        values.append(resolution_note)
-
-    values.append(proposal_event_id)
-    cursor.execute(
-        f"UPDATE ml_proposal_history SET {', '.join(assignments)} WHERE proposal_event_id = ?",
-        values,
     )
 
 
@@ -629,68 +528,34 @@ def _fetch_model_output_snapshot(
     *,
     model_id: str,
 ) -> tuple[str | None, float | None]:
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ? LIMIT 1",
-        (model_id,),
-    )
-    row = cursor.fetchone()
-    if row is None:
-        return None, None
-    status = row[0] if isinstance(row[0], str) or row[0] is None else str(row[0])
-    fit_pooled = float(row[1]) if row[1] is not None else None
+    status, fit_pooled, _fit_var = fetch_latest_result_for_model(conn, model_id=model_id)
     return status, fit_pooled
 
 
 def _repair_model_output_batch_indexes(conn: sqlite3.Connection) -> int:
-    cursor = conn.cursor()
-    ensure_model_output_tracking_columns(cursor)
-    cursor.execute(
-        """
-        UPDATE model_output
-        SET batch_index = 1
-        WHERE trial_index IS NOT NULL
-          AND (batch_index IS NULL OR batch_index != 1)
-        """
-    )
-    return int(cursor.rowcount or 0)
+    del conn
+    return 0
 
 
 def _normalize_model_output_batch_indexes(conn: sqlite3.Connection) -> int:
     """Commit batch-index normalization before other connections begin writing."""
 
-    with conn:
-        return _repair_model_output_batch_indexes(conn)
+    del conn
+    return 0
 
 
 def _load_model_by_id(
     conn: sqlite3.Connection, has_dataset_id: bool, model_id: str
 ) -> Tuple[int, str, dict, dict, dict, str | None]:
-    cursor = conn.cursor()
-    select_clause = "ifs_id, model_id, input_param, input_coef, output_set"
-    if has_dataset_id:
-        select_clause += ", dataset_id"
-    cursor.execute(
-        f"SELECT {select_clause} FROM model_input WHERE model_id = ? LIMIT 1", (model_id,)
-    )
-    row = cursor.fetchone()
-    if not row:
-        raise RuntimeError(
-            "No model_input rows found for the provided model_id; cannot start ML driver."
-        )
-
-    if has_dataset_id:
-        ifs_id, model_id, ip_raw, ic_raw, os_raw, dataset_id = row
-    else:
-        ifs_id, model_id, ip_raw, ic_raw, os_raw = row
-        dataset_id = None
+    del has_dataset_id
+    definition = load_model_definition(conn, model_id)
     return (
-        int(ifs_id),
-        str(model_id),
-        json.loads(ip_raw),
-        json.loads(ic_raw),
-        json.loads(os_raw),
-        dataset_id,   # keep dataset_id as string
+        int(definition.ifs_id),
+        str(definition.model_id),
+        definition.input_param,
+        definition.input_coef,
+        definition.output_set,
+        definition.dataset_id,
     )
 
 
@@ -1705,40 +1570,27 @@ def _run_model(
     trial_index: int,
     batch_index: int,
 ) -> Tuple[float, str]:
+    del dataset_id_supported
     canonical = canonical_config(ifs_id, param_values, coef_values, output_set)
     model_id = hash_model_id(canonical)
     started_at_utc = _utc_now_iso()
-    proposal_event_id: int | None = None
+    model_run_id: int | None = None
 
     with sqlite3.connect(bigpopa_db) as conn:
         cursor = conn.cursor()
-        ensure_bigpopa_schema(cursor)
-        if not dataset_id_supported:
-            raise RuntimeError("model_input.dataset_id column is required for ML runs")
-        cursor.execute(
-            """
-            INSERT INTO model_input (ifs_id, model_id, dataset_id, input_param, input_coef, output_set)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(model_id) DO NOTHING
-            """,
-            (
-                ifs_id,
-                model_id,
-                dataset_id,
-                json.dumps(canonical["input_param"]),
-                json.dumps(canonical["input_coef"]),
-                json.dumps(canonical["output_set"]),
-            ),
-        )
-        proposal_event_id = _insert_proposal_event(
+        ensure_current_bigpopa_schema(cursor)
+        model_run_id = insert_model_run(
             conn,
             ifs_id=ifs_id,
             model_id=model_id,
             dataset_id=dataset_id,
+            input_param=canonical["input_param"],
+            input_coef=canonical["input_coef"],
+            output_set=canonical["output_set"],
+            model_status=IFS_RUN_STARTED,
             trial_index=trial_index,
             batch_index=batch_index,
             started_at_utc=started_at_utc,
-            proposal_status=IFS_RUN_STARTED,
             was_reused=False,
             resolution_note="pending",
         )
@@ -1748,12 +1600,12 @@ def _run_model(
         # BEFORE RUNNING IFS, CHECK FOR CACHED RESULTS
         # ------------------------------------------------
         # This block implements caching: if this exact model_id was already
-        # evaluated in the past (i.e., model_output contains fit_pooled),
+        # evaluated in prior model_run history,
         # we should *not* run IFs again. Instead, we immediately return the
         # stored fit_pooled value.
         #
         # Why?
-        # - model_input entries are hashed by canonical_config; so identical
+        # - canonical configurations are hashed into model_id; so identical
         #   parameter/coef sets always produce identical model_ids.
         # - If ml_driver proposes a point we've already evaluated, this ensures
         #   we reuse previous results and avoid redundant heavy IFs simulations.
@@ -1765,12 +1617,13 @@ def _run_model(
             # Found previously evaluated model - reuse stored fit_pooled
             fit_val = existing_fit
             reused_status = cached_result_status(existing_status, fit_val)
-            _complete_proposal_event(
+            completed_at_utc = _utc_now_iso()
+            update_model_run(
                 conn,
-                proposal_event_id=proposal_event_id,
-                proposal_status=reused_status,
-                completed_at_utc=_utc_now_iso(),
-                fit_pooled_visible=visible_fit_pooled(reused_status, fit_val),
+                run_id=int(model_run_id),
+                model_status=reused_status,
+                completed_at_utc=completed_at_utc,
+                fit_pooled=fit_val,
                 was_reused=True,
                 source_status=existing_status,
                 resolution_note="cached_result_reused",
@@ -1821,23 +1674,18 @@ def _run_model(
     process = subprocess.run(command, capture_output=False, text=True, env=env)
     if process.returncode != 0:
         with sqlite3.connect(bigpopa_db) as conn:
+            ensure_current_bigpopa_schema(conn.cursor())
             status, fit_val = _fetch_model_output_snapshot(conn, model_id=model_id)
             if fit_val is None:
                 fit_val = FAIL_Y
-                _upsert_model_output_result(
-                    conn,
-                    ifs_id=ifs_id,
-                    model_id=model_id,
-                    model_status=IFS_RUN_FAILED,
-                    fit_pooled=fit_val,
-                )
                 status = IFS_RUN_FAILED
-            _complete_proposal_event(
+            completed_at_utc = _utc_now_iso()
+            update_model_run(
                 conn,
-                proposal_event_id=proposal_event_id,
-                proposal_status=status or IFS_RUN_FAILED,
-                completed_at_utc=_utc_now_iso(),
-                fit_pooled_visible=visible_fit_pooled(status or IFS_RUN_FAILED, fit_val),
+                run_id=int(model_run_id),
+                model_status=status or IFS_RUN_FAILED,
+                completed_at_utc=completed_at_utc,
+                fit_pooled=fit_val,
                 source_status=status,
                 resolution_note="ifs_runtime_non_zero",
             )
@@ -1849,15 +1697,17 @@ def _run_model(
         return fit_val, model_id
 
     with sqlite3.connect(bigpopa_db) as conn:
+        ensure_current_bigpopa_schema(conn.cursor())
         status, fit_val = _fetch_model_output_snapshot(conn, model_id=model_id)
         if fit_val is None:
             raise RuntimeError("fit_pooled not found after IFs run")
-        _complete_proposal_event(
+        completed_at_utc = _utc_now_iso()
+        update_model_run(
             conn,
-            proposal_event_id=proposal_event_id,
-            proposal_status=status or FIT_EVALUATED,
-            completed_at_utc=_utc_now_iso(),
-            fit_pooled_visible=visible_fit_pooled(status or FIT_EVALUATED, fit_val),
+            run_id=int(model_run_id),
+            model_status=status or FIT_EVALUATED,
+            completed_at_utc=completed_at_utc,
+            fit_pooled=fit_val,
             source_status=status,
             resolution_note="fresh_evaluation_completed",
         )
@@ -1892,7 +1742,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--initial-model-id",
         required=True,
-        help="Model ID of the initial model_input row to seed the ML driver",
+        help="Model ID of the initial seed configuration to start the ML driver",
     )
     parser.add_argument(
         "--starting-point-table",
@@ -1943,8 +1793,8 @@ def main(argv: list[str] | None = None) -> int:
             output_set,
             dataset_id,
         ) = _load_model_by_id(conn, dataset_id_supported, args.initial_model_id)
-        if dataset_id_supported and dataset_id is None:
-            raise RuntimeError("dataset_id is missing from the selected model_input entry")
+        if dataset_id is None:
+            raise RuntimeError("dataset_id is missing from the selected stored model definition")
         ifs_static_id, stored_base_year = _get_ifs_static_id(conn, ifs_id)
         if args.base_year is None:
             args.base_year = stored_base_year

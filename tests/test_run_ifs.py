@@ -12,42 +12,28 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 import run_ifs
+from model_run_store import insert_model_run
 from model_status import FALLBACK_FIT_POOLED, IFS_RUN_COMPLETED
+from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
 
 
 def _create_bigpopa_db(db_path: Path) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE model_input (
-                model_id TEXT PRIMARY KEY,
-                input_param TEXT,
-                input_coef TEXT,
-                output_set TEXT
-            )
-            """
-        )
+        ensure_current_bigpopa_schema(conn.cursor())
         conn.execute(
             "CREATE TABLE ifs_version (ifs_id INTEGER PRIMARY KEY, ifs_static_id INTEGER)"
         )
-        conn.execute(
-            """
-            CREATE TABLE model_output (
-                ifs_id INTEGER,
-                model_id TEXT PRIMARY KEY,
-                model_status TEXT,
-                fit_var TEXT,
-                fit_pooled REAL
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO model_input (model_id, input_param, input_coef, output_set)
-            VALUES (?, ?, ?, ?)
-            """,
-            ("model-1", json.dumps({}), json.dumps({}), json.dumps({"WGDP": "hist_wgdp"})),
+        insert_model_run(
+            conn,
+            ifs_id=7,
+            model_id="model-1",
+            dataset_id="dataset-1",
+            input_param={},
+            input_coef={},
+            output_set={"WGDP": "hist_wgdp"},
+            model_status=None,
+            started_at_utc="2026-03-12T09:00:00Z",
         )
         conn.execute(
             "INSERT INTO ifs_version (ifs_id, ifs_static_id) VALUES (?, ?)",
@@ -243,7 +229,13 @@ def test_main_keeps_ifs_completed_status_when_extract_compare_fails(
 
     with sqlite3.connect(output_dir / "bigpopa.db") as conn:
         row = conn.execute(
-            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
+            """
+            SELECT model_status, fit_pooled
+            FROM model_run
+            WHERE model_id = ?
+            ORDER BY run_id DESC
+            LIMIT 1
+            """,
             ("model-1",),
         ).fetchone()
 
@@ -312,7 +304,13 @@ def test_main_treats_handled_missing_pooled_fit_as_successful_completion(
 
     with sqlite3.connect(output_dir / "bigpopa.db") as conn:
         row = conn.execute(
-            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
+            """
+            SELECT model_status, fit_pooled
+            FROM model_run
+            WHERE model_id = ?
+            ORDER BY run_id DESC
+            LIMIT 1
+            """,
             ("model-1",),
         ).fetchone()
 

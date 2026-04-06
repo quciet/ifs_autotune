@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const { spawn } = require("child_process");
 const path = require('node:path');
 const fs = require('fs');
@@ -38,6 +38,39 @@ const getDefaultOutputDirectory = () => {
   const outputDir = DEFAULT_OUTPUT_DIR();
   ensureDirectoryExists(outputDir);
   return outputDir;
+};
+
+const resolveExistingPath = (value) => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return path.resolve(trimmed);
+};
+
+const isPathWithinRoot = (targetPath, rootPath) => {
+  const relative = path.relative(rootPath, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+};
+
+const imageMimeTypeForPath = (targetPath) => {
+  const extension = path.extname(targetPath).toLowerCase();
+  if (extension === '.png') {
+    return 'image/png';
+  }
+  if (extension === '.jpg' || extension === '.jpeg') {
+    return 'image/jpeg';
+  }
+  if (extension === '.gif') {
+    return 'image/gif';
+  }
+  if (extension === '.webp') {
+    return 'image/webp';
+  }
+  return null;
 };
 
 let mainWindow = null;
@@ -118,6 +151,12 @@ const sendToRenderer = (channel, payload) => {
 };
 
 let currentMLProcess = null;
+const desktopCapabilities = Object.freeze({
+  trendAnalysis: true,
+  openPath: true,
+  trendDatasetOptions: true,
+  imagePreview: true,
+});
 let currentMLStopFile = null;
 let currentMLFinalPayload = null;
 
@@ -359,6 +398,10 @@ function runPythonScript(scriptName, args = [], options = {}) {
     const scriptPath = path.join(getBackendDir(), scriptName);
     const pythonArgs = ['-u', scriptPath, ...args];
     const quiet = options && typeof options === 'object' ? options.quiet === true : false;
+    const progressChannel =
+      options && typeof options === 'object' && typeof options.progressChannel === 'string'
+        ? options.progressChannel.trim()
+        : '';
 
     const processOptions = {
       cwd: getRepoRoot(),
@@ -378,8 +421,8 @@ function runPythonScript(scriptName, args = [], options = {}) {
     let stderr = '';
     let stdoutBuffer = '';
 
-    const sendModelSetupProgress = (message) => {
-      if (!window || window.isDestroyed()) {
+    const sendProgressUpdate = (message) => {
+      if (!progressChannel || !window || window.isDestroyed()) {
         return;
       }
 
@@ -388,7 +431,7 @@ function runPythonScript(scriptName, args = [], options = {}) {
         return;
       }
 
-      window.webContents.send('model-setup-progress', normalized);
+      window.webContents.send(progressChannel, normalized);
     };
 
     const emitRunIFsProgress = (line) => {
@@ -437,8 +480,8 @@ function runPythonScript(scriptName, args = [], options = {}) {
         // Not JSON, keep as raw line
       }
 
-      if (!isMlProgress) {
-        sendModelSetupProgress(progressMessage);
+      if (progressChannel) {
+        sendProgressUpdate(progressMessage);
       }
       emitRunIFsProgress(trimmed);
     };
@@ -1288,15 +1331,17 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
       ? mlJobState.runConfig.initialModelId.trim()
       : null
     : null;
-  const rawSinceProgressRowId =
-    typeof payload?.sinceProgressRowId === "number"
+  const rawSinceRunId =
+    typeof payload?.sinceRunId === "number"
+      ? payload.sinceRunId
+      : typeof payload?.sinceProgressRowId === "number"
       ? payload.sinceProgressRowId
       : payload?.sinceOutputRowId;
-  const sinceProgressRowId =
-    typeof rawSinceProgressRowId === "number" &&
-    Number.isFinite(rawSinceProgressRowId) &&
-    rawSinceProgressRowId > 0
-      ? Math.trunc(rawSinceProgressRowId)
+  const sinceRunId =
+    typeof rawSinceRunId === "number" &&
+    Number.isFinite(rawSinceRunId) &&
+    rawSinceRunId > 0
+      ? Math.trunc(rawSinceRunId)
       : null;
 
   if (!outputDir) {
@@ -1328,11 +1373,175 @@ ipcMain.handle('ml:getProgressHistory', async (_event, payload = {}) => {
     args.push("--model-id", modelId);
   }
 
-  if (sinceProgressRowId != null) {
-    args.push("--since-progress-rowid", String(sinceProgressRowId));
+  if (sinceRunId != null) {
+    args.push("--since-run-id", String(sinceRunId));
   }
 
   return runPythonScript("ml_progress.py", args, { quiet: true });
+});
+ipcMain.handle('desktop:getCapabilities', async () => ({
+  ...desktopCapabilities,
+}));
+ipcMain.handle('analysis:runTrendAnalysis', async (_event, payload = {}) => {
+  const outputDir =
+    typeof payload?.outputDir === 'string' && payload.outputDir.trim().length > 0
+      ? payload.outputDir.trim()
+      : null;
+  const datasetId =
+    typeof payload?.datasetId === 'string' && payload.datasetId.trim().length > 0
+      ? payload.datasetId.trim()
+      : null;
+  const rawLimit = Number(payload?.limit);
+  const rawWindow = Number(payload?.window);
+  const limit = Number.isFinite(rawLimit) ? Math.trunc(rawLimit) : 400;
+  const window = Number.isFinite(rawWindow) ? Math.trunc(rawWindow) : 25;
+
+  if (!outputDir) {
+    return {
+      status: 'error',
+      stage: 'trend_analysis',
+      message: 'Choose an output folder before running trend analysis.',
+      data: {},
+    };
+  }
+
+  if (limit <= 0) {
+    return {
+      status: 'error',
+      stage: 'trend_analysis',
+      message: 'Trend analysis limit must be greater than 0.',
+      data: { limit },
+    };
+  }
+
+  if (window <= 0) {
+    return {
+      status: 'error',
+      stage: 'trend_analysis',
+      message: 'Trend analysis rolling window must be greater than 0.',
+      data: { window },
+    };
+  }
+
+  const bigpopaDb = path.join(outputDir, 'bigpopa.db');
+  if (!fs.existsSync(bigpopaDb)) {
+    return {
+      status: 'error',
+      stage: 'trend_analysis',
+      message: `Could not find "${bigpopaDb}".`,
+      data: { bigpopa_db: bigpopaDb },
+    };
+  }
+
+  const args = [
+    '--bigpopa-db',
+    bigpopaDb,
+    '--limit',
+    String(limit),
+    '--window',
+    String(window),
+    '--output-root',
+    path.join(outputDir, 'analysis'),
+  ];
+
+  if (datasetId) {
+    args.push('--dataset-id', datasetId);
+  }
+
+  return runPythonScript('trend_analysis.py', args, { quiet: true });
+});
+ipcMain.handle('analysis:getTrendDatasetOptions', async (_event, payload = {}) => {
+  const outputDir = resolveExistingPath(payload?.outputDir);
+
+  if (!outputDir) {
+    return {
+      status: 'error',
+      stage: 'trend_dataset_options',
+      message: 'Choose an output folder before loading dataset options.',
+      data: { dataset_ids: [], latest_dataset_id: null },
+    };
+  }
+
+  const bigpopaDb = path.join(outputDir, 'bigpopa.db');
+  if (!fs.existsSync(bigpopaDb)) {
+    return {
+      status: 'error',
+      stage: 'trend_dataset_options',
+      message: `Could not find "${bigpopaDb}".`,
+      data: { bigpopa_db: bigpopaDb, dataset_ids: [], latest_dataset_id: null },
+    };
+  }
+
+  return runPythonScript(
+    'trend_dataset_options.py',
+    ['--bigpopa-db', bigpopaDb],
+    { quiet: true },
+  );
+});
+ipcMain.handle('analysis:getImagePreview', async (_event, payload = {}) => {
+  const targetPath = resolveExistingPath(payload?.targetPath);
+  const allowedRoot = resolveExistingPath(payload?.allowedRoot);
+
+  if (!targetPath || !allowedRoot) {
+    return {
+      ok: false,
+      error: 'A preview path and allowed root are required.',
+    };
+  }
+
+  if (!fs.existsSync(allowedRoot) || !fs.statSync(allowedRoot).isDirectory()) {
+    return {
+      ok: false,
+      error: 'The requested preview root is unavailable.',
+    };
+  }
+
+  if (!isPathWithinRoot(targetPath, allowedRoot)) {
+    return {
+      ok: false,
+      error: 'Preview requests are limited to generated analysis artifacts.',
+    };
+  }
+
+  if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
+    return {
+      ok: false,
+      error: 'The requested preview file was not found.',
+    };
+  }
+
+  const mimeType = imageMimeTypeForPath(targetPath);
+  if (!mimeType) {
+    return {
+      ok: false,
+      error: 'Only image previews are supported for this artifact.',
+    };
+  }
+
+  const encoded = fs.readFileSync(targetPath).toString('base64');
+  return {
+    ok: true,
+    dataUrl: `data:${mimeType};base64,${encoded}`,
+    mimeType,
+    targetPath,
+  };
+});
+ipcMain.handle('shell:openPath', async (_event, payload = {}) => {
+  const targetPath =
+    typeof payload?.targetPath === 'string' && payload.targetPath.trim().length > 0
+      ? payload.targetPath.trim()
+      : null;
+
+  if (!targetPath) {
+    return { ok: false, error: 'No path provided.' };
+  }
+
+  const result = await shell.openPath(targetPath);
+  if (typeof result === 'string' && result.trim().length > 0) {
+    return { ok: false, error: result };
+  }
+
+  return { ok: true, error: null };
 });
 ipcMain.handle('run_ifs', async (_event, payload) => {
   if (!payload || typeof payload !== 'object') {
@@ -1431,7 +1640,9 @@ ipcMain.handle('model_setup', async (_event, payload) => {
   if (outputFolder) {
     args.push('--output-folder', outputFolder);
   }
-  return runPythonScript('model_setup.py', args);
+  return runPythonScript('model_setup.py', args, {
+    progressChannel: 'model-setup-progress',
+  });
 });
 
 ipcMain.handle('validate_ifs', async (_event, payload = {}) => {

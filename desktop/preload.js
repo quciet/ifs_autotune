@@ -5,16 +5,34 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.invoke('select-folder', { type, defaultPath }),
   selectFile: (defaultPath) =>
     ipcRenderer.invoke('select-input-file', { defaultPath }),
+  getDesktopCapabilities: () => ipcRenderer.invoke('desktop:getCapabilities'),
   getDefaultOutputDir: () => ipcRenderer.invoke('get-default-output-dir'),
   getDefaultInputFile: () => ipcRenderer.invoke('get-default-input-file'),
   getMLJobStatus: () => ipcRenderer.invoke('ml:jobStatus'),
-  getMLProgressHistory: (outputDir, datasetId, modelId, sinceProgressRowId) =>
+  getTrendDatasetOptions: (outputDir) =>
+    ipcRenderer.invoke('analysis:getTrendDatasetOptions', {
+      outputDir,
+    }),
+  getImagePreview: (targetPath, allowedRoot) =>
+    ipcRenderer.invoke('analysis:getImagePreview', {
+      targetPath,
+      allowedRoot,
+    }),
+  runTrendAnalysis: (outputDir, datasetId, limit, window) =>
+    ipcRenderer.invoke('analysis:runTrendAnalysis', {
+      outputDir,
+      datasetId,
+      limit,
+      window,
+    }),
+  getMLProgressHistory: (outputDir, datasetId, modelId, sinceRunId) =>
     ipcRenderer.invoke('ml:getProgressHistory', {
       outputDir,
       datasetId,
       modelId,
-      sinceProgressRowId,
+      sinceRunId,
     }),
+  openPath: (targetPath) => ipcRenderer.invoke('shell:openPath', { targetPath }),
   requestMLStop: () => ipcRenderer.invoke('ml:requestStop'),
   invoke: (channel, data) => ipcRenderer.invoke(channel, data),
   onMLProgress: (callback) => {

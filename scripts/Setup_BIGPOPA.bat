@@ -94,7 +94,7 @@ echo.
 echo BIGPOPA setup is complete.
 echo If you move this repository to a new folder later, re-run this script to rebuild backend\.venv for the new path.
 echo Use "%SCRIPT_DIR%Run_BIGPOPA.bat" to launch the app.
-echo Use "%SCRIPT_DIR%Run_BIGPOPA_Trend_Analysis.bat" to generate the latest trend analysis.
+echo Use Trend Analysis from the desktop app's Tune page to generate the latest trend analysis.
 echo.
 echo Press any key to continue.
 pause >nul

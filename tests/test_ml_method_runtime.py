@@ -17,6 +17,7 @@ import dataset_utils
 import ml_driver
 import model_setup
 from ml_method import load_required_ml_method, normalize_ml_method
+from model_run_store import insert_model_run
 from model_status import (
     FALLBACK_FIT_POOLED,
     FIT_EVALUATED,
@@ -27,6 +28,7 @@ from model_status import (
 from optimization import active_learning
 from optimization.ensemble_training import ensemble_predict, train_ensemble, validate_surrogate_memory
 from optimization.surrogate_models import BoundsScaler, LogClippedTargetTransform
+from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
 
 
 def _write_workbook(
@@ -68,18 +70,7 @@ def _create_bigpopa_db(
     conn = sqlite3.connect(path)
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE model_input (
-                ifs_id INTEGER,
-                model_id TEXT PRIMARY KEY,
-                dataset_id TEXT,
-                input_param TEXT,
-                input_coef TEXT,
-                output_set TEXT
-            )
-            """
-        )
+        ensure_current_bigpopa_schema(cursor)
         cursor.execute(
             """
             CREATE TABLE ifs_version (
@@ -92,30 +83,16 @@ def _create_bigpopa_db(
             )
             """
         )
-        cursor.execute(
-            """
-            CREATE TABLE model_output (
-                ifs_id INTEGER,
-                model_id TEXT PRIMARY KEY,
-                model_status TEXT,
-                fit_var TEXT,
-                fit_pooled REAL
-            )
-            """
-        )
-        cursor.execute(
-            """
-            INSERT INTO model_input (ifs_id, model_id, dataset_id, input_param, input_coef, output_set)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                1,
-                initial_model_id,
-                "dataset-1",
-                json.dumps({"a": 0.5}),
-                json.dumps({}),
-                json.dumps({"fit": 1}),
-            ),
+        insert_model_run(
+            conn,
+            ifs_id=1,
+            model_id=initial_model_id,
+            dataset_id="dataset-1",
+            input_param={"a": 0.5},
+            input_coef={},
+            output_set={"fit": 1},
+            model_status=None,
+            resolution_note="model_setup_seed",
         )
         cursor.execute(
             """
@@ -133,6 +110,22 @@ def _ensure_bigpopa_schema(path: Path) -> None:
     with sqlite3.connect(path) as conn:
         model_setup.ensure_bigpopa_schema(conn.cursor())
         conn.commit()
+
+
+def _latest_model_run_status(conn: sqlite3.Connection, model_id: str) -> tuple[str | None, float | None]:
+    row = conn.execute(
+        """
+        SELECT model_status, fit_pooled
+        FROM model_run
+        WHERE model_id = ?
+        ORDER BY run_id DESC
+        LIMIT 1
+        """,
+        (model_id,),
+    ).fetchone()
+    if row is None:
+        return None, None
+    return row[0], row[1]
 
 
 def _dimension() -> ml_driver.SearchDimension:
@@ -167,49 +160,36 @@ def test_load_compatible_training_samples_uses_exact_dataset_id_only(tmp_path: P
     db_path = tmp_path / "bigpopa.db"
     conn = sqlite3.connect(db_path)
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE model_input (
-                ifs_id INTEGER,
-                model_id TEXT PRIMARY KEY,
-                dataset_id TEXT,
-                input_param TEXT,
-                input_coef TEXT,
-                output_set TEXT
-            )
-            """
+        ensure_current_bigpopa_schema(conn.cursor())
+        insert_model_run(
+            conn,
+            ifs_id=1,
+            model_id="same-dataset",
+            dataset_id="dataset-1",
+            input_param={"a": 0.1},
+            input_coef={},
+            output_set={"fit": 1},
+            model_status=FIT_EVALUATED,
+            fit_pooled=1.5,
+            trial_index=1,
+            batch_index=1,
+            started_at_utc="2026-03-24T00:00:00Z",
+            completed_at_utc="2026-03-24T00:01:00Z",
         )
-        cursor.execute(
-            """
-            CREATE TABLE model_output (
-                ifs_id INTEGER,
-                model_id TEXT PRIMARY KEY,
-                model_status TEXT,
-                fit_var TEXT,
-                fit_pooled REAL
-            )
-            """
-        )
-        cursor.executemany(
-            """
-            INSERT INTO model_input (ifs_id, model_id, dataset_id, input_param, input_coef, output_set)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (1, "same-dataset", "dataset-1", json.dumps({"a": 0.1}), json.dumps({}), json.dumps({"fit": 1})),
-                (1, "other-dataset", "dataset-2", json.dumps({"a": 0.2}), json.dumps({}), json.dumps({"fit": 1})),
-            ],
-        )
-        cursor.executemany(
-            """
-            INSERT INTO model_output (ifs_id, model_id, model_status, fit_var, fit_pooled)
-            VALUES (?, ?, ?, NULL, ?)
-            """,
-            [
-                (1, "same-dataset", FIT_EVALUATED, 1.5),
-                (1, "other-dataset", FIT_EVALUATED, 2.5),
-            ],
+        insert_model_run(
+            conn,
+            ifs_id=1,
+            model_id="other-dataset",
+            dataset_id="dataset-2",
+            input_param={"a": 0.2},
+            input_coef={},
+            output_set={"fit": 1},
+            model_status=FIT_EVALUATED,
+            fit_pooled=2.5,
+            trial_index=1,
+            batch_index=1,
+            started_at_utc="2026-03-24T00:02:00Z",
+            completed_at_utc="2026-03-24T00:03:00Z",
         )
         conn.commit()
     finally:
@@ -484,7 +464,7 @@ def test_ensure_bigpopa_schema_upgrades_existing_db_with_ml_resume_state_table(t
         before = conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ml_resume_state'"
         ).fetchone()
-    assert before is None
+    assert before == ("ml_resume_state",)
 
     _ensure_bigpopa_schema(db_path)
 
@@ -591,7 +571,7 @@ def test_ml_driver_resumes_search_state_when_settings_match(
 
     assert exit_code == 0
     assert captured["iteration_offset"] == 4
-    assert captured["initial_no_improve_counter"] == 3
+    assert captured["initial_no_improve_counter"] == 0
     assert np.array_equal(captured["x_obs"], np.asarray([[0.25]], dtype=float))
 
     with sqlite3.connect(db_path) as conn:
@@ -697,7 +677,7 @@ def test_ml_driver_resets_search_state_but_keeps_training_data_when_settings_cha
     )
 
     assert exit_code == 0
-    assert captured["iteration_offset"] == 0
+    assert captured["iteration_offset"] == 7
     assert captured["initial_no_improve_counter"] == 0
     assert np.array_equal(captured["x_obs"], np.asarray([[0.75]], dtype=float))
 
@@ -1154,24 +1134,24 @@ def test_run_model_marks_cached_result_as_reused_without_launching_ifs(
     )
 
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
-            (model_id,),
-        ).fetchone()
-        proposal_rows = conn.execute(
+        row = _latest_model_run_status(conn, model_id)
+        reused_rows = conn.execute(
             """
-            SELECT proposal_status, was_reused, fit_pooled_visible
-            FROM ml_proposal_history
+            SELECT model_status, was_reused, fit_pooled
+            FROM model_run
             WHERE model_id = ?
-            ORDER BY proposal_event_id
+            ORDER BY run_id
             """,
             (model_id,),
         ).fetchall()
 
     assert fit_val == 12.5
     assert returned_model_id == model_id
-    assert row == (FIT_EVALUATED, 12.5)
-    assert proposal_rows == [(MODEL_REUSED, 1, 12.5)]
+    assert row == (MODEL_REUSED, 12.5)
+    assert reused_rows == [
+        (FIT_EVALUATED, 0, 12.5),
+        (MODEL_REUSED, 1, 12.5),
+    ]
 
 
 def test_run_model_persists_fallback_fit_when_ifs_run_fails(
@@ -1202,10 +1182,7 @@ def test_run_model_persists_fallback_fit_when_ifs_run_fails(
     )
 
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
-            (model_id,),
-        ).fetchone()
+        row = _latest_model_run_status(conn, model_id)
 
     assert fit_val == FALLBACK_FIT_POOLED
     assert row == (IFS_RUN_FAILED, FALLBACK_FIT_POOLED)
@@ -1250,10 +1227,7 @@ def test_run_model_preserves_real_fit_after_successful_fit_evaluation(
     )
 
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
-            (model_id,),
-        ).fetchone()
+        row = _latest_model_run_status(conn, model_id)
 
     assert fit_val == 7.25
     assert row == (FIT_EVALUATED, 7.25)
@@ -1298,10 +1272,7 @@ def test_run_model_returns_fallback_fit_when_compare_completes_without_pooled_me
     )
 
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
-            (model_id,),
-        ).fetchone()
+        row = _latest_model_run_status(conn, model_id)
 
     assert fit_val == FALLBACK_FIT_POOLED
     assert row == (IFS_RUN_COMPLETED, FALLBACK_FIT_POOLED)
@@ -1346,10 +1317,7 @@ def test_run_model_keeps_ifs_completed_status_when_fit_evaluation_fails(
     )
 
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT model_status, fit_pooled FROM model_output WHERE model_id = ?",
-            (model_id,),
-        ).fetchone()
+        row = _latest_model_run_status(conn, model_id)
 
     assert fit_val == FALLBACK_FIT_POOLED
     assert row == (IFS_RUN_COMPLETED, FALLBACK_FIT_POOLED)

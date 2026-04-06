@@ -1,6 +1,12 @@
 from __future__ import annotations
 import json, hashlib, sqlite3
 
+from model_run_store import (
+    is_visible_training_sample,
+    normalize_run_row,
+)
+from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
+
 
 def compute_dataset_id(ifs_id: int, input_param: dict, input_coef: dict, output_set: dict) -> str:
     param_keys = sorted(input_param.keys())
@@ -38,60 +44,83 @@ def load_compatible_training_samples(
 ):
     del current_structure
     conn = sqlite3.connect(db_path)
-    cur = conn.cursor()
-
-    if dataset_id is None:
-        cur.execute(
-            "SELECT model_id, input_param, input_coef, output_set, dataset_id"
-            " FROM model_input WHERE dataset_id IS NULL"
-        )
-    else:
-        cur.execute(
-            "SELECT model_id, input_param, input_coef, output_set, dataset_id"
-            " FROM model_input WHERE dataset_id = ?",
-            (dataset_id,),
-        )
-    rows = cur.fetchall()
-
-    samples = []
-    for model_id, ipjs, icjs, osjs, _ in rows:
-        try:
-            ip = json.loads(ipjs)
-            ic = json.loads(icjs)
-            os = json.loads(osjs)
-        except Exception:
-            continue
+    try:
+        cur = conn.cursor()
+        ensure_current_bigpopa_schema(cur)
         if dataset_id is None:
-            cur.execute(
+            rows = cur.execute(
                 """
-                SELECT mo.fit_pooled
-                FROM model_output mo
-                JOIN model_input mi ON mo.model_id = mi.model_id
-                WHERE mi.model_id = ? AND mi.dataset_id IS NULL
-                """,
-                (model_id,),
-            )
+                SELECT
+                    run_id,
+                    ifs_id,
+                    model_id,
+                    dataset_id,
+                    input_param,
+                    input_coef,
+                    output_set,
+                    model_status,
+                    fit_var,
+                    fit_pooled,
+                    trial_index,
+                    batch_index,
+                    started_at_utc,
+                    completed_at_utc,
+                    was_reused,
+                    source_status,
+                    resolution_note
+                FROM model_run
+                WHERE dataset_id IS NULL
+                ORDER BY
+                    CASE WHEN completed_at_utc IS NULL THEN 1 ELSE 0 END,
+                    completed_at_utc DESC,
+                    run_id DESC
+                """
+            ).fetchall()
         else:
-            cur.execute(
+            rows = cur.execute(
                 """
-                SELECT mo.fit_pooled
-                FROM model_output mo
-                JOIN model_input mi ON mo.model_id = mi.model_id
-                WHERE mi.model_id = ? AND mi.dataset_id = ?
+                SELECT
+                    run_id,
+                    ifs_id,
+                    model_id,
+                    dataset_id,
+                    input_param,
+                    input_coef,
+                    output_set,
+                    model_status,
+                    fit_var,
+                    fit_pooled,
+                    trial_index,
+                    batch_index,
+                    started_at_utc,
+                    completed_at_utc,
+                    was_reused,
+                    source_status,
+                    resolution_note
+                FROM model_run
+                WHERE dataset_id = ?
+                ORDER BY
+                    CASE WHEN completed_at_utc IS NULL THEN 1 ELSE 0 END,
+                    completed_at_utc DESC,
+                    run_id DESC
                 """,
-                (model_id, dataset_id),
-            )
+                (dataset_id,),
+            ).fetchall()
 
-        fr = cur.fetchone()
-        fit = fr[0] if fr else None
-
-        samples.append({
-            "model_id": model_id,
-            "input_param": ip,
-            "input_coef": ic,
-            "output_set": os,
-            "fit_pooled": fit,
-        })
-
-    conn.close()
-    return samples
+        deduped: dict[str, dict] = {}
+        for raw_row in rows:
+            row = normalize_run_row(raw_row)
+            if not is_visible_training_sample(row):
+                continue
+            if row.model_id in deduped:
+                continue
+            deduped[row.model_id] = {
+                "model_id": row.model_id,
+                "input_param": row.input_param,
+                "input_coef": row.input_coef,
+                "output_set": row.output_set,
+                "fit_pooled": row.fit_pooled,
+            }
+        return list(deduped.values())
+    finally:
+        conn.close()

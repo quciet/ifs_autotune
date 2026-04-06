@@ -10,6 +10,7 @@ from .run_history import (
     RunRecord,
     coefficient_column_names,
     load_run_history,
+    output_variable_names,
     parameter_column_names,
     select_latest_slice,
 )
@@ -29,6 +30,9 @@ class AnalysisArtifacts:
     plot_path: Path
     parameter_plot_paths: tuple[Path, ...]
     coefficient_plot_paths: tuple[Path, ...]
+    parameter_count: int
+    coefficient_count: int
+    output_variable_count: int
     summary: TrendSummary
 
 
@@ -170,6 +174,9 @@ def analyze_latest_runs(
         title_prefix=f"Coefficient trends for dataset {selected_dataset_id or '<null>'}",
         value_columns=coefficient_column_names(latest_slice),
     )
+    parameter_count = len(parameter_column_names(dataset_rows))
+    coefficient_count = len(coefficient_column_names(dataset_rows))
+    output_variable_count = len(output_variable_names(dataset_rows))
 
     return AnalysisArtifacts(
         dataset_id=selected_dataset_id,
@@ -179,5 +186,8 @@ def analyze_latest_runs(
         plot_path=plot_path,
         parameter_plot_paths=tuple(parameter_plot_paths),
         coefficient_plot_paths=tuple(coefficient_plot_paths),
+        parameter_count=parameter_count,
+        coefficient_count=coefficient_count,
+        output_variable_count=output_variable_count,
         summary=summary,
     )

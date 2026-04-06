@@ -10,26 +10,51 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from xml.etree import ElementTree
 
+from tools.db.bigpopa_schema import migrate_bigpopa_db_if_needed
 
 ####################################################
 # 1. WORKING FILE INITIALIZERS (from db_init.py)
 ####################################################
 
-def ensure_working_db():
+def ensure_working_db() -> Dict[str, object] | None:
     """
     Ensure desktop/input/bigpopa.db exists. If missing, clone template.
     """
     template = Path("desktop/input/template/bigpopa_clean.db")
     working = Path("desktop/output/bigpopa.db")
 
-    if working.exists():
-        return
-    if not template.exists():
-        raise FileNotFoundError("Missing template: desktop/input/template/bigpopa_clean.db")
+    created = False
+    if not working.exists():
+        if not template.exists():
+            raise FileNotFoundError("Missing template: desktop/input/template/bigpopa_clean.db")
 
-    working.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(template, working)
-    print("[BIGPOPA] Created working bigpopa.db in desktop/output/ from clean template.")
+        working.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(template, working)
+        created = True
+        print("[BIGPOPA] Created working bigpopa.db in desktop/output/ from clean template.")
+
+    with sqlite3.connect(working) as conn:
+        migration_summary = migrate_bigpopa_db_if_needed(
+            conn,
+            db_path=working,
+            create_backup=True,
+        )
+
+    if migration_summary.get("performed"):
+        print("[BIGPOPA] Upgraded working bigpopa.db to unified model_run schema.")
+
+    if created and not migration_summary.get("performed"):
+        return {
+            "performed": False,
+            "message": "Working BIGPOPA database is already on the unified schema.",
+        }
+    return migration_summary
+
+
+def _initialize_working_files() -> Dict[str, object] | None:
+    migration_summary = ensure_working_db()
+    ensure_working_startingpointtable()
+    return migration_summary
 
 
 def ensure_working_startingpointtable():
@@ -219,9 +244,11 @@ def validate_ifs_folder(
     path: str,
     output_path: Optional[str] = None,
     input_file: Optional[str] = None,
+    *,
+    migration_summary: Optional[Dict[str, object]] = None,
 ) -> dict:
-    ensure_working_db()
-    ensure_working_startingpointtable()
+    if migration_summary is None:
+        migration_summary = _initialize_working_files()
 
     sanitized_path = (path or "").strip()
     absolute_path = os.path.abspath(sanitized_path) if sanitized_path else None
@@ -269,7 +296,7 @@ def validate_ifs_folder(
         and all(input_file_check["sheets"].get(name, False) for name in REQUIRED_INPUT_SHEETS)
     )
 
-    return {
+    result = {
         "valid": all_requirements_met and output_ready and input_ready,
         "requirements": requirements,
         "base_year": base_year,
@@ -279,6 +306,18 @@ def validate_ifs_folder(
             "inputFile": input_file_check,
         },
     }
+    info_messages: list[str] = []
+    if migration_summary and migration_summary.get("performed"):
+        backup_path = migration_summary.get("backup_path")
+        backup_text = f" Backup: {backup_path}." if isinstance(backup_path, str) and backup_path else ""
+        info_messages.append(
+            "BIGPOPA database upgraded to the unified model_run schema." + backup_text
+        )
+    if info_messages:
+        result["infoMessages"] = info_messages
+    if migration_summary:
+        result["dbMigration"] = migration_summary
+    return result
 
 
 def check_folder(payload: dict) -> dict:
@@ -301,8 +340,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     # Initialize working copies
-    ensure_working_db()
-    ensure_working_startingpointtable()
+    migration_summary = _initialize_working_files()
 
     if not args.path:
         print(json.dumps({"valid": False, "missingFiles": ["No folder path provided"]}))
@@ -313,6 +351,7 @@ def main(argv: list[str]) -> int:
             args.path,
             output_path=args.output_path,
             input_file=args.input_file,
+            migration_summary=migration_summary,
         )
     except Exception:
         print(json.dumps({"valid": False, "missingFiles": ["Python error"]}))

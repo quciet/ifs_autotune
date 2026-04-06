@@ -1,4 +1,4 @@
-"""Apply additive BIGPOPA schema migrations to an existing database."""
+"""Upgrade BIGPOPA databases to the unified model_run schema."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
-from model_setup import ensure_bigpopa_schema
+from tools.db.bigpopa_schema import migrate_bigpopa_db_if_needed
 
 
 def emit(status: str, message: str, **data: object) -> None:
@@ -21,13 +21,8 @@ def emit(status: str, message: str, **data: object) -> None:
     sys.stdout.flush()
 
 
-def _table_count(cursor: sqlite3.Cursor, table_name: str) -> int:
-    row = cursor.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Apply additive BIGPOPA DB migrations")
+    parser = argparse.ArgumentParser(description="Upgrade BIGPOPA DB to the unified model_run schema")
     parser.add_argument("--bigpopa-db", required=True, help="Path to bigpopa.db")
     args = parser.parse_args(argv)
 
@@ -43,27 +38,17 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        cursor = conn.cursor()
-        before_input = _table_count(cursor, "model_input")
-        before_output = _table_count(cursor, "model_output")
-
-        ensure_bigpopa_schema(cursor)
-        conn.commit()
-
-        columns = cursor.execute("PRAGMA table_info(model_output)").fetchall()
-        column_names = [row[1] for row in columns]
-        after_input = _table_count(cursor, "model_input")
-        after_output = _table_count(cursor, "model_output")
+        summary = migrate_bigpopa_db_if_needed(
+            conn,
+            db_path=db_path,
+            create_backup=True,
+        )
 
         emit(
             "success",
             "BIGPOPA DB migration applied.",
             bigpopa_db=str(db_path),
-            model_output_columns=column_names,
-            model_input_rows_before=before_input,
-            model_input_rows_after=after_input,
-            model_output_rows_before=before_output,
-            model_output_rows_after=after_output,
+            **summary,
         )
         return 0
     except sqlite3.Error as exc:

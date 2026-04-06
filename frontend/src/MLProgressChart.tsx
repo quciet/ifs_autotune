@@ -271,10 +271,14 @@ export function normalizeProgressTrials(trials: MLProgressTrial[]): ChartPoint[]
       modelId: trial.model_id ?? null,
       modelStatus: trial.model_status ?? null,
       progressRowId:
-        typeof trial.progress_rowid === "number" &&
-        Number.isFinite(trial.progress_rowid) &&
-        trial.progress_rowid > 0
-          ? trial.progress_rowid
+        typeof trial.run_id === "number" &&
+        Number.isFinite(trial.run_id) &&
+        trial.run_id > 0
+          ? trial.run_id
+          : typeof trial.progress_rowid === "number" &&
+              Number.isFinite(trial.progress_rowid) &&
+              trial.progress_rowid > 0
+            ? trial.progress_rowid
           : null,
     };
   });
@@ -329,10 +333,14 @@ export function appendNormalizedProgressTrials(
       modelId: trial.model_id ?? null,
       modelStatus: trial.model_status ?? null,
       progressRowId:
-        typeof trial.progress_rowid === "number" &&
-        Number.isFinite(trial.progress_rowid) &&
-        trial.progress_rowid > 0
-          ? trial.progress_rowid
+        typeof trial.run_id === "number" &&
+        Number.isFinite(trial.run_id) &&
+        trial.run_id > 0
+          ? trial.run_id
+          : typeof trial.progress_rowid === "number" &&
+              Number.isFinite(trial.progress_rowid) &&
+              trial.progress_rowid > 0
+            ? trial.progress_rowid
           : null,
     };
   });

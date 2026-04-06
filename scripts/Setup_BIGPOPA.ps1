@@ -96,4 +96,4 @@ if (Test-Path 'desktop\package.json') {
 Write-Host ''
 Write-Host 'BIGPOPA setup is complete.'
 Write-Host "Use `"$scriptDir\Run_BIGPOPA.bat`" to launch the app."
-Write-Host "Use `"$scriptDir\Run_BIGPOPA_Trend_Analysis.bat`" to generate the latest trend analysis."
+Write-Host "Use Trend Analysis from the desktop app's Tune page to generate the latest trend analysis."

@@ -2,13 +2,19 @@ import {
   ChangeEvent,
   FormEvent,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from "react";
 import {
+  getArtifactImagePreview,
+  getDesktopCapabilities,
   getMLProgressHistory,
+  getTrendDatasetOptions,
   modelSetup,
+  openArtifactPath,
+  runTrendAnalysis,
   subscribeToIFsProgress,
   validateIFsFolder,
   StageError,
@@ -19,6 +25,7 @@ import {
   type ModelSetupData,
   type MLDriverData,
   type MLProgressTrial,
+  type TrendAnalysisData,
 } from "./api";
 import {
   MLProgressChart,
@@ -64,6 +71,61 @@ type MLJobStatus = {
     datasetId?: string | null;
   } | null;
 };
+
+type TrendPreviewType = "fit" | "parameter" | "coefficient";
+
+function formatTrendBestReference(summary: TrendAnalysisData["summary"]): string {
+  if (
+    typeof summary.best_run_index === "number" &&
+    typeof summary.best_round_index === "number" &&
+    typeof summary.best_trial_index === "number"
+  ) {
+    return `Run ${summary.best_run_index} (round ${summary.best_round_index}, trial ${summary.best_trial_index})`;
+  }
+
+  if (typeof summary.best_run_index === "number") {
+    return `Run ${summary.best_run_index}`;
+  }
+
+  return "N/A";
+}
+
+function formatTrendBestReferenceInline(summary: TrendAnalysisData["summary"]): string {
+  if (
+    typeof summary.best_run_index === "number" &&
+    typeof summary.best_round_index === "number" &&
+    typeof summary.best_trial_index === "number"
+  ) {
+    return `Run ${summary.best_run_index}, round ${summary.best_round_index}, trial ${summary.best_trial_index}`;
+  }
+
+  if (typeof summary.best_run_index === "number") {
+    return `Run ${summary.best_run_index}`;
+  }
+
+  return "N/A";
+}
+
+function clampPageIndex(index: number, pageCount: number): number {
+  if (pageCount <= 0) {
+    return 0;
+  }
+
+  return Math.min(Math.max(index, 0), pageCount - 1);
+}
+
+function resolvePagedArtifactPath(paths: string[], pageIndex: number): string | null {
+  if (!Array.isArray(paths) || paths.length === 0) {
+    return null;
+  }
+
+  return paths[clampPageIndex(pageIndex, paths.length)] ?? null;
+}
+
+function normalizeDatasetIdInput(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 function truncateMiddle(value: string, maxLength: number): string {
   if (value.length <= maxLength) {
@@ -198,10 +260,16 @@ function parseSequenceIndex(trial: MLProgressTrial): number | null {
 }
 
 function parseProgressRowId(trial: MLProgressTrial): number | null {
-  return typeof trial.progress_rowid === "number" &&
-    Number.isFinite(trial.progress_rowid) &&
-    trial.progress_rowid > 0
-    ? trial.progress_rowid
+  const rowId =
+    typeof trial.run_id === "number" && Number.isFinite(trial.run_id) && trial.run_id > 0
+      ? trial.run_id
+      : typeof trial.progress_rowid === "number" &&
+          Number.isFinite(trial.progress_rowid) &&
+          trial.progress_rowid > 0
+        ? trial.progress_rowid
+        : null;
+  return rowId != null
+    ? rowId
     : null;
 }
 
@@ -377,6 +445,34 @@ function TuneIFsPage({
   const [progressLatestProgressRowId, setProgressLatestProgressRowId] = useState<number | null>(null);
   const [progressHistoryLoading, setProgressHistoryLoading] = useState(false);
   const [progressHistoryError, setProgressHistoryError] = useState<string | null>(null);
+  const trendDatasetInputId = useId();
+  const [trendDatasetOverride, setTrendDatasetOverride] = useState("");
+  const [trendDatasetOptions, setTrendDatasetOptions] = useState<string[]>([]);
+  const [trendDatasetRunCounts, setTrendDatasetRunCounts] = useState<Record<string, number>>({});
+  const [trendDatasetOptionsLoading, setTrendDatasetOptionsLoading] = useState(false);
+  const [trendDatasetOptionsError, setTrendDatasetOptionsError] = useState<string | null>(null);
+  const [trendLatestDatasetId, setTrendLatestDatasetId] = useState<string | null>(null);
+  const [trendLimitInput, setTrendLimitInput] = useState("");
+  const [trendWindowInput, setTrendWindowInput] = useState("25");
+  const [trendAnalysisRunning, setTrendAnalysisRunning] = useState(false);
+  const [trendAnalysisError, setTrendAnalysisError] = useState<string | null>(null);
+  const [trendAnalysisResult, setTrendAnalysisResult] = useState<TrendAnalysisData | null>(null);
+  const [trendAnalysisMessage, setTrendAnalysisMessage] = useState<string | null>(null);
+  const [activeTrendPreview, setActiveTrendPreview] = useState<TrendPreviewType | null>(null);
+  const [fitTrendPreviewUrl, setFitTrendPreviewUrl] = useState<string | null>(null);
+  const [fitTrendPreviewLoading, setFitTrendPreviewLoading] = useState(false);
+  const [parameterTrendPageIndex, setParameterTrendPageIndex] = useState(0);
+  const [parameterTrendPreviewUrl, setParameterTrendPreviewUrl] = useState<string | null>(null);
+  const [parameterTrendPreviewLoading, setParameterTrendPreviewLoading] = useState(false);
+  const [coefficientTrendPageIndex, setCoefficientTrendPageIndex] = useState(0);
+  const [coefficientTrendPreviewUrl, setCoefficientTrendPreviewUrl] = useState<string | null>(null);
+  const [coefficientTrendPreviewLoading, setCoefficientTrendPreviewLoading] = useState(false);
+  const [trendAnalysisAvailable, setTrendAnalysisAvailable] = useState<boolean>(() =>
+    typeof window !== "undefined" &&
+    Boolean(window.electron?.runTrendAnalysis && window.electron?.getDesktopCapabilities),
+  );
+  const [trendAnalysisAvailabilityMessage, setTrendAnalysisAvailabilityMessage] =
+    useState<string | null>(null);
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
   );
@@ -387,8 +483,53 @@ function TuneIFsPage({
   const paramDimensionRef = useRef<Record<string, unknown>>({});
   const progressTrialsRef = useRef<ChartPoint[]>([]);
   const progressLatestProgressRowIdRef = useRef<number | null>(null);
+  const trendPreviewCacheRef = useRef<Record<string, string>>({});
   const logIdRef = useRef(0);
   const previousInitialMLJobRunningRef = useRef(Boolean(initialMLJobRunning));
+  const filteredTrendDatasetOptions = useMemo(() => {
+    const normalizedQuery = trendDatasetOverride.trim().toLowerCase();
+    if (!normalizedQuery) {
+      return trendDatasetOptions;
+    }
+
+      return trendDatasetOptions.filter((datasetId) =>
+        datasetId.toLowerCase().includes(normalizedQuery),
+      );
+  }, [trendDatasetOptions, trendDatasetOverride]);
+  const selectedTrendDatasetId = useMemo(
+    () => normalizeDatasetIdInput(trendDatasetOverride),
+    [trendDatasetOverride],
+  );
+  const activeTrendDatasetId = selectedTrendDatasetId ?? trendLatestDatasetId ?? null;
+  const activeTrendDatasetRunCount = useMemo(() => {
+    if (!activeTrendDatasetId) {
+      return null;
+    }
+    const runCount = trendDatasetRunCounts[activeTrendDatasetId];
+    return typeof runCount === "number" && Number.isFinite(runCount) && runCount >= 0
+      ? runCount
+      : null;
+  }, [activeTrendDatasetId, trendDatasetRunCounts]);
+  const currentParameterPlotPath = useMemo(
+    () =>
+      trendAnalysisResult
+        ? resolvePagedArtifactPath(
+            trendAnalysisResult.parameter_plot_paths,
+            parameterTrendPageIndex,
+          )
+        : null,
+    [parameterTrendPageIndex, trendAnalysisResult],
+  );
+  const currentCoefficientPlotPath = useMemo(
+    () =>
+      trendAnalysisResult
+        ? resolvePagedArtifactPath(
+            trendAnalysisResult.coefficient_plot_paths,
+            coefficientTrendPageIndex,
+          )
+        : null,
+    [coefficientTrendPageIndex, trendAnalysisResult],
+  );
 
   const refreshMLJobStatus = async () => {
     if (!onMLJobStatusRefresh) {
@@ -401,6 +542,140 @@ function TuneIFsPage({
       console.warn("Unable to refresh ML job status:", error);
     }
   };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshTrendAnalysisAvailability = async () => {
+      if (typeof window === "undefined" || !window.electron) {
+        if (!cancelled) {
+          setTrendAnalysisAvailable(false);
+          setTrendAnalysisAvailabilityMessage(
+            "Trend Analysis is unavailable because the Electron desktop bridge did not load. Restart the app and try again.",
+          );
+        }
+        return;
+      }
+
+      if (
+        !window.electron.runTrendAnalysis ||
+        !window.electron.getDesktopCapabilities
+      ) {
+        if (!cancelled) {
+          setTrendAnalysisAvailable(false);
+          setTrendAnalysisAvailabilityMessage(
+            "Trend Analysis is unavailable in this desktop session. Restart the app to load the latest desktop handlers.",
+          );
+        }
+        return;
+      }
+
+      try {
+        const capabilities = await getDesktopCapabilities();
+        if (cancelled) {
+          return;
+        }
+        setTrendAnalysisAvailable(capabilities.trendAnalysis);
+        setTrendAnalysisAvailabilityMessage(
+          capabilities.trendAnalysis
+            ? null
+            : "Trend Analysis is unavailable in this desktop session. Restart the app to load the latest desktop handlers.",
+        );
+      } catch (error) {
+        if (!cancelled) {
+          setTrendAnalysisAvailable(false);
+          setTrendAnalysisAvailabilityMessage(
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : "Unable to verify Trend Analysis availability. Restart the app and try again.",
+          );
+        }
+      }
+    };
+
+    void refreshTrendAnalysisAvailability();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    setTrendDatasetOverride("");
+    setTrendDatasetOptions([]);
+    setTrendDatasetRunCounts({});
+    setTrendDatasetOptionsError(null);
+    setTrendLatestDatasetId(null);
+    setTrendLimitInput("");
+    setTrendAnalysisError(null);
+    setTrendAnalysisMessage(null);
+    setTrendAnalysisResult(null);
+    setActiveTrendPreview(null);
+    setFitTrendPreviewUrl(null);
+    setFitTrendPreviewLoading(false);
+    setParameterTrendPageIndex(0);
+    setParameterTrendPreviewUrl(null);
+    setParameterTrendPreviewLoading(false);
+    setCoefficientTrendPageIndex(0);
+    setCoefficientTrendPreviewUrl(null);
+    setCoefficientTrendPreviewLoading(false);
+    trendPreviewCacheRef.current = {};
+
+    if (!outputDirectory) {
+      setTrendDatasetOptionsLoading(false);
+      return;
+    }
+
+    const loadTrendDatasetOptions = async () => {
+      setTrendDatasetOptionsLoading(true);
+
+      try {
+        const response = await getTrendDatasetOptions(outputDirectory);
+        if (cancelled) {
+          return;
+        }
+        setTrendDatasetOptions(response.dataset_ids);
+        setTrendDatasetRunCounts(response.dataset_run_counts);
+        setTrendLatestDatasetId(response.latest_dataset_id);
+        setTrendDatasetOptionsError(null);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setTrendDatasetOptions([]);
+        setTrendDatasetRunCounts({});
+        setTrendLatestDatasetId(null);
+        setTrendDatasetOptionsError(
+          error instanceof Error ? error.message : "Unable to load dataset suggestions.",
+        );
+      } finally {
+        if (!cancelled) {
+          setTrendDatasetOptionsLoading(false);
+        }
+      }
+    };
+
+    void loadTrendDatasetOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [outputDirectory]);
+
+  useEffect(() => {
+    if (
+      typeof activeTrendDatasetRunCount === "number" &&
+      Number.isFinite(activeTrendDatasetRunCount) &&
+      activeTrendDatasetRunCount > 0
+    ) {
+      setTrendLimitInput(String(activeTrendDatasetRunCount));
+      return;
+    }
+
+    setTrendLimitInput("");
+  }, [activeTrendDatasetRunCount]);
 
   const appendLog = (stage: ApiStage, status: LogStatus, message: string) => {
     const normalized = typeof message === "string" ? message.trim() : "";
@@ -754,9 +1029,9 @@ function TuneIFsPage({
         );
 
         const latestProgressRowId =
-          typeof history.latest_progress_rowid === "number" &&
-          Number.isFinite(history.latest_progress_rowid)
-            ? history.latest_progress_rowid
+          typeof history.latest_run_id === "number" &&
+          Number.isFinite(history.latest_run_id)
+            ? history.latest_run_id
             : null;
         const shouldAppend =
           sinceProgressRowId != null && progressTrialsRef.current.length > 0;
@@ -792,9 +1067,9 @@ function TuneIFsPage({
 
         setProgressTrials(normalizeProgressTrials(history.trials));
         setProgressLatestProgressRowId(
-          typeof history.latest_progress_rowid === "number" &&
-            Number.isFinite(history.latest_progress_rowid)
-            ? history.latest_progress_rowid
+          typeof history.latest_run_id === "number" &&
+            Number.isFinite(history.latest_run_id)
+            ? history.latest_run_id
             : null,
         );
         setProgressHistoryError(null);
@@ -826,6 +1101,185 @@ function TuneIFsPage({
     };
   }, [outputDirectory, progressDatasetId, progressReferenceModelId, running]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPreview = async (
+      targetPath: string | null,
+      setLoading: (value: boolean) => void,
+      setPreview: (value: string | null) => void,
+    ) => {
+      if (!trendAnalysisResult?.output_dir || !targetPath) {
+        setLoading(false);
+        setPreview(null);
+        return;
+      }
+
+      const cached = trendPreviewCacheRef.current[targetPath];
+      if (cached) {
+        setLoading(false);
+        setPreview(cached);
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const preview = await getArtifactImagePreview(
+          targetPath,
+          trendAnalysisResult.output_dir,
+        );
+        if (cancelled) {
+          return;
+        }
+        trendPreviewCacheRef.current[targetPath] = preview.dataUrl;
+        setPreview(preview.dataUrl);
+      } catch (error) {
+        if (!cancelled) {
+          setPreview(null);
+          setTrendAnalysisError(
+            error instanceof Error ? error.message : "Unable to load image preview.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    if (activeTrendPreview === "fit") {
+      void loadPreview(
+        trendAnalysisResult?.plot_path ?? null,
+        setFitTrendPreviewLoading,
+        setFitTrendPreviewUrl,
+      );
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setFitTrendPreviewLoading(false);
+    setFitTrendPreviewUrl(null);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrendPreview, trendAnalysisResult?.output_dir, trendAnalysisResult?.plot_path]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPreview = async () => {
+      if (!trendAnalysisResult?.output_dir || !currentParameterPlotPath) {
+        setParameterTrendPreviewLoading(false);
+        setParameterTrendPreviewUrl(null);
+        return;
+      }
+
+      const cached = trendPreviewCacheRef.current[currentParameterPlotPath];
+      if (cached) {
+        setParameterTrendPreviewLoading(false);
+        setParameterTrendPreviewUrl(cached);
+        return;
+      }
+
+      setParameterTrendPreviewLoading(true);
+      try {
+        const preview = await getArtifactImagePreview(
+          currentParameterPlotPath,
+          trendAnalysisResult.output_dir,
+        );
+        if (cancelled) {
+          return;
+        }
+        trendPreviewCacheRef.current[currentParameterPlotPath] = preview.dataUrl;
+        setParameterTrendPreviewUrl(preview.dataUrl);
+      } catch (error) {
+        if (!cancelled) {
+          setParameterTrendPreviewUrl(null);
+          setTrendAnalysisError(
+            error instanceof Error ? error.message : "Unable to load image preview.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setParameterTrendPreviewLoading(false);
+        }
+      }
+    };
+
+    if (activeTrendPreview === "parameter") {
+      void loadPreview();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setParameterTrendPreviewLoading(false);
+    setParameterTrendPreviewUrl(null);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrendPreview, currentParameterPlotPath, trendAnalysisResult?.output_dir]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadPreview = async () => {
+      if (!trendAnalysisResult?.output_dir || !currentCoefficientPlotPath) {
+        setCoefficientTrendPreviewLoading(false);
+        setCoefficientTrendPreviewUrl(null);
+        return;
+      }
+
+      const cached = trendPreviewCacheRef.current[currentCoefficientPlotPath];
+      if (cached) {
+        setCoefficientTrendPreviewLoading(false);
+        setCoefficientTrendPreviewUrl(cached);
+        return;
+      }
+
+      setCoefficientTrendPreviewLoading(true);
+      try {
+        const preview = await getArtifactImagePreview(
+          currentCoefficientPlotPath,
+          trendAnalysisResult.output_dir,
+        );
+        if (cancelled) {
+          return;
+        }
+        trendPreviewCacheRef.current[currentCoefficientPlotPath] = preview.dataUrl;
+        setCoefficientTrendPreviewUrl(preview.dataUrl);
+      } catch (error) {
+        if (!cancelled) {
+          setCoefficientTrendPreviewUrl(null);
+          setTrendAnalysisError(
+            error instanceof Error ? error.message : "Unable to load image preview.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setCoefficientTrendPreviewLoading(false);
+        }
+      }
+    };
+
+    if (activeTrendPreview === "coefficient") {
+      void loadPreview();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setCoefficientTrendPreviewLoading(false);
+    setCoefficientTrendPreviewUrl(null);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTrendPreview, currentCoefficientPlotPath, trendAnalysisResult?.output_dir]);
+
   const resetModelSetupState = () => {
     setModelSetupResult(null);
     setProgressDatasetId(null);
@@ -834,6 +1288,116 @@ function TuneIFsPage({
     setProgressLatestProgressRowId(null);
     setRunResult(null);
   };
+
+  const handleTrendAnalysisRun = async () => {
+    if (!outputDirectory || trendAnalysisRunning) {
+      return;
+    }
+
+    const parsedLimit = Number(trendLimitInput);
+    const parsedWindow = Number(trendWindowInput);
+    if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+      setTrendAnalysisError("Enter a valid positive number of latest runs to analyze.");
+      setTrendAnalysisMessage(null);
+      return;
+    }
+    if (!Number.isFinite(parsedWindow) || parsedWindow <= 0) {
+      setTrendAnalysisError("Enter a valid positive rolling window size.");
+      setTrendAnalysisMessage(null);
+      return;
+    }
+
+    setTrendAnalysisRunning(true);
+    setTrendAnalysisError(null);
+    setTrendAnalysisMessage("Running trend analysis...");
+
+    try {
+      const clampedLimit =
+        typeof activeTrendDatasetRunCount === "number" &&
+        Number.isFinite(activeTrendDatasetRunCount) &&
+        activeTrendDatasetRunCount > 0
+          ? Math.min(Math.trunc(parsedLimit), activeTrendDatasetRunCount)
+          : Math.trunc(parsedLimit);
+      if (clampedLimit !== Math.trunc(parsedLimit)) {
+        setTrendLimitInput(String(clampedLimit));
+      }
+      const result = await runTrendAnalysis(outputDirectory, {
+        datasetId: selectedTrendDatasetId,
+        limit: clampedLimit,
+        window: Math.trunc(parsedWindow),
+      });
+      trendPreviewCacheRef.current = {};
+      setParameterTrendPageIndex(0);
+      setCoefficientTrendPageIndex(0);
+      setFitTrendPreviewUrl(null);
+      setParameterTrendPreviewUrl(null);
+      setCoefficientTrendPreviewUrl(null);
+      setTrendAnalysisResult(result);
+      setTrendAnalysisMessage("Trend analysis completed successfully.");
+    } catch (error) {
+      setTrendAnalysisError(
+        error instanceof Error ? error.message : "Trend analysis failed.",
+      );
+      setTrendAnalysisMessage(null);
+    } finally {
+      setTrendAnalysisRunning(false);
+    }
+  };
+
+  const handleOpenArtifact = async (targetPath: string) => {
+    try {
+      await openArtifactPath(targetPath);
+      setTrendAnalysisError(null);
+    } catch (error) {
+      setTrendAnalysisError(
+        error instanceof Error ? error.message : "Unable to open analysis artifact.",
+      );
+    }
+  };
+
+  const openTrendPreview = (type: TrendPreviewType) => {
+    setTrendAnalysisError(null);
+    setActiveTrendPreview(type);
+  };
+
+  const closeTrendPreview = () => {
+    setActiveTrendPreview(null);
+  };
+
+  const handleParameterTrendPageStep = (delta: number) => {
+    setParameterTrendPageIndex((current) =>
+      clampPageIndex(
+        current + delta,
+        trendAnalysisResult?.parameter_plot_paths.length ?? 0,
+      ),
+    );
+  };
+
+  const handleCoefficientTrendPageStep = (delta: number) => {
+    setCoefficientTrendPageIndex((current) =>
+      clampPageIndex(
+        current + delta,
+        trendAnalysisResult?.coefficient_plot_paths.length ?? 0,
+      ),
+    );
+  };
+
+  useEffect(() => {
+    if (!activeTrendPreview) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setActiveTrendPreview(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [activeTrendPreview]);
 
   const handleEndYearInputChange = (event: ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
@@ -1201,6 +1765,242 @@ function TuneIFsPage({
     ? `No runs found for dataset ${progressDatasetId} yet. Previous runs will appear here when they share this exact dataset.`
     : "No runs found for the current dataset yet.";
   const outputDirectoryDisplay = outputDirectory ?? "No folder selected";
+  const trendSummary = trendAnalysisResult?.summary ?? null;
+  const latestTrendDatasetLabel = trendLatestDatasetId ?? progressDatasetId ?? null;
+  const trendLatestRunsHelper =
+    typeof activeTrendDatasetRunCount === "number" && activeTrendDatasetRunCount > 0
+      ? `Latest Runs defaults to and is capped at ${activeTrendDatasetRunCount} for the ${
+          selectedTrendDatasetId ? "selected" : "latest"
+        } dataset.`
+      : "Latest Runs defaults to the total available runs for the selected or latest dataset.";
+  const parameterPageCount = trendAnalysisResult?.parameter_plot_paths.length ?? 0;
+  const coefficientPageCount = trendAnalysisResult?.coefficient_plot_paths.length ?? 0;
+  const currentParameterPage = parameterPageCount > 0
+    ? clampPageIndex(parameterTrendPageIndex, parameterPageCount) + 1
+    : 0;
+  const currentCoefficientPage = coefficientPageCount > 0
+    ? clampPageIndex(coefficientTrendPageIndex, coefficientPageCount) + 1
+    : 0;
+  const activeTrendPreviewTitle =
+    activeTrendPreview === "fit"
+      ? "Fit Metric Trend"
+      : activeTrendPreview === "parameter"
+        ? "Parameter Trend"
+        : activeTrendPreview === "coefficient"
+          ? "Coefficient Trend"
+          : "";
+  const activeTrendPreviewSubtitle =
+    activeTrendPreview === "fit"
+      ? "Latest fit trend for the analyzed dataset."
+      : activeTrendPreview === "parameter"
+        ? parameterPageCount > 0
+          ? `Page ${currentParameterPage} of ${parameterPageCount}`
+          : "No parameter trend pages were generated."
+        : activeTrendPreview === "coefficient"
+          ? coefficientPageCount > 0
+            ? `Page ${currentCoefficientPage} of ${coefficientPageCount}`
+            : "No coefficient trend pages were generated."
+          : "";
+  const activeTrendPreviewUrl =
+    activeTrendPreview === "fit"
+      ? fitTrendPreviewUrl
+      : activeTrendPreview === "parameter"
+        ? parameterTrendPreviewUrl
+        : activeTrendPreview === "coefficient"
+          ? coefficientTrendPreviewUrl
+          : null;
+  const activeTrendPreviewLoading =
+    activeTrendPreview === "fit"
+      ? fitTrendPreviewLoading
+      : activeTrendPreview === "parameter"
+        ? parameterTrendPreviewLoading
+        : activeTrendPreview === "coefficient"
+          ? coefficientTrendPreviewLoading
+          : false;
+  const activeTrendPreviewPath =
+    activeTrendPreview === "fit"
+      ? trendAnalysisResult?.plot_path ?? null
+      : activeTrendPreview === "parameter"
+        ? currentParameterPlotPath
+        : activeTrendPreview === "coefficient"
+          ? currentCoefficientPlotPath
+          : null;
+  const trendAnalysisPanel = (
+    <div className="trend-analysis-panel">
+      <div className="trend-analysis-header">
+        <h3 className="modal-subtitle">Trend Analysis</h3>
+        <p className="trend-analysis-description">
+          Analyze run history at any point during tuning and review the generated summary and trend plots here.
+        </p>
+      </div>
+      <div className="trend-analysis-controls">
+        <label className="label trend-analysis-field">
+          Dataset ID Override
+            <input
+              type="text"
+              list={trendDatasetInputId}
+              className="path-input"
+              value={trendDatasetOverride}
+            onChange={(event) => setTrendDatasetOverride(event.target.value)}
+            placeholder={latestTrendDatasetLabel ?? "Latest dataset"}
+            disabled={trendAnalysisRunning || !trendAnalysisAvailable}
+          />
+          <datalist id={trendDatasetInputId}>
+            {filteredTrendDatasetOptions.map((datasetId) => (
+              <option key={datasetId} value={datasetId} />
+            ))}
+          </datalist>
+        </label>
+        <label className="label trend-analysis-field trend-analysis-field-small">
+          Latest Runs
+            <input
+              type="number"
+              min={1}
+              max={
+                typeof activeTrendDatasetRunCount === "number" && activeTrendDatasetRunCount > 0
+                  ? activeTrendDatasetRunCount
+                  : undefined
+              }
+              className="path-input"
+              value={trendLimitInput}
+              onChange={(event) => setTrendLimitInput(event.target.value)}
+              disabled={trendAnalysisRunning || !trendAnalysisAvailable}
+            />
+        </label>
+        <label className="label trend-analysis-field trend-analysis-field-small">
+          Rolling Window
+          <input
+            type="number"
+            min={1}
+            className="path-input"
+            value={trendWindowInput}
+            onChange={(event) => setTrendWindowInput(event.target.value)}
+            disabled={trendAnalysisRunning || !trendAnalysisAvailable}
+          />
+        </label>
+        <button
+          type="button"
+          className="button trend-analysis-run"
+          onClick={handleTrendAnalysisRun}
+          disabled={
+            !outputDirectory || trendAnalysisRunning || !trendAnalysisAvailable
+          }
+        >
+          {trendAnalysisRunning ? "Analyzing..." : "Run Trend Analysis"}
+        </button>
+        </div>
+        <div className="trend-analysis-helper-row">
+          <span className="trend-analysis-helper">
+            {selectedTrendDatasetId
+              ? "Using selected dataset override."
+              : latestTrendDatasetLabel
+                ? `Using latest dataset by default: ${latestTrendDatasetLabel}`
+                : "Leave Dataset ID Override blank to use the latest dataset."}
+          </span>
+          <span className="trend-analysis-helper">{trendLatestRunsHelper}</span>
+          {trendDatasetOptionsLoading ? (
+            <span className="trend-analysis-helper">Loading dataset suggestions...</span>
+          ) : null}
+        </div>
+      {trendDatasetOptionsError ? (
+        <div className="progress-text error">{trendDatasetOptionsError}</div>
+      ) : null}
+      {trendAnalysisAvailabilityMessage ? (
+        <div className="progress-text error">{trendAnalysisAvailabilityMessage}</div>
+      ) : null}
+      {trendAnalysisMessage ? (
+        <div className="progress-text">{trendAnalysisMessage}</div>
+      ) : null}
+      {trendAnalysisError ? (
+        <div className="progress-text error">{trendAnalysisError}</div>
+      ) : null}
+      {trendAnalysisResult && trendSummary ? (
+        <div className="trend-analysis-results">
+          <div className="trend-analysis-summary">
+            <div className="trend-analysis-summary-rows">
+              <div className="trend-analysis-summary-row trend-analysis-summary-row-dataset">
+                <span className="trend-analysis-summary-item">
+                  <strong>Dataset:</strong> {trendAnalysisResult.dataset_id ?? "N/A"}
+                </span>
+              </div>
+              <div className="trend-analysis-summary-row">
+                <span className="trend-analysis-summary-item">
+                  <strong>Run range:</strong> {trendSummary.latest_slice_run_start}-{trendSummary.latest_slice_run_end}
+                </span>
+                <span className="trend-analysis-summary-item">
+                  <strong>Best run:</strong>{" "}
+                  {formatTrendBestReferenceInline(trendSummary)}
+                  {" "}
+                  (
+                  best fit:{" "}
+                  {typeof trendSummary.best_fit === "number"
+                    ? trendSummary.best_fit.toFixed(4)
+                    : "N/A"}
+                  )
+                </span>
+              </div>
+              <div className="trend-analysis-summary-row">
+                <span className="trend-analysis-summary-item">
+                  <strong>Best run model id:</strong>{" "}
+                  {trendSummary.best_model_id ?? "N/A"}
+                </span>
+              </div>
+              <div className="trend-analysis-summary-row">
+                <span className="trend-analysis-summary-item">
+                  <strong>Parameters:</strong> {trendAnalysisResult.parameter_count}
+                </span>
+                <span className="trend-analysis-summary-item">
+                  <strong>Coefficients:</strong> {trendAnalysisResult.coefficient_count}
+                </span>
+                <span className="trend-analysis-summary-item">
+                  <strong>Output variables:</strong> {trendAnalysisResult.output_variable_count}
+                </span>
+              </div>
+            </div>
+          </div>
+          <div className="trend-analysis-actions">
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => handleOpenArtifact(trendAnalysisResult.summary_path)}
+            >
+              Analysis Summary
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => handleOpenArtifact(trendAnalysisResult.output_dir)}
+            >
+              Analysis Save Folder
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => openTrendPreview("fit")}
+            >
+              Fit Metric Trend
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => openTrendPreview("parameter")}
+              disabled={parameterPageCount === 0}
+            >
+              Parameter Trend
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() => openTrendPreview("coefficient")}
+              disabled={coefficientPageCount === 0}
+            >
+              Coefficient Trend
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 
   return (
     <section className="tune-container">
@@ -1394,6 +2194,131 @@ function TuneIFsPage({
           )}
         </div>
       </div>
+
+      {trendAnalysisPanel}
+
+      {activeTrendPreview ? (
+        <div
+          className="modal-backdrop"
+          onClick={closeTrendPreview}
+          role="presentation"
+        >
+          <div
+            className="modal-content ml-progress-modal trend-preview-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={activeTrendPreviewTitle}
+          >
+            <div className="trend-preview-modal-header">
+              <div>
+                <h3 className="modal-title">{activeTrendPreviewTitle}</h3>
+                <p className="modal-subtitle trend-preview-modal-subtitle">
+                  {activeTrendPreviewSubtitle}
+                </p>
+              </div>
+              <div className="trend-analysis-page-controls trend-preview-modal-actions">
+                {activeTrendPreview === "parameter" ? (
+                  <>
+                    <button
+                      type="button"
+                      className="button secondary trend-analysis-page-button"
+                      onClick={() => handleParameterTrendPageStep(-1)}
+                      disabled={parameterPageCount <= 1 || currentParameterPage <= 1}
+                    >
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      className="button secondary trend-analysis-page-button"
+                      onClick={() => activeTrendPreviewPath && handleOpenArtifact(activeTrendPreviewPath)}
+                      disabled={!activeTrendPreviewPath}
+                    >
+                      Open Current Page
+                    </button>
+                    <button
+                      type="button"
+                      className="button secondary trend-analysis-page-button"
+                      onClick={() => handleParameterTrendPageStep(1)}
+                      disabled={parameterPageCount <= 1 || currentParameterPage >= parameterPageCount}
+                    >
+                      Next
+                    </button>
+                  </>
+                ) : null}
+
+                {activeTrendPreview === "coefficient" ? (
+                  <>
+                    <button
+                      type="button"
+                      className="button secondary trend-analysis-page-button"
+                      onClick={() => handleCoefficientTrendPageStep(-1)}
+                      disabled={coefficientPageCount <= 1 || currentCoefficientPage <= 1}
+                    >
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      className="button secondary trend-analysis-page-button"
+                      onClick={() => activeTrendPreviewPath && handleOpenArtifact(activeTrendPreviewPath)}
+                      disabled={!activeTrendPreviewPath}
+                    >
+                      Open Current Page
+                    </button>
+                    <button
+                      type="button"
+                      className="button secondary trend-analysis-page-button"
+                      onClick={() => handleCoefficientTrendPageStep(1)}
+                      disabled={
+                        coefficientPageCount <= 1 || currentCoefficientPage >= coefficientPageCount
+                      }
+                    >
+                      Next
+                    </button>
+                  </>
+                ) : null}
+
+                {activeTrendPreview === "fit" ? (
+                  <button
+                    type="button"
+                    className="button secondary trend-analysis-page-button"
+                    onClick={() => activeTrendPreviewPath && handleOpenArtifact(activeTrendPreviewPath)}
+                    disabled={!activeTrendPreviewPath}
+                  >
+                    Open File
+                  </button>
+                ) : null}
+
+                <button
+                  type="button"
+                  className="button secondary trend-preview-close"
+                  onClick={closeTrendPreview}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {activeTrendPreviewLoading ? (
+              <div className="trend-analysis-preview-empty trend-preview-modal-body">
+                Loading trend preview...
+              </div>
+            ) : activeTrendPreviewUrl ? (
+              <div className="trend-preview-modal-body">
+                <img
+                  src={activeTrendPreviewUrl}
+                  alt={activeTrendPreviewTitle}
+                  className="trend-preview-modal-image"
+                />
+              </div>
+            ) : (
+              <div className="trend-analysis-preview-empty trend-preview-modal-body">
+                No trend preview is available yet.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
 
     </section>
   );
@@ -1756,6 +2681,7 @@ function App() {
   };
 
   const missingFiles = useMemo(() => result?.missingFiles ?? [], [result]);
+  const infoMessages = useMemo(() => result?.infoMessages ?? [], [result]);
   const requirements = useMemo(() => result?.requirements ?? [], [result]);
   const hasValidResult = result?.valid === true;
   const outputTitle =
@@ -1932,6 +2858,20 @@ function App() {
               </div>
               {result.base_year != null && (
                 <div className="base-year">Base year: {result.base_year}</div>
+              )}
+
+              {infoMessages.length > 0 && (
+                <div className="requirements">
+                  <h3>Info</h3>
+                  <ul>
+                    {infoMessages.map((message) => (
+                      <li key={message} className="item success">
+                        <span className="icon">OK</span>
+                        <span>{message}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
 
               {(ifsFolderCheck || outputFolderCheck || inputFileCheck) && (

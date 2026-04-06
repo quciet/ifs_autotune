@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import json
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -22,7 +21,9 @@ from analysis.run_history import (
     parameter_column_names,
 )
 from analysis.trend_summary import compare_rolling_segments
+from model_run_store import insert_model_run
 from model_status import FIT_EVALUATED, IFS_RUN_COMPLETED, IFS_RUN_FAILED
+from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
 
 
 def build_history_db(
@@ -44,63 +45,27 @@ def build_history_db(
 ) -> None:
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute(
-            """
-            CREATE TABLE model_input (
-                model_id TEXT PRIMARY KEY,
-                dataset_id TEXT,
-                input_param TEXT,
-                input_coef TEXT
+        ensure_current_bigpopa_schema(conn.cursor())
+        for index, row in enumerate(rows):
+            insert_model_run(
+                conn,
+                ifs_id=1,
+                model_id=row[0],
+                dataset_id=row[1],
+                input_param=row[8] if len(row) > 8 and row[8] is not None else {"param_a": float(index + 1)},
+                input_coef=(
+                    row[9]
+                    if len(row) > 9 and row[9] is not None
+                    else {"func_a": {"x_a": {"beta_a": float(index + 1)}}}
+                ),
+                output_set={"WGDP": "hist_wgdp"},
+                model_status=row[2],
+                fit_pooled=row[3],
+                trial_index=row[4],
+                batch_index=row[5],
+                started_at_utc=row[6],
+                completed_at_utc=row[7],
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE model_output (
-                model_id TEXT PRIMARY KEY,
-                model_status TEXT,
-                fit_pooled REAL,
-                trial_index INTEGER,
-                batch_index INTEGER,
-                started_at_utc TEXT,
-                completed_at_utc TEXT
-            )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO model_input (model_id, dataset_id, input_param, input_coef)
-            VALUES (?, ?, ?, ?)
-            """,
-            [
-                (
-                    row[0],
-                    row[1],
-                    json.dumps(row[8] if len(row) > 8 and row[8] is not None else {"param_a": float(index + 1)}),
-                    json.dumps(
-                        row[9]
-                        if len(row) > 9 and row[9] is not None
-                        else {"func_a": {"x_a": {"beta_a": float(index + 1)}}}
-                    ),
-                )
-                for index, row in enumerate(rows)
-            ],
-        )
-        conn.executemany(
-            """
-            INSERT INTO model_output (
-                model_id,
-                model_status,
-                fit_pooled,
-                trial_index,
-                batch_index,
-                started_at_utc,
-                completed_at_utc
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [(row[0], row[2], row[3], row[4], row[5], row[6], row[7]) for row in rows],
-        )
         conn.commit()
     finally:
         conn.close()
@@ -147,30 +112,8 @@ def test_load_run_history_defaults_to_dataset_of_newest_tracked_run(tmp_path: Pa
     build_history_db(
         db_path,
         [
-            (
-                "older-a",
-                "dataset-a",
-                "completed",
-                0.9,
-                1,
-                1,
-                "2026-03-24T00:00:00Z",
-                "2026-03-24T00:01:00Z",
-                None,
-                None,
-            ),
-            (
-                "newer-b",
-                "dataset-b",
-                "completed",
-                0.8,
-                1,
-                1,
-                "2026-03-24T01:00:00Z",
-                "2026-03-24T01:01:00Z",
-                None,
-                None,
-            ),
+            ("older-a", "dataset-a", "completed", 0.9, 1, 1, "2026-03-24T00:00:00Z", "2026-03-24T00:01:00Z", None, None),
+            ("newer-b", "dataset-b", "completed", 0.8, 1, 1, "2026-03-24T01:00:00Z", "2026-03-24T01:01:00Z", None, None),
         ],
     )
 
@@ -193,53 +136,16 @@ def test_round_derivation_matches_trial_reset_ordering(tmp_path: Path) -> None:
     build_history_db(
         db_path,
         [
-            (
-                "round-1-last",
-                "dataset-a",
-                "completed",
-                0.9,
-                250,
-                1,
-                "2026-03-24T00:00:00Z",
-                "2026-03-24T00:05:00Z",
-                None,
-                None,
-            ),
-            (
-                "round-2-first",
-                "dataset-a",
-                "completed",
-                0.8,
-                1,
-                1,
-                "2026-03-24T01:00:00Z",
-                "2026-03-24T01:05:00Z",
-                None,
-                None,
-            ),
-            (
-                "round-3-first",
-                "dataset-a",
-                "completed",
-                0.7,
-                1,
-                1,
-                "2026-03-24T02:00:00Z",
-                "2026-03-24T02:05:00Z",
-                None,
-                None,
-            ),
+            ("round-1-last", "dataset-a", "completed", 0.9, 250, 1, "2026-03-24T00:00:00Z", "2026-03-24T00:05:00Z", None, None),
+            ("round-2-first", "dataset-a", "completed", 0.8, 1, 1, "2026-03-24T01:00:00Z", "2026-03-24T01:05:00Z", None, None),
+            ("round-3-first", "dataset-a", "completed", 0.7, 1, 1, "2026-03-24T02:00:00Z", "2026-03-24T02:05:00Z", None, None),
         ],
     )
 
     with sqlite3.connect(db_path) as conn:
         _, rows = load_run_history(conn, dataset_id="dataset-a")
 
-    assert [row.model_id for row in rows] == [
-        "round-1-last",
-        "round-2-first",
-        "round-3-first",
-    ]
+    assert [row.model_id for row in rows] == ["round-1-last", "round-2-first", "round-3-first"]
     assert [row.derived_round_index for row in rows] == [1, 2, 3]
 
 
@@ -377,87 +283,16 @@ def test_analyze_latest_runs_writes_artifacts_under_dataset_folder(tmp_path: Pat
     build_history_db(
         db_path,
         [
-            (
-                "m1",
-                "dataset-z",
-                "completed",
-                0.90,
-                1,
-                1,
-                "2026-03-24T00:00:00Z",
-                "2026-03-24T00:01:00Z",
-                {"alpha": 1.0},
-                {"func_a": {"x_a": {"beta_a": 0.1}}},
-            ),
-            (
-                "m2",
-                "dataset-z",
-                "completed",
-                0.70,
-                2,
-                1,
-                "2026-03-24T00:02:00Z",
-                "2026-03-24T00:03:00Z",
-                {"alpha": 1.1},
-                {"func_a": {"x_a": {"beta_a": 0.2}}},
-            ),
-            (
-                "m3",
-                "dataset-z",
-                "completed",
-                0.60,
-                3,
-                1,
-                "2026-03-24T00:04:00Z",
-                "2026-03-24T00:05:00Z",
-                {"alpha": 1.2},
-                {"func_a": {"x_a": {"beta_a": 0.3}}},
-            ),
-            (
-                "m4",
-                "dataset-z",
-                "completed",
-                0.55,
-                4,
-                1,
-                "2026-03-24T00:06:00Z",
-                "2026-03-24T00:07:00Z",
-                {"alpha": 1.3},
-                {"func_a": {"x_a": {"beta_a": 0.4}}},
-            ),
-            (
-                "m5",
-                "dataset-z",
-                "completed",
-                0.54,
-                5,
-                1,
-                "2026-03-24T00:08:00Z",
-                "2026-03-24T00:09:00Z",
-                {"alpha": 1.4},
-                {"func_a": {"x_a": {"beta_a": 0.5}}},
-            ),
-            (
-                "m6",
-                "dataset-z",
-                "completed",
-                0.54,
-                6,
-                1,
-                "2026-03-24T00:10:00Z",
-                "2026-03-24T00:11:00Z",
-                {"alpha": 1.5},
-                {"func_a": {"x_a": {"beta_a": 0.6}}},
-            ),
+            ("m1", "dataset-z", "completed", 0.90, 1, 1, "2026-03-24T00:00:00Z", "2026-03-24T00:01:00Z", {"alpha": 1.0}, {"func_a": {"x_a": {"beta_a": 0.1}}}),
+            ("m2", "dataset-z", "completed", 0.70, 2, 1, "2026-03-24T00:02:00Z", "2026-03-24T00:03:00Z", {"alpha": 1.1}, {"func_a": {"x_a": {"beta_a": 0.2}}}),
+            ("m3", "dataset-z", "completed", 0.60, 3, 1, "2026-03-24T00:04:00Z", "2026-03-24T00:05:00Z", {"alpha": 1.2}, {"func_a": {"x_a": {"beta_a": 0.3}}}),
+            ("m4", "dataset-z", "completed", 0.55, 4, 1, "2026-03-24T00:06:00Z", "2026-03-24T00:07:00Z", {"alpha": 1.3}, {"func_a": {"x_a": {"beta_a": 0.4}}}),
+            ("m5", "dataset-z", "completed", 0.54, 5, 1, "2026-03-24T00:08:00Z", "2026-03-24T00:09:00Z", {"alpha": 1.4}, {"func_a": {"x_a": {"beta_a": 0.5}}}),
+            ("m6", "dataset-z", "completed", 0.54, 6, 1, "2026-03-24T00:10:00Z", "2026-03-24T00:11:00Z", {"alpha": 1.5}, {"func_a": {"x_a": {"beta_a": 0.6}}}),
         ],
     )
 
-    artifacts = analyze_latest_runs(
-        bigpopa_db=db_path,
-        output_root=output_root,
-        limit=6,
-        window=3,
-    )
+    artifacts = analyze_latest_runs(bigpopa_db=db_path, output_root=output_root, limit=6, window=3)
 
     expected_dir = output_root / dataset_output_name("dataset-z")
     assert artifacts.output_dir == expected_dir
@@ -486,63 +321,14 @@ def test_analyze_latest_runs_uses_consecutive_run_index_across_round_resets(tmp_
     build_history_db(
         db_path,
         [
-            (
-                "m1",
-                "dataset-r",
-                "completed",
-                0.90,
-                3,
-                1,
-                "2026-03-24T00:00:00Z",
-                "2026-03-24T00:01:00Z",
-                {"alpha": 1.0},
-                {"func_a": {"x_a": {"beta_a": 0.1}}},
-            ),
-            (
-                "m2",
-                "dataset-r",
-                "completed",
-                0.80,
-                4,
-                1,
-                "2026-03-24T00:02:00Z",
-                "2026-03-24T00:03:00Z",
-                {"alpha": 1.1},
-                {"func_a": {"x_a": {"beta_a": 0.2}}},
-            ),
-            (
-                "m3",
-                "dataset-r",
-                "completed",
-                0.70,
-                1,
-                1,
-                "2026-03-24T00:04:00Z",
-                "2026-03-24T00:05:00Z",
-                {"alpha": 1.2},
-                {"func_a": {"x_a": {"beta_a": 0.3}}},
-            ),
-            (
-                "m4",
-                "dataset-r",
-                "completed",
-                0.60,
-                2,
-                1,
-                "2026-03-24T00:06:00Z",
-                "2026-03-24T00:07:00Z",
-                {"alpha": 1.3},
-                {"func_a": {"x_a": {"beta_a": 0.4}}},
-            ),
+            ("m1", "dataset-r", "completed", 0.90, 3, 1, "2026-03-24T00:00:00Z", "2026-03-24T00:01:00Z", {"alpha": 1.0}, {"func_a": {"x_a": {"beta_a": 0.1}}}),
+            ("m2", "dataset-r", "completed", 0.80, 4, 1, "2026-03-24T00:02:00Z", "2026-03-24T00:03:00Z", {"alpha": 1.1}, {"func_a": {"x_a": {"beta_a": 0.2}}}),
+            ("m3", "dataset-r", "completed", 0.70, 1, 1, "2026-03-24T00:04:00Z", "2026-03-24T00:05:00Z", {"alpha": 1.2}, {"func_a": {"x_a": {"beta_a": 0.3}}}),
+            ("m4", "dataset-r", "completed", 0.60, 2, 1, "2026-03-24T00:06:00Z", "2026-03-24T00:07:00Z", {"alpha": 1.3}, {"func_a": {"x_a": {"beta_a": 0.4}}}),
         ],
     )
 
-    artifacts = analyze_latest_runs(
-        bigpopa_db=db_path,
-        output_root=output_root,
-        limit=4,
-        window=2,
-    )
+    artifacts = analyze_latest_runs(bigpopa_db=db_path, output_root=output_root, limit=4, window=2)
 
     with artifacts.metrics_path.open("r", encoding="utf-8", newline="") as handle:
         parsed_rows = list(csv.DictReader(handle))
@@ -560,42 +346,9 @@ def test_load_run_history_hides_fallback_fit_for_missing_fit_statuses(tmp_path: 
     build_history_db(
         db_path,
         [
-            (
-                "failed-run",
-                "dataset-a",
-                IFS_RUN_FAILED,
-                1e6,
-                1,
-                1,
-                "2026-03-24T00:00:00Z",
-                "2026-03-24T00:01:00Z",
-                None,
-                None,
-            ),
-            (
-                "fit-missing",
-                "dataset-a",
-                IFS_RUN_COMPLETED,
-                1e6,
-                2,
-                1,
-                "2026-03-24T00:02:00Z",
-                "2026-03-24T00:03:00Z",
-                None,
-                None,
-            ),
-            (
-                "fit-ok",
-                "dataset-a",
-                FIT_EVALUATED,
-                0.4,
-                3,
-                1,
-                "2026-03-24T00:04:00Z",
-                "2026-03-24T00:05:00Z",
-                None,
-                None,
-            ),
+            ("failed-run", "dataset-a", IFS_RUN_FAILED, 1e6, 1, 1, "2026-03-24T00:00:00Z", "2026-03-24T00:01:00Z", None, None),
+            ("fit-missing", "dataset-a", IFS_RUN_COMPLETED, 1e6, 2, 1, "2026-03-24T00:02:00Z", "2026-03-24T00:03:00Z", None, None),
+            ("fit-ok", "dataset-a", FIT_EVALUATED, 0.4, 3, 1, "2026-03-24T00:04:00Z", "2026-03-24T00:05:00Z", None, None),
         ],
     )
 
@@ -614,30 +367,8 @@ def test_load_run_history_whitespace_dataset_override_uses_latest_dataset(tmp_pa
     build_history_db(
         db_path,
         [
-            (
-                "older-a",
-                "dataset-a",
-                "completed",
-                0.9,
-                1,
-                1,
-                "2026-03-24T00:00:00Z",
-                "2026-03-24T00:01:00Z",
-                None,
-                None,
-            ),
-            (
-                "newer-b",
-                "dataset-b",
-                "completed",
-                0.8,
-                1,
-                1,
-                "2026-03-24T01:00:00Z",
-                "2026-03-24T01:01:00Z",
-                None,
-                None,
-            ),
+            ("older-a", "dataset-a", "completed", 0.9, 1, 1, "2026-03-24T00:00:00Z", "2026-03-24T00:01:00Z", None, None),
+            ("newer-b", "dataset-b", "completed", 0.8, 1, 1, "2026-03-24T01:00:00Z", "2026-03-24T01:01:00Z", None, None),
         ],
     )
 
@@ -653,18 +384,7 @@ def test_load_run_history_invalid_dataset_override_has_clear_error(tmp_path: Pat
     build_history_db(
         db_path,
         [
-            (
-                "m1",
-                "dataset-a",
-                "completed",
-                0.9,
-                1,
-                1,
-                "2026-03-24T00:00:00Z",
-                "2026-03-24T00:01:00Z",
-                None,
-                None,
-            ),
+            ("m1", "dataset-a", "completed", 0.9, 1, 1, "2026-03-24T00:00:00Z", "2026-03-24T00:01:00Z", None, None),
         ],
     )
 
