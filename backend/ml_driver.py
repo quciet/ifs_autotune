@@ -30,6 +30,7 @@ sys.path.append(str(Path(__file__).resolve().parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import dataset_utils
+from artifact_retention import RETENTION_NONE, normalize_artifact_retention_mode
 from ml_method import normalize_ml_method
 from model_run_store import (
     count_completed_trial_runs,
@@ -1665,6 +1666,8 @@ def _run_model(
         command.extend(["--log", str(args.log)])
     if args.websessionid is not None:
         command.extend(["--websessionid", str(args.websessionid)])
+    if args.artifact_retention is not None:
+        command.extend(["--artifact-retention", str(args.artifact_retention)])
 
     # Ensure python knows where the package root is
     env = os.environ.copy()
@@ -1740,6 +1743,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log", default="jrs.txt")
     parser.add_argument("--websessionid", default="qsdqsqsdqsdqsdqs")
     parser.add_argument(
+        "--artifact-retention",
+        dest="artifact_retention",
+        default=RETENTION_NONE,
+        help="Artifact retention mode: none, best_only, or all",
+    )
+    parser.add_argument(
         "--initial-model-id",
         required=True,
         help="Model ID of the initial seed configuration to start the ML driver",
@@ -1763,6 +1772,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    args.artifact_retention = normalize_artifact_retention_mode(args.artifact_retention)
     args.output_folder = os.path.abspath(args.output_folder)
     args.ifs_root = os.path.abspath(args.ifs_root)
     stop_file = Path(args.stop_file).expanduser().resolve() if args.stop_file else None

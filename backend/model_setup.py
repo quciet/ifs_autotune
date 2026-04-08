@@ -21,6 +21,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from dataset_utils import compute_dataset_id, extract_structure_keys
+from artifact_retention import (
+    RETENTION_NONE,
+    finalize_model_artifacts,
+    normalize_artifact_retention_mode,
+    reset_directory,
+    staging_dir,
+)
 
 from log_ifs_version import log_version_metadata
 from ml_method import MLMethodConfig, load_required_ml_method
@@ -399,6 +406,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output-folder",
         required=False,
         help="Path to BIGPOPA output folder (contains bigpopa.db)",
+    )
+    parser.add_argument(
+        "--artifact-retention",
+        default=RETENTION_NONE,
+        help="Artifact retention mode: none, best_only, or all",
     )
     parser.add_argument(
         "--base-year",
@@ -1150,8 +1162,10 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     config_obj = canonical_config(ifs_id, input_param, input_coef, output_set)
     model_id = hash_model_id(config_obj)
-    output_dir = output_root / model_id
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = reset_directory(
+        staging_dir(output_root, model_id)
+    )
+    artifact_retention_mode = normalize_artifact_retention_mode(args.artifact_retention)
 
     inserted = 0
     dataset_diagnostics: Dict[str, Any] | None = None
@@ -1228,9 +1242,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     ]
 
     extract_return = None
+    retained_artifact_dir: Path | None = None
     try:
         extract_proc = subprocess.run(extract_args, check=False)
         extract_return = extract_proc.returncode
+        with sqlite3.connect(str(bigpopa_db_path)) as artifact_conn:
+            retained_artifact_dir = finalize_model_artifacts(
+                conn=artifact_conn,
+                output_dir=output_root,
+                model_id=model_id,
+                dataset_id=dataset_id,
+                mode=artifact_retention_mode,
+                staged_dir=output_dir,
+            )
     except Exception as exc:  # noqa: BLE001
         log("warn", "Failed to execute extract_compare", error=str(exc))
     log(
@@ -1253,6 +1277,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             "ifs_id": ifs_id,
             "model_id": model_id,
             "dataset_id": dataset_id,
+            "retained_artifact_dir": str(retained_artifact_dir) if retained_artifact_dir else None,
             "dataset_warning": dataset_warning,
             "dataset_diagnostics": dataset_diagnostics,
         },

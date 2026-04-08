@@ -19,6 +19,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from artifact_retention import (
+    RETENTION_NONE,
+    finalize_model_artifacts,
+    normalize_artifact_retention_mode,
+    reset_directory,
+    staging_dir,
+)
 from model_run_store import find_active_run_id_for_model, load_model_definition, update_model_run
 from model_status import (
     FALLBACK_FIT_POOLED,
@@ -67,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--model-id", required=True, help="Existing model identifier to execute.")
     parser.add_argument("--ifs-id", required=True, type=int, help="IFs version identifier.")
+    parser.add_argument(
+        "--artifact-retention",
+        default=RETENTION_NONE,
+        help="Artifact retention mode: none, best_only, or all",
+    )
     return parser
 
 
@@ -145,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     working_dir = os.path.join(ifs_root, "net8")
     model_id = args.model_id
     ifs_id = args.ifs_id
+    artifact_retention_mode = normalize_artifact_retention_mode(args.artifact_retention)
 
     progress_path = os.path.join(ifs_root, "RUNFILES", "progress.txt")
 
@@ -166,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         input_coef: Dict[str, object] = {}
         output_set: Dict[str, object] = {}
         definition = None
+        dataset_id: str | None = None
 
         try:
             with conn_bp:
@@ -203,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         input_param = definition.input_param
         input_coef = definition.input_coef
         output_set = definition.output_set
+        dataset_id = definition.dataset_id
 
         if base_year is None:
             emit_stage_response(
@@ -488,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         # === STEP 2: Automatically trigger extract_compare.py ===
+        retained_artifact_dir: Path | None = None
         try:
             extract_compare_path = Path(__file__).resolve().parent / "extract_compare.py"
             model_db_path = os.path.join(payload["model_folder"], f"Working.{model_id}.run.db")
@@ -538,19 +554,42 @@ def main(argv: list[str] | None = None) -> int:
                 ],
                 check=True,
             )
+            retained_artifact_dir = finalize_model_artifacts(
+                conn=conn_bp,
+                output_dir=Path(output_dir),
+                model_id=model_id,
+                dataset_id=dataset_id,
+                mode=artifact_retention_mode,
+                staged_dir=Path(payload["model_folder"]),
+            )
 
             emit_stage_response(
                 "success",
                 "extract_compare",
                 "Variable extraction and comparison completed.",
-                {"model_id": model_id, "ifs_id": ifs_id, "model_folder": payload["model_folder"]},
+                {
+                    "model_id": model_id,
+                    "ifs_id": ifs_id,
+                    "model_folder": str(retained_artifact_dir) if retained_artifact_dir else None,
+                },
             )
         except subprocess.CalledProcessError as exc:
+            retained_artifact_dir = finalize_model_artifacts(
+                conn=conn_bp,
+                output_dir=Path(output_dir),
+                model_id=model_id,
+                dataset_id=dataset_id,
+                mode=artifact_retention_mode,
+                staged_dir=Path(payload["model_folder"]),
+            )
             emit_stage_response(
                 "error",
                 "extract_compare",
                 f"extract_compare.py failed with return code {exc.returncode}",
-                {"model_id": model_id},
+                {
+                    "model_id": model_id,
+                    "retained_artifact_dir": str(retained_artifact_dir) if retained_artifact_dir else None,
+                },
             )
             return 1
         except Exception as exc:
@@ -586,8 +625,7 @@ def _prepare_run_artifacts(
     if not os.path.exists(source_sce):
         raise FileNotFoundError(source_sce)
 
-    model_dir = os.path.join(output_dir, model_id)
-    os.makedirs(model_dir, exist_ok=True)
+    model_dir = str(reset_directory(staging_dir(Path(output_dir), model_id)))
 
     destination_db = os.path.join(model_dir, f"Working.{model_id}.run.db")
     destination_sce = os.path.join(model_dir, f"Working.{model_id}.sce")

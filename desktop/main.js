@@ -1065,6 +1065,10 @@ ipcMain.handle("run-ml", async (_event, args) => {
             baseArgs.push("--base-year", String(args.baseYear));
           }
 
+          if (typeof args.artifactRetentionMode === "string" && args.artifactRetentionMode.trim().length > 0) {
+            baseArgs.push("--artifact-retention", args.artifactRetentionMode.trim());
+          }
+
           return baseArgs;
         })(),
         {
@@ -1575,6 +1579,13 @@ ipcMain.handle('run_ifs', async (_event, payload) => {
     args.push('--base-year', String(payload.baseYear));
   }
 
+  if (
+    typeof payload.artifactRetentionMode === 'string' &&
+    payload.artifactRetentionMode.trim().length > 0
+  ) {
+    args.push('--artifact-retention', payload.artifactRetentionMode.trim());
+  }
+
   return runPythonScript('ml_driver.py', args);
 });
 
@@ -1625,6 +1636,10 @@ ipcMain.handle('model_setup', async (_event, payload) => {
   const endYear = payload.endYear;
   const outputFolder =
     typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const artifactRetentionMode =
+    typeof payload.artifactRetentionMode === 'string'
+      ? payload.artifactRetentionMode.trim()
+      : '';
 
   const args = [
     '--ifs-root',
@@ -1639,6 +1654,9 @@ ipcMain.handle('model_setup', async (_event, payload) => {
 
   if (outputFolder) {
     args.push('--output-folder', outputFolder);
+  }
+  if (artifactRetentionMode) {
+    args.push('--artifact-retention', artifactRetentionMode);
   }
   return runPythonScript('model_setup.py', args, {
     progressChannel: 'model-setup-progress',

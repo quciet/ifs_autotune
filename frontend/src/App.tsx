@@ -21,6 +21,7 @@ import {
   type ApiStage,
   type ApiStatus,
   type CheckResponse,
+  type ArtifactRetentionMode,
   type IFsProgressEvent,
   type ModelSetupData,
   type MLDriverData,
@@ -73,6 +74,14 @@ type MLJobStatus = {
 };
 
 type TrendPreviewType = "fit" | "parameter" | "coefficient";
+
+const ARTIFACT_RETENTION_LABELS: Record<ArtifactRetentionMode, string> = {
+  none: "No saved model folders",
+  best_only: "Keep current best only",
+  all: "Keep all model folders",
+};
+
+const ARTIFACT_RETENTION_ORDER: ArtifactRetentionMode[] = ["none", "best_only", "all"];
 
 function formatTrendBestReference(summary: TrendAnalysisData["summary"]): string {
   if (
@@ -476,6 +485,8 @@ function TuneIFsPage({
   const [effectiveBaseYear, setEffectiveBaseYear] = useState<number | null>(
     typeof baseYear === "number" && Number.isFinite(baseYear) ? baseYear : null,
   );
+  const [artifactRetentionMode, setArtifactRetentionMode] =
+    useState<ArtifactRetentionMode>("none");
   const baseYearRef = useRef<number | null>(baseYear ?? null);
   const targetEndYearRef = useRef<number | null>(normalizedInitialEndYear);
   const parameterRef = useRef<Record<string, unknown>>({});
@@ -852,6 +863,7 @@ function TuneIFsPage({
     setProgressReferenceFitPooled(null);
     setProgressLatestProgressRowId(null);
     setRunResult(initialRunResult);
+    setArtifactRetentionMode("none");
     setLogEntries([]);
     logIdRef.current = 0;
     setProgressYear(null);
@@ -1355,6 +1367,17 @@ function TuneIFsPage({
     }
   };
 
+  const cycleArtifactRetentionMode = () => {
+    setArtifactRetentionMode((currentMode) => {
+      const currentIndex = ARTIFACT_RETENTION_ORDER.indexOf(currentMode);
+      const nextIndex =
+        currentIndex >= 0
+          ? (currentIndex + 1) % ARTIFACT_RETENTION_ORDER.length
+          : 0;
+      return ARTIFACT_RETENTION_ORDER[nextIndex] ?? "none";
+    });
+  };
+
   const openTrendPreview = (type: TrendPreviewType) => {
     setTrendAnalysisError(null);
     setActiveTrendPreview(type);
@@ -1493,6 +1516,7 @@ function TuneIFsPage({
         validatedPath,
         inputFilePath: validatedInputPath,
         outputFolder: outputDirectory ?? null,
+        artifactRetentionMode,
       });
 
       setModelSetupResult(response.data);
@@ -1620,6 +1644,7 @@ function TuneIFsPage({
         baseYear: baseYearRef.current,
         endYear: clampedEndYear,
         inputFilePath: validatedInputPath,
+        artifactRetentionMode,
       });
 
       if (
@@ -2019,6 +2044,18 @@ function TuneIFsPage({
               <div className="tune-meta-item tune-meta-item-path" title={outputDirectoryDisplay}>
                 <span className="tune-meta-label">Output folder:</span>
                 <OverflowAwareMiddleTruncate value={outputDirectoryDisplay} title={outputDirectoryDisplay} />
+              </div>
+              <div className="tune-meta-item tune-meta-item-retention">
+                <span className="tune-meta-label">Artifacts:</span>
+                <button
+                  type="button"
+                  className="tune-retention-toggle"
+                  onClick={cycleArtifactRetentionMode}
+                  disabled={modelSetupRunning || running}
+                  title="Cycle model artifact retention mode"
+                >
+                  {ARTIFACT_RETENTION_LABELS[artifactRetentionMode]}
+                </button>
               </div>
             </div>
           </div>

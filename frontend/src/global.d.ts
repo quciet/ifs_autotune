@@ -9,6 +9,8 @@ declare global {
     iterations?: number | null;
   }
 
+  type ArtifactRetentionMode = "none" | "best_only" | "all";
+
   interface MLProgressTrial {
     model_id: string | null;
     model_status: string | null;

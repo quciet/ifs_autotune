@@ -65,6 +65,7 @@ export type ModelSetupData = {
   ifs_id: number;
   model_id: string;
   dataset_id: string | null;
+  retained_artifact_dir?: string | null;
   dataset_warning?: string | null;
   dataset_diagnostics?: {
     reference_model_id?: string | null;
@@ -83,11 +84,11 @@ export type ModelSetupData = {
 export type RunIFsData = {
   ifs_id: number;
   model_id: string;
-  run_folder: string;
+  run_folder?: string | null;
   base_year?: number | null;
   end_year?: number | null;
   w_gdp?: number | null;
-  output_file?: string;
+  output_file?: string | null;
   metadata_file?: string;
 };
 
@@ -100,13 +101,15 @@ export type MLDriverData = {
   dataset_id?: string | null;
   ifs_id?: number;
   model_id?: string;
-  run_folder?: string;
+  run_folder?: string | null;
   w_gdp?: number | null;
-  output_file?: string;
+  output_file?: string | null;
   metadata_file?: string;
   base_year?: number | null;
   end_year?: number | null;
 };
+
+export type ArtifactRetentionMode = "none" | "best_only" | "all";
 
 export type MLProgressTrial = {
   run_id?: number | null;
@@ -336,6 +339,7 @@ export interface RunIFsParams {
   modelId: string;
   ifsId: number;
   inputFilePath?: string;
+  artifactRetentionMode?: ArtifactRetentionMode;
 }
 
 export type IFsProgressEvent = {
@@ -360,6 +364,7 @@ export async function modelSetup({
   validatedPath,
   inputFilePath,
   outputFolder,
+  artifactRetentionMode,
 }: {
   baseYear: number | null | undefined;
   endYear: number;
@@ -369,6 +374,7 @@ export async function modelSetup({
   validatedPath: string;
   inputFilePath: string;
   outputFolder?: string | null;
+  artifactRetentionMode?: ArtifactRetentionMode;
 }): Promise<StageSuccess<"model_setup", ModelSetupData>> {
   if (!window.electron?.invoke) {
     throw new StageError("model_setup", "Electron bridge is unavailable.");
@@ -384,6 +390,7 @@ export async function modelSetup({
       validatedPath,
       inputFilePath,
       outputFolder: outputFolder ?? null,
+      artifactRetentionMode: artifactRetentionMode ?? "none",
     };
     const result = await window.electron.invoke("model_setup", payload);
     return normalizeStageResponse(result, "model_setup");
@@ -402,6 +409,7 @@ export async function runML({
   modelId,
   ifsId,
   inputFilePath,
+  artifactRetentionMode,
 }: RunIFsParams): Promise<StageSuccess<"ml_driver", MLDriverData>> {
   if (!window.electron?.invoke) {
     throw new StageError("ml_driver", "Electron bridge is unavailable.");
@@ -426,6 +434,7 @@ export async function runML({
       modelId: normalizedModelId,
       ifsId: normalizedIfsId,
       inputFilePath: inputFilePath ?? null,
+      artifactRetentionMode: artifactRetentionMode ?? "none",
     });
     return normalizeStageResponse(payload, "ml_driver");
   } catch (error) {
