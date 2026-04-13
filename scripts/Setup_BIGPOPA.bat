@@ -12,6 +12,7 @@ set "VENV_CFG=backend\.venv\pyvenv.cfg"
 set "PYTHON_EXE="
 set "PYTHON_ARGS="
 set "PYTHON_DISPLAY="
+set "PYTHON_RESOLVED_EXE="
 
 echo ========================================================
 echo BIGPOPA setup
@@ -22,21 +23,24 @@ echo Searching automatically for Python 3.11+ via py, PATH, and common machine i
 if not exist "backend\pyproject.toml" (
   echo [ERROR] Could not find backend\pyproject.toml.
   echo Run this script from inside the BIGPOPA repository.
-  exit /b 1
+  goto :fail
 )
 
 call :find_python
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
+
+call :resolve_python_executable
+if errorlevel 1 goto :fail
 
 call :repair_venv
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 
 if not exist "%VENV_PY%" (
   echo [1/5] Creating required virtual environment at backend\.venv ...
   call :run_python -m venv backend\.venv
   if errorlevel 1 (
     echo [ERROR] Failed to create backend\.venv.
-    exit /b 1
+    goto :fail
   )
 ) else (
   echo [1/5] Using existing required virtual environment: backend\.venv
@@ -46,7 +50,7 @@ echo [2/5] Upgrading pip in backend\.venv ...
 "%VENV_PY%" -m pip install -U pip
 if errorlevel 1 (
   echo [ERROR] pip upgrade failed.
-  exit /b 1
+  goto :fail
 )
 
 echo [3/5] Installing backend dependencies ^(editable install^) ...
@@ -54,11 +58,11 @@ echo [3/5] Installing backend dependencies ^(editable install^) ...
 if errorlevel 1 (
   echo [ERROR] Backend install failed.
   echo Try deleting backend\*.egg-info and run this script again.
-  exit /b 1
+  goto :fail
 )
 
 call :check_npm
-if errorlevel 1 exit /b 1
+if errorlevel 1 goto :fail
 
 if exist "frontend\package.json" (
   echo [4/5] Installing frontend dependencies ...
@@ -67,7 +71,7 @@ if exist "frontend\package.json" (
   if errorlevel 1 (
     popd
     echo [ERROR] Frontend npm install failed.
-    exit /b 1
+    goto :fail
   )
   popd
 ) else (
@@ -81,24 +85,38 @@ if exist "desktop\package.json" (
   if errorlevel 1 (
     popd
     echo [ERROR] Desktop npm install failed.
-    exit /b 1
+    goto :fail
   )
   popd
 ) else (
   echo [ERROR] desktop\package.json not found.
   echo Ensure the desktop directory exists and contains package.json, then re-run this script.
-  exit /b 1
+  goto :fail
 )
 
+:success
+set "SETUP_EXIT_CODE=0"
+goto :finish
+
+:fail
+set "SETUP_EXIT_CODE=1"
+goto :finish
+
+:finish
 echo.
-echo BIGPOPA setup is complete.
-echo If you move this repository to a new folder later, re-run this script to rebuild backend\.venv for the new path.
-echo Use "%SCRIPT_DIR%Run_BIGPOPA.bat" to launch the app.
-echo Use Trend Analysis from the desktop app's Tune page to generate the latest trend analysis.
+if "%SETUP_EXIT_CODE%"=="0" (
+  echo BIGPOPA setup is complete.
+  echo If you move this repository to a new folder later, re-run this script to rebuild backend\.venv for the new path.
+  echo Use "%SCRIPT_DIR%Run_BIGPOPA.bat" to launch the app.
+  echo Use Trend Analysis from the desktop app's Tune page to generate the latest trend analysis.
+) else (
+  echo BIGPOPA setup did not complete successfully.
+  echo Review the messages above, fix the reported issue, and re-run this script.
+)
 echo.
 echo Press any key to continue.
 pause >nul
-exit /b 0
+exit /b %SETUP_EXIT_CODE%
 
 :find_python
 for /f "delims=" %%I in ('where py 2^>nul') do (
@@ -163,6 +181,25 @@ exit /b 0
 "%PYTHON_EXE%" %PYTHON_ARGS% %*
 exit /b %errorlevel%
 
+:resolve_python_executable
+set "PYTHON_RESOLVED_EXE="
+set "PYTHON_RESOLVE_FILE=%TEMP%\bigpopa-python-resolve-%RANDOM%%RANDOM%.txt"
+call :run_python -c "import sys; print(sys.executable)" > "%PYTHON_RESOLVE_FILE%" 2>nul
+if errorlevel 1 (
+  if exist "%PYTHON_RESOLVE_FILE%" del /q "%PYTHON_RESOLVE_FILE%" >nul 2>nul
+  echo [ERROR] Failed to resolve the selected Python executable.
+  exit /b 1
+)
+for /f "usebackq delims=" %%I in ("%PYTHON_RESOLVE_FILE%") do (
+  if not defined PYTHON_RESOLVED_EXE set "PYTHON_RESOLVED_EXE=%%~fI"
+)
+if exist "%PYTHON_RESOLVE_FILE%" del /q "%PYTHON_RESOLVE_FILE%" >nul 2>nul
+if not defined PYTHON_RESOLVED_EXE (
+  echo [ERROR] Failed to resolve the selected Python executable.
+  exit /b 1
+)
+exit /b 0
+
 :repair_venv
 setlocal EnableDelayedExpansion
 if not exist "%VENV_DIR%" (
@@ -184,9 +221,14 @@ set "VENV_COMMAND="
 set "VENV_REASON="
 set "VENV_HAS_PYTHON=0"
 set "VENV_HAS_CFG=0"
+set "VENV_HOME="
+set "VENV_EXECUTABLE="
+set "VENV_RECORDED_PYTHON_EXE="
+set "RESOLVED_CURRENT_PYTHON_EXE="
 
 if exist "%VENV_PY%" set "VENV_HAS_PYTHON=1"
 if exist "%VENV_CFG%" set "VENV_HAS_CFG=1"
+if defined PYTHON_RESOLVED_EXE for %%I in ("!PYTHON_RESOLVED_EXE!") do set "RESOLVED_CURRENT_PYTHON_EXE=%%~fI"
 
 if "!VENV_HAS_CFG!"=="0" (
   set "VENV_REASON=backend\.venv is missing pyvenv.cfg."
@@ -203,6 +245,8 @@ if "!VENV_HAS_PYTHON!"=="0" (
 if "!VENV_HAS_CFG!"=="1" (
   for /f "usebackq delims=" %%L in ("%VENV_CFG%") do (
     set "CFG_LINE=%%L"
+    if /I "!CFG_LINE:~0,7!"=="home = " set "VENV_HOME=!CFG_LINE:~7!"
+    if /I "!CFG_LINE:~0,13!"=="executable = " set "VENV_EXECUTABLE=!CFG_LINE:~13!"
     if /I "!CFG_LINE:~0,10!"=="command = " set "VENV_COMMAND=!CFG_LINE:~10!"
   )
   if defined VENV_COMMAND (
@@ -212,6 +256,21 @@ if "!VENV_HAS_CFG!"=="1" (
         set "VENV_REASON=!VENV_REASON! backend\.venv was created for a different repository path."
       ) else (
         set "VENV_REASON=backend\.venv was created for a different repository path."
+      )
+    )
+  )
+  if defined VENV_EXECUTABLE (
+    for %%I in ("!VENV_EXECUTABLE!") do set "VENV_RECORDED_PYTHON_EXE=%%~fI"
+  )
+  if not defined VENV_RECORDED_PYTHON_EXE if defined VENV_HOME (
+    for %%I in ("!VENV_HOME!\python.exe") do set "VENV_RECORDED_PYTHON_EXE=%%~fI"
+  )
+  if defined VENV_RECORDED_PYTHON_EXE if defined RESOLVED_CURRENT_PYTHON_EXE (
+    if /I not "!VENV_RECORDED_PYTHON_EXE!"=="!RESOLVED_CURRENT_PYTHON_EXE!" (
+      if defined VENV_REASON (
+        set "VENV_REASON=!VENV_REASON! backend\.venv was created with a different Python executable."
+      ) else (
+        set "VENV_REASON=backend\.venv was created with a different Python executable."
       )
     )
   )
