@@ -455,12 +455,18 @@ export function InputProfilesPanel({
         createName.trim(),
         createDescription.trim() || null,
       );
-      applyDetail(created);
-      onSelectedProfileIdChange(created.profile.profile_id);
+      const createdProfileId = created.profile.profile_id;
+      closeCreateModal();
+      onSelectedProfileIdChange(createdProfileId);
+      await refreshProfiles(createdProfileId);
+      const createdDetail = await loadProfileDetail(createdProfileId);
+      if (!createdDetail) {
+        setPanelMode("summary");
+        setError("Profile was created, but the editor could not be opened. Select the profile and try again.");
+        return;
+      }
       setActiveTab("parameters");
       setPanelMode("editor");
-      closeCreateModal();
-      await refreshProfiles(created.profile.profile_id);
       setMessage("Profile created. Start with parameters.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create the input profile.");
@@ -537,21 +543,28 @@ export function InputProfilesPanel({
     setError(null);
     setMessage(null);
     try {
-      let copied = await saveProfileAs(outputDirectory, detail.profile.profile_id, saveAsName.trim());
+      const copied = await saveProfileAs(outputDirectory, detail.profile.profile_id, saveAsName.trim());
+      const copiedProfileId = copied.profile.profile_id;
       const normalizedDescription = saveAsDescription.trim();
       const copiedDescription = copied.profile.description ?? "";
       if (normalizedDescription !== copiedDescription) {
-        copied = await updateProfileMeta(
+        await updateProfileMeta(
           outputDirectory,
-          copied.profile.profile_id,
+          copiedProfileId,
           copied.profile.name,
           normalizedDescription || null,
         );
       }
-      applyDetail(copied);
-      onSelectedProfileIdChange(copied.profile.profile_id);
       closeSaveAsModal();
-      await refreshProfiles(copied.profile.profile_id);
+      onSelectedProfileIdChange(copiedProfileId);
+      await refreshProfiles(copiedProfileId);
+      const copiedDetail = await loadProfileDetail(copiedProfileId);
+      if (!copiedDetail) {
+        setPanelMode("summary");
+        setError("Profile copy was created, but the editor could not be opened. Select the profile and try again.");
+        return;
+      }
+      setPanelMode("editor");
       setMessage("Profile saved as a new copy.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save the profile as a new copy.");

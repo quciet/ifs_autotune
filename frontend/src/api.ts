@@ -124,6 +124,10 @@ export type InputProfileDetail = {
   validation: InputProfileValidation;
 };
 
+export type InputProfileMutationResponse = {
+  profile: InputProfileSummary;
+};
+
 export type ApiStage = "model_setup" | "run_ifs" | "ml_driver";
 
 export type ApiStatus = "success" | "error";
@@ -667,7 +671,7 @@ export async function createProfile(
   ifsStaticId: number,
   name: string,
   description?: string | null,
-): Promise<InputProfileDetail> {
+): Promise<InputProfileMutationResponse> {
   if (!window.electron?.invoke) {
     throw new Error("Electron bridge is unavailable.");
   }
@@ -676,7 +680,7 @@ export async function createProfile(
     ifsStaticId,
     name,
     description: description ?? null,
-  })) as InputProfileDetail;
+  })) as InputProfileMutationResponse;
 }
 
 export async function updateProfileMeta(
@@ -700,7 +704,7 @@ export async function saveProfileAs(
   outputFolder: string,
   profileId: number,
   name: string,
-): Promise<InputProfileDetail> {
+): Promise<InputProfileMutationResponse> {
   if (!window.electron?.invoke) {
     throw new Error("Electron bridge is unavailable.");
   }
@@ -708,7 +712,7 @@ export async function saveProfileAs(
     outputFolder,
     profileId,
     name,
-  })) as InputProfileDetail;
+  })) as InputProfileMutationResponse;
 }
 
 export async function deleteProfile(
