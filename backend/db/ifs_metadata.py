@@ -13,6 +13,81 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 
+def ensure_ifs_metadata_schema(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ifs_static (
+            ifs_static_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version_number TEXT NOT NULL,
+            base_year INTEGER NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ifs_static_version_base
+        ON ifs_static (version_number, base_year)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS parameter (
+            ifs_static_id INTEGER NOT NULL,
+            param_name TEXT NOT NULL,
+            param_type TEXT,
+            param_default REAL,
+            param_min REAL,
+            param_max REAL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_parameter_static_name
+        ON parameter (ifs_static_id, param_name)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS coefficient (
+            ifs_static_id INTEGER NOT NULL,
+            function_name TEXT NOT NULL,
+            y_name TEXT,
+            x_name TEXT NOT NULL,
+            reg_seq INTEGER,
+            beta_name TEXT NOT NULL,
+            beta_default REAL,
+            beta_std REAL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_coefficient_static_identity
+        ON coefficient (ifs_static_id, function_name, x_name, beta_name)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ifs_version (
+            ifs_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ifs_static_id INTEGER NOT NULL,
+            version_number TEXT NOT NULL,
+            base_year INTEGER NOT NULL,
+            end_year INTEGER NOT NULL,
+            fit_metric TEXT NOT NULL,
+            ml_method TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ifs_version_runtime
+        ON ifs_version (version_number, base_year, end_year, fit_metric, ml_method)
+        """
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Record IFs version metadata in bigpopa.db")
     parser.add_argument("--ifs-root", required=True, help="Path to the IFs root directory")
@@ -307,27 +382,20 @@ def _normalize_ml_text(value: Optional[str], default: str) -> str:
     return text or default
 
 
-def log_version_metadata(
+def ensure_static_metadata(
     *,
     ifs_root: Path,
     output_folder: Path,
     base_year: int,
-    end_year: int,
-    fit_metric: str = "mse",
-    ml_method: str,
 ) -> Dict[str, Any]:
     version_raw = _read_version_string(ifs_root)
     version_number = _normalize_version(version_raw)
-    fit_metric = _normalize_ml_text(fit_metric, "mse")
-    ml_method = _normalize_ml_text(ml_method, "")
-    if not ml_method:
-        raise ValueError("A valid ml_method is required to record IFs version metadata.")
-
     db_path = output_folder / "bigpopa.db"
     _ensure_database(db_path)
 
     with sqlite3.connect(str(db_path)) as conn:
         cursor = conn.cursor()
+        ensure_ifs_metadata_schema(cursor)
         cursor.execute(
             """
             SELECT ifs_static_id
@@ -338,9 +406,6 @@ def log_version_metadata(
             (version_number, base_year),
         )
         row = cursor.fetchone()
-
-        num_parameters = 0
-        num_coefficients = 0
 
         if row:
             ifs_static_id = int(row[0])
@@ -354,14 +419,50 @@ def log_version_metadata(
             )
             ifs_static_id = int(cursor.lastrowid)
 
-        # Always overwrite static rows to prevent stale or partial parameter/coefficient layers
-        # when rerunning the same IFs version/base year combination.
         cursor.execute("DELETE FROM parameter WHERE ifs_static_id = ?", (ifs_static_id,))
         cursor.execute("DELETE FROM coefficient WHERE ifs_static_id = ?", (ifs_static_id,))
-
-        # Parameter defaults use GlobalParameters when available (case-insensitive lookup)
-        # and fall back to the IFSVAR.MINIMUM catalog value when missing.
         num_parameters, num_coefficients = _populate_real_data(cursor, ifs_static_id, ifs_root)
+        conn.commit()
+
+    return {
+        "status": "success",
+        "message": "IFs static metadata refreshed.",
+        "ifs_static_id": ifs_static_id,
+        "version_number": version_number,
+        "base_year": base_year,
+        "num_parameters": num_parameters,
+        "num_coefficients": num_coefficients,
+    }
+
+
+def log_version_metadata(
+    *,
+    ifs_root: Path,
+    output_folder: Path,
+    base_year: int,
+    end_year: int,
+    fit_metric: str = "mse",
+    ml_method: str,
+) -> Dict[str, Any]:
+    fit_metric = _normalize_ml_text(fit_metric, "mse")
+    ml_method = _normalize_ml_text(ml_method, "")
+    if not ml_method:
+        raise ValueError("A valid ml_method is required to record IFs version metadata.")
+
+    static_payload = ensure_static_metadata(
+        ifs_root=ifs_root,
+        output_folder=output_folder,
+        base_year=base_year,
+    )
+    db_path = output_folder / "bigpopa.db"
+    version_number = str(static_payload["version_number"])
+    ifs_static_id = int(static_payload["ifs_static_id"])
+    num_parameters = int(static_payload["num_parameters"])
+    num_coefficients = int(static_payload["num_coefficients"])
+
+    with sqlite3.connect(str(db_path)) as conn:
+        cursor = conn.cursor()
+        ensure_ifs_metadata_schema(cursor)
 
         cursor.execute(
             """

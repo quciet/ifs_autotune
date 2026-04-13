@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict
 
-from common_sce_utils import build_custom_parts, parse_dimension_flag
+from ifs.common_sce_utils import build_custom_parts, parse_dimension_flag
 
 
 def _load_param_dimension_map(

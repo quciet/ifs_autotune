@@ -100,10 +100,9 @@ declare global {
         type: 'ifs' | 'output',
         defaultPath?: string | null,
       ) => Promise<string | null>;
-      selectFile: (defaultPath?: string | null) => Promise<string | null>;
       getDesktopCapabilities: () => Promise<DesktopCapabilities>;
       getDefaultOutputDir: () => Promise<string>;
-      getDefaultInputFile: () => Promise<string>;
+      quitApp: () => void;
       getTrendDatasetOptions: (outputDir?: string | null) => Promise<{
         status?: string;
         stage?: string;
@@ -130,7 +129,7 @@ declare global {
         error: string | null;
         ifsPath: string | null;
         ifsValidated: boolean;
-        inputExcelPath: string | null;
+        inputProfileId: number | null;
         outputDir: string | null;
         stopRequested: boolean;
         stopAcknowledged: boolean;

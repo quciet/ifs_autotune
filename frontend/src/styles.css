@@ -160,6 +160,11 @@ body {
   width: 100%;
 }
 
+.button-row.validation-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
 .button-row.multi {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.75rem;
@@ -226,6 +231,11 @@ body {
 .status.error {
   color: #c53030;
   background: rgba(245, 101, 101, 0.15);
+}
+
+.status.incomplete {
+  color: #9a3412;
+  background: rgba(251, 191, 36, 0.2);
 }
 
 .base-year {
@@ -538,6 +548,422 @@ body {
 .trend-analysis-summary-item {
   color: #334155;
   word-break: break-word;
+}
+
+.profile-panel {
+  margin-top: 1.5rem;
+}
+
+.profile-field-label {
+  width: 190px;
+  min-width: 190px;
+  font-weight: 600;
+  color: #2d3748;
+}
+
+.profile-inline-button {
+  width: auto;
+  min-width: 120px;
+  margin-left: 0.75rem;
+}
+
+.profile-create-actions {
+  margin-bottom: 1rem;
+}
+
+.profile-empty-state {
+  margin-top: 0;
+}
+
+.profile-guidance-line {
+  background: rgba(66, 153, 225, 0.12);
+  color: #2b6cb0;
+}
+
+.profile-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.9rem;
+  margin: 1rem 0;
+}
+
+.profile-summary-card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 1rem;
+  border: 1px solid rgba(203, 213, 224, 0.72);
+  border-radius: 0.85rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.95));
+}
+
+.profile-summary-card-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #64748b;
+  font-weight: 700;
+}
+
+.profile-summary-card-value {
+  color: #1e293b;
+  font-size: 1.05rem;
+}
+
+.profile-summary-card-detail {
+  color: #475569;
+  font-size: 0.9rem;
+}
+
+.profile-editor-topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 1rem;
+}
+
+.profile-editor-subtitle {
+  margin: 0.25rem 0 0;
+  color: #475569;
+}
+
+.profile-editor-meta {
+  margin-top: 1rem;
+}
+
+.profile-editor-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.profile-editor-step {
+  display: grid;
+  gap: 1rem;
+}
+
+.profile-split-panel {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.profile-pane-shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  border: 1px solid rgba(203, 213, 224, 0.72);
+  border-radius: 0.95rem;
+  background: rgba(255, 255, 255, 0.94);
+  overflow: hidden;
+}
+
+.profile-pane-header {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(248, 250, 252, 0.96);
+}
+
+.profile-pane-header h4 {
+  margin: 0;
+}
+
+.profile-pane-scroll {
+  display: grid;
+  gap: 1rem;
+  max-height: clamp(320px, 56vh, 640px);
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.profile-pane-scroll .profile-selected-list,
+.profile-pane-scroll .profile-catalog-section {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.profile-editor-step-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.profile-selected-list,
+.profile-catalog-section {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid rgba(203, 213, 224, 0.72);
+  border-radius: 0.85rem;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.profile-empty-selection,
+.profile-catalog-empty {
+  min-height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(148, 163, 184, 0.75);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  text-align: center;
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.profile-selected-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(203, 213, 224, 0.72);
+  border-radius: 0.8rem;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.profile-selected-card-expanded {
+  background: rgba(241, 245, 249, 0.92);
+}
+
+.profile-selected-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.profile-selected-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.profile-selected-summary-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.profile-selected-summary-copy-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.6rem;
+  align-items: baseline;
+}
+
+.profile-selected-summary-copy-inline strong {
+  flex: 0 0 auto;
+}
+
+.profile-selected-summary-text {
+  color: #475569;
+  font-size: 0.92rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.profile-selected-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+}
+
+.profile-draft-section {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.profile-draft-card {
+  border-style: dashed;
+  border-color: rgba(99, 102, 241, 0.45);
+  background: rgba(238, 242, 255, 0.72);
+}
+
+.profile-selected-card-note,
+.profile-catalog-detail {
+  display: block;
+  margin-top: 0.2rem;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.profile-selected-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+}
+
+.profile-selected-grid label {
+  display: grid;
+  gap: 0.3rem;
+  color: #334155;
+  font-weight: 600;
+}
+
+.profile-catalog-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.profile-catalog-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.profile-catalog-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 0.75rem;
+  background: #fff;
+}
+
+.profile-selected-output {
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.profile-small-button {
+  width: auto;
+  min-width: 110px;
+}
+
+.profile-editor-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.profile-tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.profile-tab-button {
+  width: auto;
+  min-width: 140px;
+}
+
+.profile-tab-button-active {
+  background: linear-gradient(135deg, #2b6cb0, #2c5282);
+}
+
+.profile-grid-wrap {
+  overflow-x: auto;
+}
+
+.profile-grid {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border: 1px solid rgba(203, 213, 224, 0.72);
+  border-radius: 0.8rem;
+}
+
+.profile-grid th,
+.profile-grid td {
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+  padding: 0.55rem 0.65rem;
+  font-size: 0.92rem;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.profile-grid th {
+  background: rgba(237, 242, 247, 0.92);
+  color: #2d3748;
+  font-weight: 700;
+}
+
+.profile-number-input {
+  width: 100%;
+  min-width: 76px;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #cbd5e0;
+  border-radius: 0.45rem;
+}
+
+.profile-ml-settings {
+  display: grid;
+  gap: 1rem;
+}
+
+.profile-ml-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.profile-ml-grid label {
+  display: grid;
+  gap: 0.4rem;
+  color: #2d3748;
+  font-weight: 600;
+}
+
+.profile-create-modal {
+  width: min(720px, 100%);
+}
+
+.profile-create-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.profile-create-modal-header {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.profile-create-alert {
+  margin-top: 0;
+}
+
+.profile-create-modal-actions {
+  margin-top: 0;
+}
+
+@media (max-width: 760px) {
+  .profile-editor-topbar,
+  .profile-editor-step-header,
+  .profile-catalog-toolbar,
+  .profile-editor-nav {
+    flex-direction: column;
+  }
+
+  .profile-catalog-item,
+  .profile-selected-card-header,
+  .profile-selected-summary-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .profile-selected-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .profile-pane-scroll {
+    max-height: min(42vh, 420px);
+  }
 }
 
 .trend-analysis-actions {

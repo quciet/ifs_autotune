@@ -5,13 +5,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
-import pandas as pd
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-import model_setup
-from model_run_store import insert_model_run
-from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
+from runtime import model_setup
+from runtime.model_run_store import insert_model_run
+from db.schema import ensure_current_bigpopa_schema
 
 
 def _parameter_db() -> sqlite3.Connection:
@@ -36,51 +34,18 @@ def _parameter_db() -> sqlite3.Connection:
     return conn
 
 
-def test_extract_enabled_ifsv_names_accepts_equivalent_switch_representations() -> None:
-    frames = [
-        pd.DataFrame({"Switch": [1, "0"], "Name": ["gdprext", "ignored"]}),
-        pd.DataFrame({"Switch": [1.0, "off"], "Variable": ["gdprext", "ignored"]}),
-        pd.DataFrame({"Switch": ["on", "no"], "Name/Variable": ["gdprext", "ignored"]}),
-        pd.DataFrame({"Switch": ["true", "0"], "Name": ["tfrconv", "ignored"]}),
-    ]
-
-    names = [
-        model_setup.extract_enabled_ifsv_names(frame)
-        for frame in frames
-    ]
-
-    assert names[0] == ["gdprext"]
-    assert names[1] == ["gdprext"]
-    assert names[2] == ["gdprext"]
-    assert names[3] == ["tfrconv"]
-
-
-def test_dataset_id_is_stable_for_equivalent_ifsvar_layouts() -> None:
+def test_build_input_param_from_defaults_preserves_selected_parameter_set() -> None:
     conn = _parameter_db()
     cursor = conn.cursor()
     input_coef = {"demo": {"x": {"a": 10.0}}}
     output_set = {"POP": "Population"}
 
-    frame_a = pd.DataFrame(
-        {
-            "Switch": [1, "on"],
-            "Name": ["gdprext", ""],
-            "Variable": ["", "tfrconv"],
-        }
-    )
-    frame_b = pd.DataFrame(
-        {
-            "Switch": ["1.0", "true"],
-            "Name/Variable": ["gdprext", "tfrconv"],
-        }
-    )
-
     try:
         input_param_a = model_setup.build_input_param_from_defaults(
-            cursor, 7, model_setup.extract_enabled_ifsv_names(frame_a)
+            cursor, 7, ["gdprext", "tfrconv"]
         )
         input_param_b = model_setup.build_input_param_from_defaults(
-            cursor, 7, model_setup.extract_enabled_ifsv_names(frame_b)
+            cursor, 7, ["gdprext", "tfrconv"]
         )
     finally:
         conn.close()
@@ -100,6 +65,26 @@ def test_dataset_id_is_stable_for_equivalent_ifsvar_layouts() -> None:
 
     assert input_param_a == {"gdprext": 1.0, "tfrconv": 2.0}
     assert input_param_b == {"gdprext": 1.0, "tfrconv": 2.0}
+    assert dataset_id_a == dataset_id_b
+
+
+def test_dataset_id_is_stable_for_equivalent_profile_parameter_orderings() -> None:
+    input_coef = {"demo": {"x": {"a": 10.0}}}
+    output_set = {"POP": "Population"}
+
+    dataset_id_a = model_setup.compute_dataset_id(
+        ifs_id=2,
+        input_param={"gdprext": 1.0, "tfrconv": 2.0},
+        input_coef=input_coef,
+        output_set=output_set,
+    )
+    dataset_id_b = model_setup.compute_dataset_id(
+        ifs_id=2,
+        input_param={"tfrconv": 2.0, "gdprext": 1.0},
+        input_coef=input_coef,
+        output_set=output_set,
+    )
+
     assert dataset_id_a == dataset_id_b
 
 

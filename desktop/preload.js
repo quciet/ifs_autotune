@@ -3,11 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electron', {
   selectFolder: (type, defaultPath) =>
     ipcRenderer.invoke('select-folder', { type, defaultPath }),
-  selectFile: (defaultPath) =>
-    ipcRenderer.invoke('select-input-file', { defaultPath }),
   getDesktopCapabilities: () => ipcRenderer.invoke('desktop:getCapabilities'),
   getDefaultOutputDir: () => ipcRenderer.invoke('get-default-output-dir'),
-  getDefaultInputFile: () => ipcRenderer.invoke('get-default-input-file'),
+  quitApp: () => ipcRenderer.send('app:quit'),
   getMLJobStatus: () => ipcRenderer.invoke('ml:jobStatus'),
   getTrendDatasetOptions: (outputDir) =>
     ipcRenderer.invoke('analysis:getTrendDatasetOptions', {

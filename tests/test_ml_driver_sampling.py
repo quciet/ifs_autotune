@@ -9,9 +9,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-import ml_driver
-from model_run_store import insert_model_run
-from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
+from runtime import ml_driver
+from runtime.model_run_store import insert_model_run
+from db.schema import ensure_current_bigpopa_schema
 
 
 def _dimension(

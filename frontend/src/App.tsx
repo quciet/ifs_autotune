@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   getArtifactImagePreview,
+  type InputProfileDetail,
   getDesktopCapabilities,
   getMLProgressHistory,
   getTrendDatasetOptions,
@@ -28,6 +29,7 @@ import {
   type MLProgressTrial,
   type TrendAnalysisData,
 } from "./api";
+import InputProfilesPanel from "./InputProfilesPanel";
 import {
   MLProgressChart,
   appendNormalizedProgressTrials,
@@ -35,9 +37,7 @@ import {
   type ChartPoint,
 } from "./MLProgressChart";
 
-const REQUIRED_INPUT_SHEETS = ["AnalFunc", "TablFunc", "IFsVar", "DataDict"];
-
-type View = "validate" | "tune";
+type View = "validate" | "setup" | "ml";
 
 type StatusLevel = "info" | "success" | "error";
 
@@ -59,7 +59,7 @@ type MLJobStatus = {
   error: string | null;
   ifsPath: string | null;
   ifsValidated: boolean;
-  inputExcelPath: string | null;
+  inputProfileId: number | null;
   outputDir: string | null;
   stopRequested: boolean;
   stopAcknowledged: boolean;
@@ -333,10 +333,13 @@ type LogEntry = {
 };
 
 type TuneIFsPageProps = {
-  onBack: () => void;
+  pageMode: "setup" | "ml";
+  onBackToValidation: () => void;
+  onBackToSetup: () => void;
+  onOpenMLPage: () => void;
   onMLJobStatusRefresh?: () => Promise<void>;
   validatedPath: string;
-  validatedInputPath: string;
+  validatedProfileId: number | null;
   baseYear?: number | null;
   outputDirectory: string | null;
   rollingWindow: number;
@@ -378,10 +381,13 @@ function calculateProgressPercentage(
 }
 
 function TuneIFsPage({
-  onBack,
+  pageMode,
+  onBackToValidation,
+  onBackToSetup,
+  onOpenMLPage,
   onMLJobStatusRefresh,
   validatedPath,
-  validatedInputPath,
+  validatedProfileId,
   baseYear,
   outputDirectory,
   rollingWindow,
@@ -395,6 +401,8 @@ function TuneIFsPage({
   initialFinalResult,
   initialTerminationReason,
 }: TuneIFsPageProps) {
+  const isSetupPage = pageMode === "setup";
+  const isMLPage = pageMode === "ml";
   const DEFAULT_END_YEAR = 2050;
   const MAX_END_YEAR = 2150;
   const FALLBACK_MIN_END_YEAR = 1900;
@@ -871,7 +879,7 @@ function TuneIFsPage({
     setError(null);
   }, [
     validatedPath,
-    validatedInputPath,
+    validatedProfileId,
     outputDirectory,
     initialRunConfig?.datasetId,
     initialRunConfig?.endYear,
@@ -1481,9 +1489,9 @@ function TuneIFsPage({
       return;
     }
 
-    if (!validatedInputPath || !validatedInputPath.trim()) {
+    if (!validatedProfileId || validatedProfileId <= 0) {
       const message =
-        "Validated input file path is missing. Please re-run validation to continue.";
+        "Select a valid input profile before running model setup.";
       updateStageStatus("model_setup", "error", message);
       setError(message);
       return;
@@ -1514,7 +1522,7 @@ function TuneIFsPage({
         coefficients: coefficientRef.current,
         paramDim: paramDimensionRef.current,
         validatedPath,
-        inputFilePath: validatedInputPath,
+        inputProfileId: validatedProfileId,
         outputFolder: outputDirectory ?? null,
         artifactRetentionMode,
       });
@@ -1623,9 +1631,9 @@ function TuneIFsPage({
     targetEndYearRef.current = clampedEndYear;
     setEndYear(clampedEndYear);
     setEndYearInput(String(clampedEndYear));
-    setModelSetupResult(null);
     updateStageStatus("ml_driver", "info", "Starting ML Optimization run...");
     setRunning(true);
+    onOpenMLPage();
 
     let shouldKeepRunning = false;
 
@@ -1643,7 +1651,7 @@ function TuneIFsPage({
         outputFolder: outputDirectory,
         baseYear: baseYearRef.current,
         endYear: clampedEndYear,
-        inputFilePath: validatedInputPath,
+        inputProfileId: validatedProfileId,
         artifactRetentionMode,
       });
 
@@ -1742,6 +1750,7 @@ function TuneIFsPage({
       setStopRequested(false);
       setStopAcknowledged(false);
       updateStageStatus(stage, "error", message);
+      onBackToSetup();
     } finally {
       if (!shouldKeepRunning) {
         setRunning(false);
@@ -1782,6 +1791,10 @@ function TuneIFsPage({
       ? "Stopping after current run..."
       : "Running… Click to stop after current run"
     : "Run ML Optimization";
+  const stopButtonDisabled = !running || stopRequested;
+  const stopButtonLabel = stopRequested
+    ? "Stopping after current run..."
+    : "Stop After Current Run";
   const latestBestFit =
     [...progressTrials]
       .reverse()
@@ -2027,11 +2040,47 @@ function TuneIFsPage({
     </div>
   );
 
+  const setupStatusMessage = running ? null : statusMessage;
+  const setupStatusLevel = running ? "info" : statusLevel;
+  const setupSummary = modelSetupResult ? (
+    <div className="metadata-inline">
+      <ul>
+        {modelSetupResult.model_id ? (
+          <li>
+            <strong>Model ID:</strong> {modelSetupResult.model_id}
+          </li>
+        ) : null}
+        {typeof modelSetupResult.ifs_id === "number" ? (
+          <li>
+            <strong>IFs ID:</strong> {modelSetupResult.ifs_id}
+          </li>
+        ) : null}
+        {modelSetupResult.dataset_id ? (
+          <li>
+            <strong>Dataset ID:</strong> {modelSetupResult.dataset_id}
+          </li>
+        ) : null}
+        {modelSetupResult.retained_artifact_dir ? (
+          <li>
+            <strong>Artifact folder:</strong> {modelSetupResult.retained_artifact_dir}
+          </li>
+        ) : null}
+        {modelSetupResult.dataset_warning ? (
+          <li>
+            <strong>Dataset note:</strong> {modelSetupResult.dataset_warning}
+          </li>
+        ) : null}
+      </ul>
+    </div>
+  ) : null;
+
   return (
     <section className="tune-container">
       <div className="tune-header">
         <p className="tune-description">
-          Launch an IFs simulation and monitor its progress in real time.
+          {isSetupPage
+            ? "Create or open an input profile, configure model setup, and prepare the run before starting ML optimization."
+            : "Monitor the ML optimization run, review progress, and analyze trend outputs in one place."}
         </p>
         <div className="tune-meta" aria-label="Tuning configuration summary">
           <div className="tune-meta-row">
@@ -2051,7 +2100,7 @@ function TuneIFsPage({
                   type="button"
                   className="tune-retention-toggle"
                   onClick={cycleArtifactRetentionMode}
-                  disabled={modelSetupRunning || running}
+                  disabled={modelSetupRunning || running || isMLPage}
                   title="Cycle model artifact retention mode"
                 >
                   {ARTIFACT_RETENTION_LABELS[artifactRetentionMode]}
@@ -2061,178 +2110,220 @@ function TuneIFsPage({
           </div>
       </div>
 
-      <div className="tune-controls">
-        <div className="end-year-control">
-          <div className="end-year-inputs">
-            <div className="end-year-entry-row">
-              <label className="label end-year-label" htmlFor="end-year-input">
-                End Year
-              </label>
-              <input
-                id="end-year-input"
-                type="number"
-                className="path-input end-year-number"
-                value={endYearInput}
-                onChange={handleEndYearInputChange}
-                onBlur={handleEndYearBlur}
-                min={minEndYear}
-                max={MAX_END_YEAR}
-                disabled={running}
+      {isSetupPage ? (
+        <>
+          <div className="tune-controls">
+            <div className="end-year-control">
+              <div className="end-year-inputs">
+                <div className="end-year-entry-row">
+                  <label className="label end-year-label" htmlFor="end-year-input">
+                    End Year
+                  </label>
+                  <input
+                    id="end-year-input"
+                    type="number"
+                    className="path-input end-year-number"
+                    value={endYearInput}
+                    onChange={handleEndYearInputChange}
+                    onBlur={handleEndYearBlur}
+                    min={minEndYear}
+                    max={MAX_END_YEAR}
+                    disabled={running}
+                  />
+                  <input
+                    type="range"
+                    className="end-year-slider"
+                    value={endYear}
+                    onChange={handleSliderChange}
+                    min={minEndYear}
+                    max={MAX_END_YEAR}
+                    disabled={running}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="tune-actions">
+            <button
+              type="button"
+              className="button"
+              onClick={handleModelSetup}
+              disabled={running || modelSetupRunning}
+            >
+              {modelSetupRunning ? "Setting up..." : "Model Setup"}
+            </button>
+            <button
+              type="button"
+              className="button"
+              onClick={handleRunClick}
+              disabled={runButtonDisabled}
+              title={runButtonLabel}
+            >
+              Start ML Optimization
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={onBackToValidation}
+              disabled={running}
+            >
+              Back to Validation
+            </button>
+          </div>
+
+          <div className="progress-wrapper">
+            {setupStatusMessage ? (
+              <div className={`progress-text ${setupStatusLevel}`}>
+                {setupStatusMessage}
+              </div>
+            ) : null}
+            {error && <div className="progress-text error">{error}</div>}
+            {setupSummary}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="tune-actions">
+            <button
+              type="button"
+              className="button"
+              onClick={handleRunClick}
+              disabled={stopButtonDisabled}
+            >
+              {stopButtonLabel}
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={onBackToSetup}
+              disabled={running}
+            >
+              Back to Model Setup
+            </button>
+            <button
+              type="button"
+              className="button secondary"
+              onClick={onBackToValidation}
+              disabled={running}
+            >
+              Back to Validation
+            </button>
+          </div>
+
+          <div className="progress-wrapper">
+            {running ? (
+              runProgressLabel ? (
+                <div className="progress-text">{runProgressLabel}</div>
+              ) : null
+            ) : statusMessage ? (
+              <div className={`progress-text ${statusLevel}`}>
+                {statusMessage}
+              </div>
+            ) : null}
+
+            {error && <div className="progress-text error">{error}</div>}
+
+            {showProgressBar && (
+              <progress
+                className="progress-indicator"
+                max={100}
+                value={displayPercent}
               />
-              <input
-                type="range"
-                className="end-year-slider"
-                value={endYear}
-                onChange={handleSliderChange}
-                min={minEndYear}
-                max={MAX_END_YEAR}
-                disabled={running}
-              />
+            )}
+
+            {runResult ? (
+              <div className="metadata-inline">
+                <ul>
+                  {runResult.model_id ? (
+                    <li>
+                      <strong>Model ID:</strong> {runResult.model_id}
+                    </li>
+                  ) : null}
+                  {typeof runResult.ifs_id === "number" ? (
+                    <li>
+                      <strong>IFs ID:</strong> {runResult.ifs_id}
+                    </li>
+                  ) : null}
+                  {runResult.best_model_id ? (
+                    <li>
+                      <strong>Best model ID:</strong> {runResult.best_model_id}
+                    </li>
+                  ) : null}
+                  {typeof runResult.best_fit_pooled === "number" ? (
+                    <li>
+                      <strong>Best pooled fit:</strong>{" "}
+                      {runResult.best_fit_pooled.toFixed(4)}
+                    </li>
+                  ) : null}
+                  {typeof runResult.iterations === "number" ? (
+                    <li>
+                      <strong>Iterations:</strong> {runResult.iterations}
+                    </li>
+                  ) : null}
+                  {wgdDisplay ? (
+                    <li>
+                      <strong>World GDP (WGDP):</strong> {wgdDisplay}
+                    </li>
+                  ) : null}
+                  {runResult.run_folder ? (
+                    <li>
+                      <strong>Run folder:</strong> {runResult.run_folder}
+                    </li>
+                  ) : null}
+                  {runResult.output_file ? (
+                    <li>
+                      <strong>Run database:</strong> {runResult.output_file}
+                    </li>
+                  ) : null}
+                </ul>
+              </div>
+            ) : (
+              setupSummary
+            )}
+          </div>
+
+          <div className="ml-lower-panel">
+            <div className="ml-progress-panel">
+              <div className="ml-progress-summary">
+                <span>
+                  <strong>Points:</strong> {progressTrials.length}
+                </span>
+                <span>
+                  <strong>Latest best:</strong>{" "}
+                  {latestBestFit != null ? latestBestFit.toFixed(4) : "N/A"}
+                </span>
+              </div>
+              {progressHistoryLoading ? (
+                <div className="progress-text">Loading ML progress history...</div>
+              ) : progressHistoryError ? (
+                <div className="progress-text error">{progressHistoryError}</div>
+              ) : progressTrials.length === 0 ? (
+                <div className="progress-text">
+                  {progressDatasetId ? (
+                    <>
+                      <strong>Dataset ID:</strong> {progressDatasetId}
+                      <br />
+                    </>
+                  ) : null}
+                  {progressEmptyMessage}
+                </div>
+              ) : (
+                <MLProgressChart
+                  points={progressTrials}
+                  referenceFitPooled={progressReferenceFitPooled}
+                  referenceModelId={progressReferenceModelId}
+                  rollingWindow={rollingWindow}
+                  rollingWindowInput={rollingWindowInput}
+                  onRollingWindowInputChange={onRollingWindowInputChange}
+                />
+              )}
             </div>
           </div>
-        </div>
-      </div>
 
-      <div className="tune-actions">
-        <button
-          type="button"
-          className="button"
-          onClick={handleModelSetup}
-          disabled={running || modelSetupRunning}
-        >
-          {modelSetupRunning ? "Setting up..." : "Model Setup"}
-        </button>
-        <button
-          type="button"
-          className="button"
-          onClick={handleRunClick}
-          disabled={runButtonDisabled}
-        >
-          {runButtonLabel}
-        </button>
-        <button
-          type="button"
-          className="button secondary"
-          onClick={onBack}
-          disabled={running}
-        >
-          Back to Validation
-        </button>
-      </div>
-
-      <div className="progress-wrapper">
-        {/* Show only one progress message depending on state */}
-        {running ? (
-          runProgressLabel && (
-            <div className="progress-text">{runProgressLabel}</div>
-          )
-        ) : (
-          statusMessage && (
-            <div className={`progress-text ${statusLevel}`}>
-              {statusMessage}
-            </div>
-          )
-        )}
-
-        {error && <div className="progress-text error">{error}</div>}
-
-        {showProgressBar && (
-          <progress
-            className="progress-indicator"
-            max={100}
-            value={displayPercent}
-          />
-        )}
-
-        {runResult ? (
-          <div className="metadata-inline">
-            <ul>
-              {runResult.model_id && (
-                <li>
-                  <strong>Model ID:</strong> {runResult.model_id}
-                </li>
-              )}
-              {typeof runResult.ifs_id === "number" && (
-                <li>
-                  <strong>IFs ID:</strong> {runResult.ifs_id}
-                </li>
-              )}
-              {runResult.best_model_id && (
-                <li>
-                  <strong>Best model ID:</strong> {runResult.best_model_id}
-                </li>
-              )}
-              {typeof runResult.best_fit_pooled === "number" && (
-                <li>
-                  <strong>Best pooled fit:</strong>{" "}
-                  {runResult.best_fit_pooled.toFixed(4)}
-                </li>
-              )}
-              {typeof runResult.iterations === "number" && (
-                <li>
-                  <strong>Iterations:</strong> {runResult.iterations}
-                </li>
-              )}
-              {wgdDisplay && (
-                <li>
-                  <strong>World GDP (WGDP):</strong> {wgdDisplay}
-                </li>
-              )}
-              {runResult.run_folder && (
-                <li>
-                  <strong>Run folder:</strong> {runResult.run_folder}
-                </li>
-              )}
-              {runResult.output_file && (
-                <li>
-                  <strong>Run database:</strong> {runResult.output_file}
-                </li>
-              )}
-            </ul>
-          </div>
-        ) : null}
-
-      </div>
-
-      <div className="ml-lower-panel">
-        <div className="ml-progress-panel">
-          <div className="ml-progress-summary">
-            <span>
-              <strong>Points:</strong> {progressTrials.length}
-            </span>
-            <span>
-              <strong>Latest best:</strong>{" "}
-              {latestBestFit != null ? latestBestFit.toFixed(4) : "N/A"}
-            </span>
-          </div>
-          {progressHistoryLoading ? (
-            <div className="progress-text">Loading ML progress history...</div>
-          ) : progressHistoryError ? (
-            <div className="progress-text error">{progressHistoryError}</div>
-          ) : progressTrials.length === 0 ? (
-            <div className="progress-text">
-              {progressDatasetId ? (
-                <>
-                  <strong>Dataset ID:</strong> {progressDatasetId}
-                  <br />
-                </>
-              ) : null}
-              {progressEmptyMessage}
-            </div>
-          ) : (
-            <MLProgressChart
-              points={progressTrials}
-              referenceFitPooled={progressReferenceFitPooled}
-              referenceModelId={progressReferenceModelId}
-              rollingWindow={rollingWindow}
-              rollingWindowInput={rollingWindowInput}
-              onRollingWindowInputChange={onRollingWindowInputChange}
-            />
-          )}
-        </div>
-      </div>
-
-      {trendAnalysisPanel}
+          {trendAnalysisPanel}
+        </>
+      )}
 
       {activeTrendPreview ? (
         <div
@@ -2368,9 +2459,10 @@ function App() {
   const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
   const [lastValidatedOutputDirectory, setLastValidatedOutputDirectory] =
     useState<string | null>(null);
-  const [inputFilePath, setInputFilePath] = useState<string>("");
-  const [lastValidatedInputFile, setLastValidatedInputFile] =
-    useState<string | null>(null);
+  const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
+  const [lastValidatedProfileId, setLastValidatedProfileId] =
+    useState<number | null>(null);
+  const [profileDetail, setProfileDetail] = useState<InputProfileDetail | null>(null);
   const [result, setResult] = useState<CheckResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2378,16 +2470,12 @@ function App() {
   const [vizRollingWindow, setVizRollingWindow] = useState(50);
   const [vizRollingWindowInput, setVizRollingWindowInput] = useState("50");
   const [mlJobStatus, setMLJobStatus] = useState<MLJobStatus | null>(null);
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [info, setInfo] = useState<string | null>(null);
   const [nativeFolderPickerAvailable, setNativeFolderPickerAvailable] =
     useState<boolean>(() =>
       typeof window !== "undefined" && Boolean(window.electron?.selectFolder),
     );
-  const [nativeFilePickerAvailable, setNativeFilePickerAvailable] =
-    useState<boolean>(() =>
-      typeof window !== "undefined" && Boolean(window.electron?.selectFile),
-    );
-  const defaultInputLoadedRef = useRef(false);
   const mlJobStatusPollIntervalMs = 3000;
 
   const refreshMLJobStatus = async () => {
@@ -2410,16 +2498,17 @@ function App() {
       if (status?.outputDir) {
         setOutputDirectory(status.outputDir);
       }
-      if (status?.inputExcelPath) {
-        setInputFilePath(status.inputExcelPath);
+      if (typeof status?.inputProfileId === "number") {
+        setSelectedProfileId(status.inputProfileId);
       }
       if (status?.ifsValidated) {
         setLastValidatedIfsFolder(status.ifsPath ?? null);
         setLastValidatedOutputDirectory(status.outputDir ?? null);
-        setLastValidatedInputFile(status.inputExcelPath ?? null);
+        setLastValidatedProfileId(status.inputProfileId ?? null);
       }
       if (status?.ifsValidated && status?.running) {
-        setView("tune");
+        setView("ml");
+        setProfileEditorOpen(false);
       }
     } catch (err) {
       console.warn("Unable to load ML job status:", err);
@@ -2429,7 +2518,6 @@ function App() {
   useEffect(() => {
     if (typeof window !== "undefined") {
       setNativeFolderPickerAvailable(Boolean(window.electron?.selectFolder));
-      setNativeFilePickerAvailable(Boolean(window.electron?.selectFile));
     }
   }, []);
 
@@ -2506,52 +2594,6 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    let isMounted = true;
-
-    const updateIfUninitialized = (nextValue: string) => {
-      if (!isMounted) return;
-
-      setInputFilePath((current) => {
-        if (defaultInputLoadedRef.current && current?.trim().length > 0) {
-          return current;
-        }
-
-        defaultInputLoadedRef.current = true;
-        return nextValue;
-      });
-    };
-
-    const loadDefaultInputFile = async () => {
-      try {
-        if (!window.electron?.getDefaultInputFile) {
-          return;
-        }
-
-        const defaultFile = await window.electron.getDefaultInputFile();
-        if (!isMounted) {
-          return;
-        }
-
-        if (typeof defaultFile === "string" && defaultFile.trim().length > 0) {
-          updateIfUninitialized(defaultFile.trim());
-        } else {
-          console.warn("Default input path was empty - check Electron handler.");
-        }
-      } catch (err) {
-        console.error("Failed to load default input file:", err);
-      }
-    };
-
-    loadDefaultInputFile();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
   const handleChangeIFsFolder = async () => {
     setError(null);
 
@@ -2571,6 +2613,8 @@ function App() {
         if (selectedPath !== lastValidatedIfsFolder) {
           setResult(null);
           setLastValidatedIfsFolder(null);
+          setLastValidatedProfileId(null);
+          setProfileDetail(null);
         }
         if (!mlJobStatus?.running) {
           setView("validate");
@@ -2585,7 +2629,6 @@ function App() {
     event.preventDefault();
     const trimmedIfsPath = ifsFolderPath?.trim() ?? "";
     const trimmedOutputPath = outputDirectory?.trim() ?? "";
-    const trimmedInputPath = inputFilePath?.trim() ?? "";
 
     if (!trimmedIfsPath) {
       setError("Please select an IFs folder before validating.");
@@ -2602,13 +2645,12 @@ function App() {
       const res = await validateIFsFolder({
         ifsPath: trimmedIfsPath,
         outputPath: trimmedOutputPath || null,
-        inputFilePath: trimmedInputPath || null,
+        inputProfileId: null,
       });
       setIfsFolderPath(trimmedIfsPath);
       setOutputDirectory(
         trimmedOutputPath.length > 0 ? trimmedOutputPath : null,
       );
-      setInputFilePath(trimmedInputPath || "");
       setResult(res);
 
       if (res.valid) {
@@ -2616,13 +2658,11 @@ function App() {
         setLastValidatedOutputDirectory(
           trimmedOutputPath.length > 0 ? trimmedOutputPath : null,
         );
-        setLastValidatedInputFile(
-          trimmedInputPath.length > 0 ? trimmedInputPath : null,
-        );
+        setLastValidatedProfileId(null);
       } else {
         setLastValidatedIfsFolder(null);
         setLastValidatedOutputDirectory(null);
-        setLastValidatedInputFile(null);
+        setLastValidatedProfileId(null);
       }
     } catch (err) {
       setError("Failed to validate the IFs folder. Please try again.");
@@ -2646,6 +2686,7 @@ function App() {
         if (selected !== lastValidatedOutputDirectory) {
           setResult(null);
           setLastValidatedOutputDirectory(null);
+          setLastValidatedProfileId(null);
         }
         return selected;
       }
@@ -2675,32 +2716,7 @@ function App() {
     }
   };
 
-  const handleBrowseInputFile = async () => {
-    setError(null);
-
-    if (!nativeFilePickerAvailable || !window.electron?.selectFile) {
-      setInfo("Native file browsing is only available in the desktop app.");
-      return;
-    }
-
-    try {
-      setInfo(null);
-      const selected = await window.electron.selectFile(
-        inputFilePath && inputFilePath.length > 0 ? inputFilePath : undefined,
-      );
-      if (selected) {
-        setInputFilePath(selected);
-        if (selected !== lastValidatedInputFile) {
-          setResult(null);
-          setLastValidatedInputFile(null);
-        }
-      }
-    } catch (err) {
-      setError("Unable to open the file picker. Please try again.");
-    }
-  };
-
-  const handleTuneClick = () => {
+  const handleModelSetupClick = () => {
     setError(null);
     setInfo(null);
 
@@ -2709,12 +2725,29 @@ function App() {
       return;
     }
 
-    setView("tune");
+    setView("setup");
+    setProfileEditorOpen(false);
   };
 
-  const handleBaseYearChange = () => {
+  const handleQuitClick = async () => {
     setError(null);
-    setInfo("Base year change functionality is coming soon.");
+    setInfo(null);
+
+    try {
+      if (window.electron?.invoke) {
+        await window.electron.invoke("app:quit");
+        return;
+      }
+    } catch (err) {
+      console.warn("Unable to quit through Electron IPC, falling back to window.close().", err);
+    }
+
+    if (typeof window !== "undefined" && typeof window.close === "function") {
+      window.close();
+      return;
+    }
+
+    setError("Unable to quit the app right now.");
   };
 
   const missingFiles = useMemo(() => result?.missingFiles ?? [], [result]);
@@ -2729,36 +2762,34 @@ function App() {
     ifsFolderPath && ifsFolderPath.length > 0
       ? ifsFolderPath
       : "No folder selected";
-  const inputFileTitle =
-    inputFilePath && inputFilePath.length > 0
-      ? inputFilePath
-      : "No file selected";
   const pathChecks = result?.pathChecks;
   const ifsFolderCheck = pathChecks?.ifsFolder;
   const outputFolderCheck = pathChecks?.outputFolder;
-  const inputFileCheck = pathChecks?.inputFile;
+  const inputProfileCheck = pathChecks?.inputProfile;
+  const dbMigration = result?.dbMigration;
   const ifsFolderReady =
     Boolean(ifsFolderCheck?.exists) && (ifsFolderCheck?.readable ?? true);
   const outputFolderReady =
     Boolean(outputFolderCheck?.exists) && outputFolderCheck?.writable === true;
-  const inputFileAvailable =
-    Boolean(inputFileCheck?.exists) && Boolean(inputFileCheck?.readable);
-  const sheetStatuses = REQUIRED_INPUT_SHEETS.map((name) => ({
-    name,
-    present: Boolean(inputFileCheck?.sheets?.[name]),
-  }));
-  const allSheetsPresent = sheetStatuses.every((sheet) => sheet.present);
-  const missingSheetNames = inputFileCheck?.missingSheets ?? [];
-  const sheetMessage =
-    inputFileCheck?.exists &&
-    inputFileCheck?.readable &&
-    missingSheetNames.length > 0
-      ? `Missing sheets: ${missingSheetNames.join(", ")}`
-      : null;
+  const inputProfileReady = Boolean(inputProfileCheck?.valid);
+  const bigpopaDbDisplayPath = "desktop/output/bigpopa.db";
+  const bigpopaDbReady = Boolean(dbMigration);
+  const bigpopaDbMessage = !dbMigration
+    ? "Validation did not return BIGPOPA working database status."
+    : dbMigration?.performed
+      ? `Working BIGPOPA database ready. Legacy schema upgraded${
+          dbMigration.backup_path ? ` with backup at ${dbMigration.backup_path}.` : "."
+        }`
+      : typeof dbMigration.message === "string" && dbMigration.message.trim().length > 0
+        ? dbMigration.message
+        : "Working BIGPOPA database is ready.";
+  const canOpenSetup = hasValidResult;
   const windowTitle =
     view === "validate"
       ? "BIGPOPA - IFs Folder Check - Browse to your IFs folder"
-      : "BIGPOPA - Tune IFs - Configure and run ML optimization";
+      : view === "setup"
+        ? "BIGPOPA - Model Setup - Configure profile and runtime settings"
+        : "BIGPOPA - ML Monitor - Track optimization progress";
 
   const handleVizRollingWindowInputChange = (value: string) => {
     setVizRollingWindowInput(value);
@@ -2834,52 +2865,24 @@ function App() {
                 title={outputTitle}
               />
             </div>
-            <div className="input-row">
-              <button
-                type="button"
-                className="button"
-                onClick={handleBrowseInputFile}
-              >
-                Change Input Folder
-              </button>
-              <input
-                type="text"
-                className="path-input"
-                value={inputFilePath}
-                onChange={(e) => {
-                  const nextValue = e.target.value;
-                  setInputFilePath(nextValue);
-                  if (nextValue !== lastValidatedInputFile) {
-                    setResult(null);
-                    setLastValidatedInputFile(null);
-                  }
-                }}
-                placeholder="No file selected"
-                spellCheck={false}
-                title={inputFileTitle}
-              />
-            </div>
-            <div className="button-row">
+            <div className="button-row validation-actions">
               <button type="submit" className="button">
                 {loading ? "Validating..." : "Validate"}
               </button>
-            </div>
-            <div className="button-row multi">
               <button
                 type="button"
                 className="button"
-                onClick={handleTuneClick}
-                disabled={!hasValidResult}
+                onClick={handleModelSetupClick}
+                disabled={!canOpenSetup}
               >
-                Tune IFs
+                Model Setup
               </button>
               <button
                 type="button"
-                className="button"
-                onClick={handleBaseYearChange}
-                disabled={!hasValidResult}
+                className="button secondary"
+                onClick={handleQuitClick}
               >
-                Base Year Change
+                Quit
               </button>
             </div>
           </form>
@@ -2911,7 +2914,7 @@ function App() {
                 </div>
               )}
 
-              {(ifsFolderCheck || outputFolderCheck || inputFileCheck) && (
+              {(ifsFolderCheck || outputFolderCheck || inputProfileCheck || dbMigration) && (
                 <div className="summary">
                   {ifsFolderCheck && (
                     <div
@@ -2963,52 +2966,49 @@ function App() {
                     </div>
                   )}
 
-                  {inputFileCheck && (
-                    <>
-                      <div
-                        className={`summary-line ${
-                          inputFileAvailable ? "success" : "error"
-                        }`}
-                      >
-                        <span className="summary-label">
-                          {inputFileAvailable
-                            ? "Input file found:"
-                            : "Input file missing."}
+                  <div
+                    className={`summary-line ${
+                      bigpopaDbReady ? "success" : "error"
+                    }`}
+                  >
+                    <span className="summary-label">
+                      {bigpopaDbReady
+                        ? "BIGPOPA database ready:"
+                        : "BIGPOPA database pending:"}
+                    </span>
+                    {bigpopaDbDisplayPath ? (
+                      <span className="summary-value">{bigpopaDbDisplayPath}</span>
+                    ) : null}
+                    <span className="summary-message">{bigpopaDbMessage}</span>
+                  </div>
+
+                  {inputProfileCheck && result?.profileReady && (
+                    <div
+                      className={`summary-line ${
+                        inputProfileReady ? "success" : "error"
+                      }`}
+                    >
+                      <span className="summary-label">
+                        {inputProfileReady
+                          ? "Input profile ready:"
+                          : "Input profile pending:"}
+                      </span>
+                      {inputProfileCheck.displayPath && (
+                        <span className="summary-value">
+                          {inputProfileCheck.displayPath}
                         </span>
-                        {inputFileAvailable && (
-                          <span className="summary-value">
-                            {inputFileCheck.displayPath ?? inputFileTitle}
-                          </span>
-                        )}
-                        {!inputFileAvailable && inputFileCheck.message && (
-                          <span className="summary-message">
-                            {inputFileCheck.message}
-                          </span>
-                        )}
-                      </div>
-                      <div
-                        className={`summary-line ${
-                          allSheetsPresent ? "success" : "error"
-                        }`}
-                      >
-                        <span className="summary-label">Sheets found:</span>
-                        <span className="summary-value sheet-list">
-                          {sheetStatuses.map(({ name, present }) => (
-                            <span
-                              key={name}
-                              className={`sheet-status ${
-                                present ? "present" : "missing"
-                              }`}
-                            >
-                              {name} {present ? "[x]" : "[ ]"}
-                            </span>
-                          ))}
+                      )}
+                      {inputProfileCheck.message && (
+                        <span className="summary-message">
+                          {inputProfileCheck.message}
                         </span>
-                        {sheetMessage && (
-                          <span className="summary-message">{sheetMessage}</span>
-                        )}
-                      </div>
-                    </>
+                      )}
+                      {inputProfileCheck.errors?.length ? (
+                        <span className="summary-message">
+                          {inputProfileCheck.errors.join(" ")}
+                        </span>
+                      ) : null}
+                    </div>
                   )}
                 </div>
               )}
@@ -3048,36 +3048,70 @@ function App() {
         </>
       )}
 
-      {view === "tune" && (result?.valid || mlJobStatus?.running || mlJobStatus?.ifsValidated) && (
-        <TuneIFsPage
-          onBack={() => setView("validate")}
-          onMLJobStatusRefresh={refreshMLJobStatus}
-          validatedPath={
-            lastValidatedIfsFolder ?? ifsFolderPath?.trim() ?? ""
-          }
-          validatedInputPath={
-            lastValidatedInputFile ?? inputFilePath?.trim() ?? ""
-          }
-          baseYear={result?.base_year ?? mlJobStatus?.runConfig?.baseYear ?? null}
-          outputDirectory={outputDirectory ?? mlJobStatus?.outputDir ?? null}
-          rollingWindow={vizRollingWindow}
-          rollingWindowInput={vizRollingWindowInput}
-          onRollingWindowInputChange={handleVizRollingWindowInputChange}
-          initialMLJobRunning={Boolean(mlJobStatus?.running)}
-          initialMLJobProgress={mlJobStatus?.progress?.text ?? null}
-          initialRunConfig={mlJobStatus?.runConfig ?? null}
-          initialStopRequested={mlJobStatus?.stopRequested ?? false}
-          initialStopAcknowledged={mlJobStatus?.stopAcknowledged ?? false}
-          initialFinalResult={mlJobStatus?.finalResult ?? null}
-          initialTerminationReason={mlJobStatus?.terminationReason ?? null}
-        />
-      )}
+      {(view === "setup" || view === "ml") &&
+      (result?.valid || mlJobStatus?.running || mlJobStatus?.ifsValidated) ? (
+        <>
+          {view === "setup" ? (
+            <InputProfilesPanel
+              key="profiles"
+              ifsRoot={ifsFolderPath}
+              outputDirectory={outputDirectory}
+              ifsStaticId={result?.ifs_static_id ?? null}
+              selectedProfileId={selectedProfileId}
+              onSelectedProfileIdChange={setSelectedProfileId}
+              onProfileDetailChange={setProfileDetail}
+              onEditorActiveChange={setProfileEditorOpen}
+            />
+          ) : null}
+          {(view === "ml" || !profileEditorOpen) ? (
+            <TuneIFsPage
+              key="workflow"
+              pageMode={view === "setup" ? "setup" : "ml"}
+              onBackToValidation={() => {
+                setView("validate");
+                setProfileEditorOpen(false);
+              }}
+              onBackToSetup={() => {
+                setView("setup");
+                setProfileEditorOpen(false);
+              }}
+              onOpenMLPage={() => {
+                setView("ml");
+                setProfileEditorOpen(false);
+              }}
+              onMLJobStatusRefresh={refreshMLJobStatus}
+              validatedPath={
+                lastValidatedIfsFolder ?? ifsFolderPath?.trim() ?? ""
+              }
+              validatedProfileId={
+                profileDetail?.validation.valid
+                  ? selectedProfileId ?? lastValidatedProfileId ?? null
+                  : null
+              }
+              baseYear={result?.base_year ?? mlJobStatus?.runConfig?.baseYear ?? null}
+              outputDirectory={outputDirectory ?? mlJobStatus?.outputDir ?? null}
+              rollingWindow={vizRollingWindow}
+              rollingWindowInput={vizRollingWindowInput}
+              onRollingWindowInputChange={handleVizRollingWindowInputChange}
+              initialMLJobRunning={Boolean(mlJobStatus?.running)}
+              initialMLJobProgress={mlJobStatus?.progress?.text ?? null}
+              initialRunConfig={mlJobStatus?.runConfig ?? null}
+              initialStopRequested={mlJobStatus?.stopRequested ?? false}
+              initialStopAcknowledged={mlJobStatus?.stopAcknowledged ?? false}
+              initialFinalResult={mlJobStatus?.finalResult ?? null}
+              initialTerminationReason={mlJobStatus?.terminationReason ?? null}
+            />
+          ) : null}
+        </>
+      ) : null}
 
-      {view === "tune" && !result?.valid && !mlJobStatus?.running && !mlJobStatus?.ifsValidated && (
+      {(view === "setup" || view === "ml") &&
+      !result?.valid &&
+      !mlJobStatus?.running &&
+      !mlJobStatus?.ifsValidated ? (
         <div className="alert alert-error">
           <p className="alert-message">
-            Validation is required before tuning IFs. Please return to the
-            validation page.
+            Validation is required before continuing to model setup or ML monitoring.
           </p>
           <div className="alert-actions">
             <button
@@ -3089,7 +3123,7 @@ function App() {
             </button>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

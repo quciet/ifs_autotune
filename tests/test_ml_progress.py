@@ -7,10 +7,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-import ml_progress
-from model_run_store import insert_model_run
-from model_status import FIT_EVALUATED, IFS_RUN_COMPLETED, IFS_RUN_FAILED, MODEL_REUSED
-from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
+from runtime import ml_progress
+from runtime.model_run_store import insert_model_run
+from runtime.model_status import FIT_EVALUATED, IFS_RUN_COMPLETED, IFS_RUN_FAILED, MODEL_REUSED
+from db.schema import ensure_current_bigpopa_schema
 
 
 def build_progress_db(

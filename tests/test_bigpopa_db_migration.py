@@ -7,8 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-import validate_ifs
-from tools.db.bigpopa_schema import BACKUP_BASENAME, UNIFIED_SCHEMA_VERSION, migrate_bigpopa_db_if_needed
+from ifs import validate_ifs
+from db.schema import BACKUP_BASENAME, UNIFIED_SCHEMA_VERSION, migrate_bigpopa_db_if_needed
 
 
 def _create_legacy_db(
@@ -295,10 +295,6 @@ def test_ensure_working_db_copies_and_upgrades_legacy_template(tmp_path: Path, m
     workspace = tmp_path / "workspace"
     template_db = workspace / "desktop" / "input" / "template" / "bigpopa_clean.db"
     _create_legacy_db(template_db)
-    (workspace / "desktop" / "input" / "template" / "StartingPointTable_clean.xlsx").write_text(
-        "placeholder",
-        encoding="utf-8",
-    )
     monkeypatch.chdir(workspace)
 
     summary = validate_ifs.ensure_working_db()

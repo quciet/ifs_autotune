@@ -11,10 +11,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-import run_ifs
-from model_run_store import insert_model_run
-from model_status import FALLBACK_FIT_POOLED, IFS_RUN_COMPLETED
-from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
+from ifs import run_ifs
+from runtime.model_run_store import insert_model_run
+from runtime.model_status import FALLBACK_FIT_POOLED, IFS_RUN_COMPLETED
+from db.schema import ensure_current_bigpopa_schema
 
 
 def _create_bigpopa_db(db_path: Path) -> None:

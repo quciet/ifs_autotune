@@ -4,8 +4,8 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from model_status import visible_fit_pooled
-from tools.db.bigpopa_schema import MODEL_RUN_TABLE, ensure_current_bigpopa_schema
+from runtime.model_status import visible_fit_pooled
+from db.schema import MODEL_RUN_TABLE, ensure_current_bigpopa_schema
 
 RETENTION_NONE = "none"
 RETENTION_BEST_ONLY = "best_only"

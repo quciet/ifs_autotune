@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-from artifact_retention import (
+from runtime.artifact_retention import (
     RETENTION_ALL,
     RETENTION_BEST_ONLY,
     RETENTION_NONE,
@@ -16,9 +16,9 @@ from artifact_retention import (
     retained_best_dir,
     staging_dir,
 )
-from model_run_store import insert_model_run
-from model_status import FIT_EVALUATED
-from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
+from runtime.model_run_store import insert_model_run
+from runtime.model_status import FIT_EVALUATED
+from db.schema import ensure_current_bigpopa_schema
 
 
 def _conn() -> sqlite3.Connection:

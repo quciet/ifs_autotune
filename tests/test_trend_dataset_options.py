@@ -7,9 +7,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-import trend_dataset_options
-from model_run_store import insert_model_run
-from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
+from analysis import trend_dataset_options
+from runtime.model_run_store import insert_model_run
+from db.schema import ensure_current_bigpopa_schema
 
 
 def _build_db(db_path: Path) -> None:

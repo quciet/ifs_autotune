@@ -1,11 +1,11 @@
 from __future__ import annotations
 import json, hashlib, sqlite3
 
-from model_run_store import (
+from runtime.model_run_store import (
     is_visible_training_sample,
     normalize_run_row,
 )
-from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
+from db.schema import ensure_current_bigpopa_schema
 
 
 def compute_dataset_id(ifs_id: int, input_param: dict, input_coef: dict, output_set: dict) -> str:

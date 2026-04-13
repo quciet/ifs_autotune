@@ -5,9 +5,7 @@ const fs = require('fs');
 
 const isDev = !app.isPackaged;
 const STATIC_IFS_ARGS = ['-1', 'true', 'true', '1', 'false'];
-const DEFAULT_INPUT_DIR = () => path.join(app.getAppPath(), 'input');
 const DEFAULT_OUTPUT_DIR = () => path.join(app.getAppPath(), 'output');
-const DEFAULT_INPUT_FILE_NAME = 'StartingPointTable.xlsx';
 
 const ensureDirectoryExists = (dirPath) => {
   if (!fs.existsSync(dirPath)) {
@@ -16,22 +14,8 @@ const ensureDirectoryExists = (dirPath) => {
 };
 
 const ensureAppFolders = () => {
-  const inputDir = DEFAULT_INPUT_DIR();
-  ensureDirectoryExists(inputDir);
-
   const outputDir = DEFAULT_OUTPUT_DIR();
   ensureDirectoryExists(outputDir);
-
-  const defaultInputFile = path.join(inputDir, DEFAULT_INPUT_FILE_NAME);
-  if (!fs.existsSync(defaultInputFile)) {
-    console.warn('WARNING: No default input file found at:', defaultInputFile);
-  }
-};
-
-const getDefaultInputFilePath = () => {
-  const inputDir = DEFAULT_INPUT_DIR();
-  ensureDirectoryExists(inputDir);
-  return path.join(inputDir, DEFAULT_INPUT_FILE_NAME);
 };
 
 const getDefaultOutputDirectory = () => {
@@ -89,7 +73,7 @@ const mlJobState = {
   error: null,
   ifsPath: null,
   ifsValidated: false,
-  inputExcelPath: null,
+  inputProfileId: null,
   outputDir: null,
   stopRequested: false,
   stopAcknowledged: false,
@@ -108,7 +92,7 @@ const getSafeMLJobState = () => ({
   error: mlJobState.error,
   ifsPath: mlJobState.ifsPath,
   ifsValidated: mlJobState.ifsValidated,
-  inputExcelPath: mlJobState.inputExcelPath,
+  inputProfileId: mlJobState.inputProfileId,
   outputDir: mlJobState.outputDir,
   stopRequested: mlJobState.stopRequested,
   stopAcknowledged: mlJobState.stopAcknowledged,
@@ -117,7 +101,13 @@ const getSafeMLJobState = () => ({
   runConfig: mlJobState.runConfig,
 });
 
-const updateMLJobContext = ({ ifsPath, ifsValidated, inputExcelPath, outputDir, runConfig }) => {
+const updateMLJobContext = ({
+  ifsPath,
+  ifsValidated,
+  inputProfileId,
+  outputDir,
+  runConfig,
+}) => {
   if (typeof ifsPath === 'string') {
     const trimmed = ifsPath.trim();
     mlJobState.ifsPath = trimmed.length > 0 ? trimmed : null;
@@ -127,9 +117,10 @@ const updateMLJobContext = ({ ifsPath, ifsValidated, inputExcelPath, outputDir, 
     mlJobState.ifsValidated = ifsValidated;
   }
 
-  if (typeof inputExcelPath === 'string') {
-    const trimmed = inputExcelPath.trim();
-    mlJobState.inputExcelPath = trimmed.length > 0 ? trimmed : null;
+  if (typeof inputProfileId === 'number' && Number.isFinite(inputProfileId) && inputProfileId > 0) {
+    mlJobState.inputProfileId = inputProfileId;
+  } else if (inputProfileId === null) {
+    mlJobState.inputProfileId = null;
   }
 
   if (typeof outputDir === 'string') {
@@ -288,6 +279,15 @@ app.on('window-all-closed', () => {
   }
 });
 
+ipcMain.on('app:quit', () => {
+  app.quit();
+});
+
+ipcMain.handle('app:quit', async () => {
+  app.quit();
+  return { ok: true };
+});
+
 ipcMain.handle('select-folder', async (_event, payload = {}) => {
   const { type, defaultPath } = payload;
 
@@ -312,49 +312,233 @@ ipcMain.handle('select-folder', async (_event, payload = {}) => {
   return filePaths[0];
 });
 
-ipcMain.handle('select-input-file', async (_event, payload = {}) => {
-  const defaultPath =
-    typeof payload?.defaultPath === 'string' && payload.defaultPath.trim().length > 0
-      ? payload.defaultPath
-      : getDefaultInputFilePath();
-
-  const defaultDir = path.extname(defaultPath)
-    ? path.dirname(defaultPath)
-    : defaultPath;
-  ensureDirectoryExists(defaultDir);
-
-  const { canceled, filePaths } = await dialog.showOpenDialog({
-    properties: ['openFile'],
-    defaultPath,
-    filters: [{ name: 'Excel Files', extensions: ['xlsx'] }],
-  });
-
-  if (canceled || filePaths.length === 0) {
-    return null;
-  }
-
-  return filePaths[0];
-});
-
 ipcMain.handle('get-default-output-dir', async () => {
   return getDefaultOutputDirectory();
 });
 
-ipcMain.handle('get-default-input-file', async () => {
-  const inputDir = DEFAULT_INPUT_DIR();
-
-  if (!fs.existsSync(inputDir)) {
-    fs.mkdirSync(inputDir, { recursive: true });
-    console.log('Created input folder:', inputDir);
+ipcMain.handle('profiles:list', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const ifsStaticId =
+    typeof payload.ifsStaticId === 'number' && Number.isFinite(payload.ifsStaticId)
+      ? Math.trunc(payload.ifsStaticId)
+      : null;
+  if (!outputFolder || !ifsStaticId || ifsStaticId <= 0) {
+    throw new Error('profiles:list requires outputFolder and ifsStaticId');
   }
+  return runProfileCommand('list', [
+    '--output-folder',
+    outputFolder,
+    '--ifs-static-id',
+    String(ifsStaticId),
+    ...(payload.includeArchived ? ['--include-archived'] : []),
+  ]);
+});
 
-  const defaultInputFile = path.join(inputDir, DEFAULT_INPUT_FILE_NAME);
-
-  if (!fs.existsSync(defaultInputFile)) {
-    console.warn('WARNING: Default input file not found at:', defaultInputFile);
+ipcMain.handle('profiles:get', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  if (!outputFolder || !profileId || profileId <= 0) {
+    throw new Error('profiles:get requires outputFolder and profileId');
   }
+  const args = ['--output-folder', outputFolder, '--profile-id', String(profileId)];
+  if (typeof payload.ifsRoot === 'string' && payload.ifsRoot.trim()) {
+    args.push('--ifs-root', payload.ifsRoot.trim());
+  }
+  return runProfileCommand('get', args);
+});
 
-  return defaultInputFile;
+ipcMain.handle('profiles:create', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const ifsStaticId =
+    typeof payload.ifsStaticId === 'number' && Number.isFinite(payload.ifsStaticId)
+      ? Math.trunc(payload.ifsStaticId)
+      : null;
+  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+  if (!outputFolder || !ifsStaticId || ifsStaticId <= 0 || !name) {
+    throw new Error('profiles:create requires outputFolder, ifsStaticId, and name');
+  }
+  const args = [
+    '--output-folder',
+    outputFolder,
+    '--ifs-static-id',
+    String(ifsStaticId),
+    '--name',
+    name,
+  ];
+  if (typeof payload.description === 'string' && payload.description.trim()) {
+    args.push('--description', payload.description.trim());
+  }
+  return runProfileCommand('create', args);
+});
+
+ipcMain.handle('profiles:updateMeta', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  if (!outputFolder || !profileId || profileId <= 0) {
+    throw new Error('profiles:updateMeta requires outputFolder and profileId');
+  }
+  const args = ['--output-folder', outputFolder, '--profile-id', String(profileId)];
+  if (typeof payload.name === 'string') {
+    args.push('--name', payload.name);
+  }
+  if (typeof payload.description === 'string') {
+    args.push('--description', payload.description);
+  }
+  return runProfileCommand('update-meta', args);
+});
+
+ipcMain.handle('profiles:duplicate', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+  if (!outputFolder || !profileId || profileId <= 0 || !name) {
+    throw new Error('profiles:duplicate requires outputFolder, profileId, and name');
+  }
+  return runProfileCommand('duplicate', [
+    '--output-folder',
+    outputFolder,
+    '--profile-id',
+    String(profileId),
+    '--name',
+    name,
+  ]);
+});
+
+ipcMain.handle('profiles:archive', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  if (!outputFolder || !profileId || profileId <= 0) {
+    throw new Error('profiles:archive requires outputFolder and profileId');
+  }
+  return runProfileCommand('archive', [
+    '--output-folder',
+    outputFolder,
+    '--profile-id',
+    String(profileId),
+    '--archived',
+    payload.archived === false ? 'false' : 'true',
+  ]);
+});
+
+ipcMain.handle('profiles:delete', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  if (!outputFolder || !profileId || profileId <= 0) {
+    throw new Error('profiles:delete requires outputFolder and profileId');
+  }
+  return runProfileCommand('delete', [
+    '--output-folder',
+    outputFolder,
+    '--profile-id',
+    String(profileId),
+  ]);
+});
+
+ipcMain.handle('profiles:saveParameters', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  if (!outputFolder || !profileId || profileId <= 0) {
+    throw new Error('profiles:saveParameters requires outputFolder and profileId');
+  }
+  return runProfileCommand(
+    'save-parameters',
+    ['--output-folder', outputFolder, '--profile-id', String(profileId), '--stdin-json'],
+    { stdinData: JSON.stringify(payload.rows ?? []) },
+  );
+});
+
+ipcMain.handle('profiles:saveCoefficients', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  if (!outputFolder || !profileId || profileId <= 0) {
+    throw new Error('profiles:saveCoefficients requires outputFolder and profileId');
+  }
+  return runProfileCommand(
+    'save-coefficients',
+    ['--output-folder', outputFolder, '--profile-id', String(profileId), '--stdin-json'],
+    { stdinData: JSON.stringify(payload.rows ?? []) },
+  );
+});
+
+ipcMain.handle('profiles:saveOutputs', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  if (!outputFolder || !profileId || profileId <= 0) {
+    throw new Error('profiles:saveOutputs requires outputFolder and profileId');
+  }
+  return runProfileCommand(
+    'save-outputs',
+    ['--output-folder', outputFolder, '--profile-id', String(profileId), '--stdin-json'],
+    { stdinData: JSON.stringify(payload.rows ?? []) },
+  );
+});
+
+ipcMain.handle('profiles:saveMlSettings', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  if (!outputFolder || !profileId || profileId <= 0) {
+    throw new Error('profiles:saveMlSettings requires outputFolder and profileId');
+  }
+  return runProfileCommand(
+    'save-ml-settings',
+    ['--output-folder', outputFolder, '--profile-id', String(profileId), '--stdin-json'],
+    { stdinData: JSON.stringify(payload.mlSettings ?? {}) },
+  );
+});
+
+ipcMain.handle('profiles:validate', async (_event, payload = {}) => {
+  const outputFolder =
+    typeof payload.outputFolder === 'string' ? payload.outputFolder.trim() : '';
+  const profileId =
+    typeof payload.profileId === 'number' && Number.isFinite(payload.profileId)
+      ? Math.trunc(payload.profileId)
+      : null;
+  if (!outputFolder || !profileId || profileId <= 0) {
+    throw new Error('profiles:validate requires outputFolder and profileId');
+  }
+  const args = ['--output-folder', outputFolder, '--profile-id', String(profileId)];
+  if (typeof payload.ifsRoot === 'string' && payload.ifsRoot.trim()) {
+    args.push('--ifs-root', payload.ifsRoot.trim());
+  }
+  return runProfileCommand('validate', args);
 });
 
 const REQUIRED_INPUT_SHEETS = ['AnalFunc', 'TablFunc', 'IFsVar', 'DataDict'];
@@ -402,6 +586,10 @@ function runPythonScript(scriptName, args = [], options = {}) {
       options && typeof options === 'object' && typeof options.progressChannel === 'string'
         ? options.progressChannel.trim()
         : '';
+    const stdinData =
+      options && typeof options === 'object' && typeof options.stdinData === 'string'
+        ? options.stdinData
+        : null;
 
     const processOptions = {
       cwd: getRepoRoot(),
@@ -488,6 +676,11 @@ function runPythonScript(scriptName, args = [], options = {}) {
 
     const pythonProcess = spawnPython(pythonArgs, { ...processOptions, quiet });
 
+    if (stdinData !== null) {
+      pythonProcess.stdin.write(stdinData);
+      pythonProcess.stdin.end();
+    }
+
     pythonProcess.stdout.on('data', (data) => {
       const text = data.toString();
       stdout += text;
@@ -564,12 +757,12 @@ function normalizeValidationPayload(payload) {
     return {
       ifsPath: payload.trim() || null,
       outputPath: null,
-      inputFilePath: null,
+      inputProfileId: null,
     };
   }
 
   if (!payload || typeof payload !== 'object') {
-    return { ifsPath: null, outputPath: null, inputFilePath: null };
+    return { ifsPath: null, outputPath: null, inputProfileId: null };
   }
 
   const rawIfs =
@@ -586,11 +779,11 @@ function normalizeValidationPayload(payload) {
       : typeof payload.outputDirectory === 'string'
       ? payload.outputDirectory
       : null;
-  const rawInput =
-    typeof payload.inputFilePath === 'string'
-      ? payload.inputFilePath
-      : typeof payload.inputFile === 'string'
-      ? payload.inputFile
+  const rawProfileId =
+    typeof payload.inputProfileId === 'number'
+      ? payload.inputProfileId
+      : typeof payload.profileId === 'number'
+      ? payload.profileId
       : null;
 
   const cleaned = (value) => {
@@ -604,16 +797,27 @@ function normalizeValidationPayload(payload) {
   return {
     ifsPath: cleaned(rawIfs),
     outputPath: cleaned(rawOutput),
-    inputFilePath: cleaned(rawInput),
+    inputProfileId:
+      Number.isFinite(rawProfileId) && rawProfileId > 0 ? Math.trunc(rawProfileId) : null,
   };
 }
 
-function createFallbackValidation(normalized, missingFiles) {
-  const sheets = REQUIRED_INPUT_SHEETS.reduce((acc, sheet) => {
-    acc[sheet] = false;
-    return acc;
-  }, {});
+async function runProfileCommand(command, args = [], options = {}) {
+  const response = await runPythonScript(path.join('db', 'input_profiles.py'), [command, ...args], options);
+  if (!response || typeof response !== 'object') {
+    throw new Error('Unexpected profile response.');
+  }
+  if (response.ok !== true) {
+    throw new Error(
+      typeof response.error === 'string' && response.error.trim().length > 0
+        ? response.error
+        : 'Profile request failed.',
+    );
+  }
+  return response.data;
+}
 
+function createFallbackValidation(normalized, missingFiles) {
   return {
     valid: false,
     missingFiles,
@@ -632,13 +836,18 @@ function createFallbackValidation(normalized, missingFiles) {
         writable: false,
         message: 'Validation failed.',
       },
-      inputFile: {
-        displayPath: normalized.inputFilePath,
-        exists: false,
-        readable: false,
+      inputProfile: {
+        displayPath:
+          typeof normalized.inputProfileId === 'number'
+            ? `Profile ${normalized.inputProfileId}`
+            : null,
+        exists: Boolean(normalized.inputProfileId),
+        readable: Boolean(normalized.inputProfileId),
+        writable: null,
         message: 'Validation failed.',
-        sheets,
-        missingSheets: [...REQUIRED_INPUT_SHEETS],
+        profileId: normalized.inputProfileId,
+        valid: false,
+        errors: [],
       },
     },
   };
@@ -670,7 +879,7 @@ ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
   updateMLJobContext({
     ifsPath: normalized.ifsPath ?? '',
     ifsValidated: false,
-    inputExcelPath: normalized.inputFilePath ?? '',
+    inputProfileId: normalized.inputProfileId,
     outputDir: normalized.outputPath ?? '',
   });
   console.log('[ml] validation updated', {
@@ -688,8 +897,8 @@ ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
   if (normalized.outputPath) {
     args.push('--output-path', normalized.outputPath);
   }
-  if (normalized.inputFilePath) {
-    args.push('--input-file', normalized.inputFilePath);
+  if (normalized.inputProfileId) {
+    args.push('--input-profile-id', String(normalized.inputProfileId));
   }
 
   try {
@@ -735,7 +944,7 @@ ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
         updateMLJobContext({
           ifsPath: lastValidatedPath ?? normalized.ifsPath ?? '',
           ifsValidated: true,
-          inputExcelPath: normalized.inputFilePath ?? '',
+          inputProfileId: normalized.inputProfileId,
           outputDir: normalized.outputPath ?? '',
           runConfig: {
             baseYear: lastBaseYear,
@@ -747,7 +956,7 @@ ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
         updateMLJobContext({
           ifsPath: normalized.ifsPath ?? '',
           ifsValidated: false,
-          inputExcelPath: normalized.inputFilePath ?? '',
+          inputProfileId: normalized.inputProfileId,
           outputDir: normalized.outputPath ?? '',
         });
       }
@@ -763,7 +972,7 @@ ipcMain.handle('validate-ifs-folder', async (_event, rawPayload) => {
     updateMLJobContext({
       ifsPath: normalized.ifsPath ?? '',
       ifsValidated: false,
-      inputExcelPath: normalized.inputFilePath ?? '',
+      inputProfileId: normalized.inputProfileId,
       outputDir: normalized.outputPath ?? '',
     });
     console.log('[ml] validation updated', {
@@ -1031,6 +1240,14 @@ ipcMain.handle("run-ml", async (_event, args) => {
     };
 
     try {
+      if (
+        typeof args?.inputProfileId !== 'number' ||
+        !Number.isFinite(args.inputProfileId) ||
+        args.inputProfileId <= 0
+      ) {
+        throw new Error('run-ml requires an inputProfileId');
+      }
+
       cleanupCurrentMLStopFile();
       currentMLFinalPayload = null;
 
@@ -1053,13 +1270,10 @@ ipcMain.handle("run-ml", async (_event, args) => {
             "--end-year", args.endYear,
             "--output-folder", args.outputFolder,
             "--initial-model-id", args.initialModelId,
+            "--input-profile-id", String(args.inputProfileId),
             "--bigpopa-db", path.join(args.outputFolder, "bigpopa.db"),
             "--stop-file", stopFilePath,
           ];
-
-          if (args.inputFilePath) {
-            baseArgs.push("--starting-point-table", args.inputFilePath);
-          }
 
           if (args.baseYear != null) {
             baseArgs.push("--base-year", String(args.baseYear));
@@ -1096,7 +1310,10 @@ ipcMain.handle("run-ml", async (_event, args) => {
       updateMLJobContext({
         ifsPath: args.ifsRoot,
         ifsValidated: true,
-        inputExcelPath: args.inputFilePath ?? '',
+        inputProfileId:
+          typeof args.inputProfileId === 'number' && Number.isFinite(args.inputProfileId)
+            ? args.inputProfileId
+            : null,
         outputDir: args.outputFolder ?? '',
         runConfig: {
           endYear: args.endYear,
@@ -1594,24 +1811,35 @@ ipcMain.handle('extract_compare', async (_event, payload) => {
     throw new Error('Invalid payload for extract_compare');
   }
 
-  const { ifsRoot, modelDb, inputFilePath, modelId } = payload;
+  const { ifsRoot, modelDb, inputProfileId, modelId, ifsId, bigpopaDb, outputDir } = payload;
 
-  if (!ifsRoot || !modelDb || !inputFilePath || !modelId) {
+  if (!ifsRoot || !modelDb || !modelId || !ifsId) {
     throw new Error(
-      'extract_compare requires ifsRoot, modelDb, inputFilePath, and modelId',
+      'extract_compare requires ifsRoot, modelDb, modelId, and ifsId',
     );
   }
 
-  return runPythonScript('extract_compare.py', [
+  const args = [
     '--ifs-root',
     ifsRoot,
     '--model-db',
     modelDb,
-    '--input-file',
-    inputFilePath,
     '--model-id',
     modelId,
-  ]);
+    '--ifs-id',
+    String(ifsId),
+  ];
+  if (typeof inputProfileId === 'number' && Number.isFinite(inputProfileId) && inputProfileId > 0) {
+    args.push('--input-profile-id', String(inputProfileId));
+  }
+  if (typeof bigpopaDb === 'string' && bigpopaDb.trim()) {
+    args.push('--bigpopa-db', bigpopaDb.trim());
+  }
+  if (typeof outputDir === 'string' && outputDir.trim()) {
+    args.push('--output-dir', outputDir.trim());
+  }
+
+  return runPythonScript('extract_compare.py', args);
 });
 
 ipcMain.handle('model_setup', async (_event, payload) => {
@@ -1621,15 +1849,17 @@ ipcMain.handle('model_setup', async (_event, payload) => {
 
   const validatedPath =
     typeof payload.validatedPath === 'string' ? payload.validatedPath.trim() : '';
-  const inputFilePath =
-    typeof payload.inputFilePath === 'string' ? payload.inputFilePath.trim() : '';
+  const inputProfileId =
+    typeof payload.inputProfileId === 'number' && Number.isFinite(payload.inputProfileId)
+      ? Math.trunc(payload.inputProfileId)
+      : null;
 
   if (!validatedPath) {
     throw new Error('model_setup requires a validatedPath');
   }
 
-  if (!inputFilePath) {
-    throw new Error('model_setup requires an inputFilePath');
+  if (!inputProfileId || inputProfileId <= 0) {
+    throw new Error('model_setup requires an inputProfileId');
   }
 
   const baseYear = payload.baseYear ?? null;
@@ -1644,8 +1874,8 @@ ipcMain.handle('model_setup', async (_event, payload) => {
   const args = [
     '--ifs-root',
     validatedPath,
-    '--input-file',
-    inputFilePath,
+    '--input-profile-id',
+    String(inputProfileId),
     '--base-year',
     String(baseYear ?? ''),
     '--end-year',
@@ -1674,8 +1904,12 @@ ipcMain.handle('validate_ifs', async (_event, payload = {}) => {
     args.push('--output-path', payload.outputPath);
   }
 
-  if (payload.inputFilePath) {
-    args.push('--input-file', payload.inputFilePath);
+  if (
+    typeof payload.inputProfileId === 'number' &&
+    Number.isFinite(payload.inputProfileId) &&
+    payload.inputProfileId > 0
+  ) {
+    args.push('--input-profile-id', String(Math.trunc(payload.inputProfileId)));
   }
 
   return runPythonScript('validate_ifs.py', args);

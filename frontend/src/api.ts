@@ -6,11 +6,14 @@ export type RequirementCheck = {
 export type CheckResponse = {
   valid: boolean;
   base_year?: number | null;
+  ifs_static_id?: number | null;
+  profileReady?: boolean;
   requirements?: RequirementCheck[];
   missingFiles?: string[];
   infoMessages?: string[];
   dbMigration?: {
     performed?: boolean;
+    message?: string | null;
     original_version?: number;
     new_version?: number;
     backup_path?: string | null;
@@ -23,7 +26,7 @@ export type CheckResponse = {
   pathChecks?: {
     ifsFolder?: ValidationPathCheck;
     outputFolder?: ValidationPathCheck;
-    inputFile?: ValidationInputFileCheck;
+    inputProfile?: ValidationProfileCheck;
   };
 };
 
@@ -35,9 +38,90 @@ export type ValidationPathCheck = {
   message?: string | null;
 };
 
-export type ValidationInputFileCheck = ValidationPathCheck & {
-  sheets?: Record<string, boolean>;
-  missingSheets?: string[];
+export type ValidationProfileCheck = ValidationPathCheck & {
+  profileId?: number | null;
+  valid?: boolean;
+  errors?: string[];
+  profile?: InputProfileSummary | null;
+};
+
+export type InputProfileSummary = {
+  profile_id: number;
+  ifs_static_id: number;
+  name: string;
+  description?: string | null;
+  created_at_utc?: string | null;
+  updated_at_utc?: string | null;
+  archived?: boolean;
+  source_type?: string | null;
+  source_path?: string | null;
+  enabled_param_count?: number;
+  enabled_coefficient_count?: number;
+  enabled_output_count?: number;
+};
+
+export type ParameterProfileRow = {
+  param_name: string;
+  param_type?: string | null;
+  param_default?: number | null;
+  param_min?: number | null;
+  param_max?: number | null;
+  enabled: boolean;
+  minimum?: number | null;
+  maximum?: number | null;
+  step?: number | null;
+  level_count?: number | null;
+  sort_order?: number | null;
+};
+
+export type CoefficientProfileRow = {
+  function_name: string;
+  y_name?: string | null;
+  x_name: string;
+  reg_seq?: number | null;
+  beta_name: string;
+  beta_default?: number | null;
+  beta_std?: number | null;
+  source_sheet?: string | null;
+  enabled: boolean;
+  minimum?: number | null;
+  maximum?: number | null;
+  step?: number | null;
+  level_count?: number | null;
+  sort_order?: number | null;
+};
+
+export type OutputProfileRow = {
+  variable: string;
+  table_name: string;
+  enabled: boolean;
+  sort_order?: number | null;
+};
+
+export type InputProfileMLSettings = {
+  ml_method: string;
+  fit_metric: string;
+  n_sample: number;
+  n_max_iteration: number;
+  n_convergence: number;
+  min_convergence_pct: number;
+};
+
+export type InputProfileValidation = {
+  valid: boolean;
+  errors: string[];
+  enabled_param_count: number;
+  enabled_coefficient_count: number;
+  enabled_output_count: number;
+};
+
+export type InputProfileDetail = {
+  profile: InputProfileSummary;
+  parameter_catalog: ParameterProfileRow[];
+  coefficient_catalog: CoefficientProfileRow[];
+  output_catalog: OutputProfileRow[];
+  ml_settings: InputProfileMLSettings;
+  validation: InputProfileValidation;
 };
 
 export type ApiStage = "model_setup" | "run_ifs" | "ml_driver";
@@ -303,13 +387,13 @@ const FALLBACK_RESPONSE: CheckResponse = {
 export type ValidateIFsPayload = {
   ifsPath: string;
   outputPath?: string | null;
-  inputFilePath?: string | null;
+  inputProfileId?: number | null;
 };
 
 export async function validateIFsFolder({
   ifsPath,
   outputPath,
-  inputFilePath,
+  inputProfileId,
 }: ValidateIFsPayload): Promise<CheckResponse> {
   if (!window.electron?.invoke) {
     return { ...FALLBACK_RESPONSE };
@@ -319,7 +403,7 @@ export async function validateIFsFolder({
     const payload = {
       ifsPath,
       outputPath: outputPath ?? null,
-      inputFilePath: inputFilePath ?? null,
+      inputProfileId: inputProfileId ?? null,
     };
     const result = await window.electron.invoke("validate-ifs-folder", payload);
     if (result && typeof result === "object") {
@@ -338,7 +422,7 @@ export interface RunIFsParams {
   outputDirectory: string;
   modelId: string;
   ifsId: number;
-  inputFilePath?: string;
+  inputProfileId: number;
   artifactRetentionMode?: ArtifactRetentionMode;
 }
 
@@ -350,9 +434,11 @@ export type IFsProgressEvent = {
 export type ExtractCompareParams = {
   ifsRoot: string;
   modelDb: string;
-  inputFilePath: string;
   modelId: string;
   ifsId: number;
+  inputProfileId?: number | null;
+  bigpopaDb?: string | null;
+  outputDir?: string | null;
 };
 
 export async function modelSetup({
@@ -362,7 +448,7 @@ export async function modelSetup({
   coefficients,
   paramDim,
   validatedPath,
-  inputFilePath,
+  inputProfileId,
   outputFolder,
   artifactRetentionMode,
 }: {
@@ -372,7 +458,7 @@ export async function modelSetup({
   coefficients?: Record<string, unknown>;
   paramDim?: Record<string, unknown>;
   validatedPath: string;
-  inputFilePath: string;
+  inputProfileId: number;
   outputFolder?: string | null;
   artifactRetentionMode?: ArtifactRetentionMode;
 }): Promise<StageSuccess<"model_setup", ModelSetupData>> {
@@ -388,7 +474,7 @@ export async function modelSetup({
       coefficients: coefficients ?? {},
       param_dim_dict: paramDim ?? {},
       validatedPath,
-      inputFilePath,
+      inputProfileId,
       outputFolder: outputFolder ?? null,
       artifactRetentionMode: artifactRetentionMode ?? "none",
     };
@@ -408,7 +494,7 @@ export async function runML({
   outputDirectory,
   modelId,
   ifsId,
-  inputFilePath,
+  inputProfileId,
   artifactRetentionMode,
 }: RunIFsParams): Promise<StageSuccess<"ml_driver", MLDriverData>> {
   if (!window.electron?.invoke) {
@@ -433,7 +519,7 @@ export async function runML({
       output_dir: outputDirectory,
       modelId: normalizedModelId,
       ifsId: normalizedIfsId,
-      inputFilePath: inputFilePath ?? null,
+      inputProfileId,
       artifactRetentionMode: artifactRetentionMode ?? "none",
     });
     return normalizeStageResponse(payload, "ml_driver");
@@ -543,6 +629,174 @@ export async function getMLProgressHistory(
       trials: [],
     };
   }
+}
+
+export async function listProfiles(
+  outputFolder: string,
+  ifsStaticId: number,
+  includeArchived = false,
+): Promise<InputProfileSummary[]> {
+  if (!window.electron?.invoke) {
+    return [];
+  }
+  const result = await window.electron.invoke("profiles:list", {
+    outputFolder,
+    ifsStaticId,
+    includeArchived,
+  });
+  return ((result as { profiles?: InputProfileSummary[] } | null)?.profiles ?? []) as InputProfileSummary[];
+}
+
+export async function getProfile(
+  outputFolder: string,
+  profileId: number,
+  ifsRoot?: string | null,
+): Promise<InputProfileDetail> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:get", {
+    outputFolder,
+    profileId,
+    ifsRoot: ifsRoot ?? null,
+  })) as InputProfileDetail;
+}
+
+export async function createProfile(
+  outputFolder: string,
+  ifsStaticId: number,
+  name: string,
+  description?: string | null,
+): Promise<InputProfileDetail> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:create", {
+    outputFolder,
+    ifsStaticId,
+    name,
+    description: description ?? null,
+  })) as InputProfileDetail;
+}
+
+export async function updateProfileMeta(
+  outputFolder: string,
+  profileId: number,
+  name?: string | null,
+  description?: string | null,
+): Promise<InputProfileDetail> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:updateMeta", {
+    outputFolder,
+    profileId,
+    name: name ?? null,
+    description: description ?? null,
+  })) as InputProfileDetail;
+}
+
+export async function saveProfileAs(
+  outputFolder: string,
+  profileId: number,
+  name: string,
+): Promise<InputProfileDetail> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:duplicate", {
+    outputFolder,
+    profileId,
+    name,
+  })) as InputProfileDetail;
+}
+
+export async function deleteProfile(
+  outputFolder: string,
+  profileId: number,
+): Promise<{ deleted_profile_id: number }> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:delete", {
+    outputFolder,
+    profileId,
+  })) as { deleted_profile_id: number };
+}
+
+export async function saveProfileParameters(
+  outputFolder: string,
+  profileId: number,
+  rows: ParameterProfileRow[],
+): Promise<InputProfileDetail> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:saveParameters", {
+    outputFolder,
+    profileId,
+    rows,
+  })) as InputProfileDetail;
+}
+
+export async function saveProfileCoefficients(
+  outputFolder: string,
+  profileId: number,
+  rows: CoefficientProfileRow[],
+): Promise<InputProfileDetail> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:saveCoefficients", {
+    outputFolder,
+    profileId,
+    rows,
+  })) as InputProfileDetail;
+}
+
+export async function saveProfileOutputs(
+  outputFolder: string,
+  profileId: number,
+  rows: OutputProfileRow[],
+): Promise<InputProfileDetail> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:saveOutputs", {
+    outputFolder,
+    profileId,
+    rows,
+  })) as InputProfileDetail;
+}
+
+export async function saveProfileMLSettings(
+  outputFolder: string,
+  profileId: number,
+  mlSettings: InputProfileMLSettings,
+): Promise<InputProfileDetail> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:saveMlSettings", {
+    outputFolder,
+    profileId,
+    mlSettings,
+  })) as InputProfileDetail;
+}
+
+export async function validateProfileSelection(
+  outputFolder: string,
+  profileId: number,
+  ifsRoot?: string | null,
+): Promise<Pick<InputProfileDetail, "profile" | "validation" | "ml_settings">> {
+  if (!window.electron?.invoke) {
+    throw new Error("Electron bridge is unavailable.");
+  }
+  return (await window.electron.invoke("profiles:validate", {
+    outputFolder,
+    profileId,
+    ifsRoot: ifsRoot ?? null,
+  })) as Pick<InputProfileDetail, "profile" | "validation" | "ml_settings">;
 }
 
 export async function getDesktopCapabilities(): Promise<DesktopCapabilities> {

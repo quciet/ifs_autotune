@@ -8,17 +8,18 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-import dataset_utils
-import ml_driver
-import model_setup
-from ml_method import load_required_ml_method, normalize_ml_method
-from model_run_store import insert_model_run
-from model_status import (
+from runtime import dataset_utils
+from db import input_profiles
+from runtime import ml_driver
+from runtime import model_setup
+from db.ifs_metadata import ensure_ifs_metadata_schema
+from runtime.ml_method import normalize_ml_method
+from runtime.model_run_store import insert_model_run
+from runtime.model_status import (
     FALLBACK_FIT_POOLED,
     FIT_EVALUATED,
     IFS_RUN_COMPLETED,
@@ -28,37 +29,7 @@ from model_status import (
 from optimization import active_learning
 from optimization.ensemble_training import ensemble_predict, train_ensemble, validate_surrogate_memory
 from optimization.surrogate_models import BoundsScaler, LogClippedTargetTransform
-from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
-
-
-def _write_workbook(
-    path: Path,
-    *,
-    ml_method: str | None,
-    n_sample: int = 10,
-    n_max_iteration: int = 1,
-    n_convergence: int | None = None,
-    min_convergence_pct: float | None = None,
-) -> None:
-    rows: list[dict[str, object]] = [
-        {"Method": "general", "Parameter": "n_sample", "Value": n_sample},
-        {"Method": "general", "Parameter": "n_max_iteration", "Value": n_max_iteration},
-    ]
-    if n_convergence is not None:
-        rows.append({"Method": "general", "Parameter": "n_convergence", "Value": n_convergence})
-    if min_convergence_pct is not None:
-        rows.append(
-            {
-                "Method": "general",
-                "Parameter": "min_convergence_pct",
-                "Value": min_convergence_pct,
-            }
-        )
-    if ml_method is not None:
-        rows.append({"Method": "general", "Parameter": "ml_method", "Value": ml_method})
-
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        pd.DataFrame(rows).to_excel(writer, sheet_name="ML", index=False)
+from db.schema import ensure_current_bigpopa_schema
 
 
 def _create_bigpopa_db(
@@ -71,18 +42,7 @@ def _create_bigpopa_db(
     try:
         cursor = conn.cursor()
         ensure_current_bigpopa_schema(cursor)
-        cursor.execute(
-            """
-            CREATE TABLE ifs_version (
-                ifs_id INTEGER PRIMARY KEY,
-                ifs_static_id INTEGER,
-                base_year INTEGER,
-                end_year INTEGER,
-                fit_metric TEXT,
-                ml_method TEXT
-            )
-            """
-        )
+        ensure_ifs_metadata_schema(cursor)
         insert_model_run(
             conn,
             ifs_id=1,
@@ -96,14 +56,72 @@ def _create_bigpopa_db(
         )
         cursor.execute(
             """
-            INSERT INTO ifs_version (ifs_id, ifs_static_id, base_year, end_year, fit_metric, ml_method)
+            INSERT OR REPLACE INTO ifs_version (
+                ifs_id, ifs_static_id, version_number, base_year, end_year, fit_metric, ml_method
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (1, 1, "8.01", 2020, 2030, "mse", persisted_ml_method),
+        )
+        cursor.execute(
+            """
+            INSERT INTO ifs_static (ifs_static_id, version_number, base_year)
+            VALUES (?, ?, ?)
+            """,
+            (1, "8.01", 2020),
+        )
+        cursor.execute(
+            """
+            INSERT INTO parameter (
+                ifs_static_id, param_name, param_type, param_default, param_min, param_max
+            )
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (1, 1, 2020, 2030, "mse", persisted_ml_method),
+            (1, "a", "parameter", 0.5, 0.0, 1.0),
         )
         conn.commit()
     finally:
         conn.close()
+
+
+def _create_input_profile(
+    output_dir: Path,
+    *,
+    ml_method: str = "tree",
+    n_sample: int = 10,
+    n_max_iteration: int = 1,
+    n_convergence: int = 10,
+    min_convergence_pct: float = 0.01 / 100.0,
+) -> int:
+    created = input_profiles.create_profile(
+        output_folder=output_dir,
+        ifs_static_id=1,
+        name="Test profile",
+    )
+    profile_id = int(created["profile"]["profile_id"])
+    input_profiles.save_parameters(
+        output_folder=output_dir,
+        profile_id=profile_id,
+        rows=[{"param_name": "a", "enabled": True}],
+    )
+    input_profiles.save_outputs(
+        output_folder=output_dir,
+        profile_id=profile_id,
+        rows=[{"variable": "fit", "table_name": "hist_fit", "enabled": True}],
+    )
+    input_profiles.save_ml_settings(
+        output_folder=output_dir,
+        profile_id=profile_id,
+        payload={
+            "ml_method": ml_method,
+            "fit_metric": "mse",
+            "n_sample": n_sample,
+            "n_max_iteration": n_max_iteration,
+            "n_convergence": n_convergence,
+            "min_convergence_pct": min_convergence_pct,
+        },
+    )
+    return profile_id
 
 
 def _ensure_bigpopa_schema(path: Path) -> None:
@@ -148,6 +166,7 @@ def _args_namespace(tmp_path: Path, output_dir: Path) -> argparse.Namespace:
         start_token="5",
         log="jrs.txt",
         websessionid="session-1",
+        artifact_retention=None,
     )
 
 
@@ -201,25 +220,24 @@ def test_load_compatible_training_samples_uses_exact_dataset_id_only(tmp_path: P
 
 
 @pytest.mark.parametrize(
-    ("persisted_ml_method", "workbook_value", "expected_model_type"),
+    ("persisted_ml_method", "profile_value", "expected_model_type"),
     [
-        ("neural network", "tree", "nn"),
-        ("poly", "neural network", "poly"),
+        ("neural network", "tree", "tree"),
+        ("poly", "neural network", "nn"),
     ],
 )
-def test_ml_driver_uses_db_ml_method_even_when_workbook_differs(
+def test_ml_driver_uses_profile_ml_method_even_when_ifs_version_differs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     persisted_ml_method: str,
-    workbook_value: str,
+    profile_value: str,
     expected_model_type: str,
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     db_path = output_dir / "bigpopa.db"
-    workbook_path = tmp_path / "StartingPointTable.xlsx"
     _create_bigpopa_db(db_path, persisted_ml_method=persisted_ml_method)
-    _write_workbook(workbook_path, ml_method=workbook_value)
+    profile_id = _create_input_profile(output_dir, ml_method=profile_value)
 
     monkeypatch.setattr(
         ml_driver.dataset_utils,
@@ -256,8 +274,8 @@ def test_ml_driver_uses_db_ml_method_even_when_workbook_differs(
             str(output_dir),
             "--initial-model-id",
             "initial-model",
-            "--starting-point-table",
-            str(workbook_path),
+            "--input-profile-id",
+            str(profile_id),
         ]
     )
 
@@ -265,16 +283,15 @@ def test_ml_driver_uses_db_ml_method_even_when_workbook_differs(
     assert captured["model_type"] == expected_model_type
 
 
-def test_ml_driver_works_when_workbook_omits_ml_method_but_db_has_it(
+def test_ml_driver_uses_profile_ml_settings_defaults_when_profile_is_minimal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     db_path = output_dir / "bigpopa.db"
-    workbook_path = tmp_path / "StartingPointTable.xlsx"
     _create_bigpopa_db(db_path, persisted_ml_method="tree")
-    _write_workbook(workbook_path, ml_method=None)
+    profile_id = _create_input_profile(output_dir, ml_method="tree")
 
     monkeypatch.setattr(
         ml_driver.dataset_utils,
@@ -311,8 +328,8 @@ def test_ml_driver_works_when_workbook_omits_ml_method_but_db_has_it(
             str(output_dir),
             "--initial-model-id",
             "initial-model",
-            "--starting-point-table",
-            str(workbook_path),
+            "--input-profile-id",
+            str(profile_id),
         ]
     )
 
@@ -320,18 +337,23 @@ def test_ml_driver_works_when_workbook_omits_ml_method_but_db_has_it(
     assert captured["model_type"] == "tree"
 
 
-@pytest.mark.parametrize("persisted_ml_method", [None, "svm"])
-def test_ml_driver_fails_when_db_ml_method_is_missing_or_invalid(
+@pytest.mark.parametrize("invalid_profile_ml_method", ["svm"])
+def test_ml_driver_fails_when_profile_ml_method_is_missing_or_invalid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    persisted_ml_method: str | None,
+    invalid_profile_ml_method: str | None,
 ) -> None:
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     db_path = output_dir / "bigpopa.db"
-    workbook_path = tmp_path / "StartingPointTable.xlsx"
-    _create_bigpopa_db(db_path, persisted_ml_method=persisted_ml_method)
-    _write_workbook(workbook_path, ml_method="neural network")
+    _create_bigpopa_db(db_path, persisted_ml_method="tree")
+    profile_id = _create_input_profile(output_dir, ml_method="tree")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE input_profile_ml_settings SET ml_method = ? WHERE profile_id = ?",
+            (invalid_profile_ml_method, profile_id),
+        )
+        conn.commit()
 
     called = {"value": False}
 
@@ -351,32 +373,13 @@ def test_ml_driver_fails_when_db_ml_method_is_missing_or_invalid(
             str(output_dir),
             "--initial-model-id",
             "initial-model",
-            "--starting-point-table",
-            str(workbook_path),
+            "--input-profile-id",
+            str(profile_id),
         ]
     )
 
     assert exit_code == 1
     assert called["value"] is False
-
-
-def test_load_required_ml_method_rejects_invalid_value(tmp_path: Path) -> None:
-    workbook_path = tmp_path / "StartingPointTable.xlsx"
-    _write_workbook(workbook_path, ml_method="svm")
-
-    with pytest.raises(ValueError, match="Unsupported ML method"):
-        load_required_ml_method(workbook_path)
-
-
-def test_model_setup_reads_and_normalizes_workbook_ml_method(tmp_path: Path) -> None:
-    workbook_path = tmp_path / "StartingPointTable.xlsx"
-    _write_workbook(workbook_path, ml_method="neural network")
-
-    fit_metric, ml_method = model_setup._load_ml_text_settings(workbook_path)
-
-    assert fit_metric == "mse"
-    assert ml_method.normalized_value == "neural network"
-    assert ml_method.model_type == "nn"
 
 
 def test_active_learning_requires_explicit_model_type() -> None:
@@ -482,9 +485,13 @@ def test_ml_driver_resumes_search_state_when_settings_match(
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     db_path = output_dir / "bigpopa.db"
-    workbook_path = tmp_path / "StartingPointTable.xlsx"
     _create_bigpopa_db(db_path, persisted_ml_method="tree")
-    _write_workbook(workbook_path, ml_method="tree", n_sample=10, n_max_iteration=1)
+    profile_id = _create_input_profile(
+        output_dir,
+        ml_method="tree",
+        n_sample=10,
+        n_max_iteration=1,
+    )
     _ensure_bigpopa_schema(db_path)
 
     search_space = [_dimension()]
@@ -564,8 +571,8 @@ def test_ml_driver_resumes_search_state_when_settings_match(
             str(output_dir),
             "--initial-model-id",
             "initial-model",
-            "--starting-point-table",
-            str(workbook_path),
+            "--input-profile-id",
+            str(profile_id),
         ]
     )
 
@@ -589,9 +596,13 @@ def test_ml_driver_resets_search_state_but_keeps_training_data_when_settings_cha
     output_dir = tmp_path / "output"
     output_dir.mkdir()
     db_path = output_dir / "bigpopa.db"
-    workbook_path = tmp_path / "StartingPointTable.xlsx"
     _create_bigpopa_db(db_path, persisted_ml_method="tree")
-    _write_workbook(workbook_path, ml_method="tree", n_sample=25, n_max_iteration=1)
+    profile_id = _create_input_profile(
+        output_dir,
+        ml_method="tree",
+        n_sample=25,
+        n_max_iteration=1,
+    )
     _ensure_bigpopa_schema(db_path)
 
     search_space = [_dimension()]
@@ -671,8 +682,8 @@ def test_ml_driver_resets_search_state_but_keeps_training_data_when_settings_cha
             str(output_dir),
             "--initial-model-id",
             "initial-model",
-            "--starting-point-table",
-            str(workbook_path),
+            "--input-profile-id",
+            str(profile_id),
         ]
     )
 

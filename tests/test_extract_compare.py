@@ -9,13 +9,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
-import extract_compare
-from model_run_store import insert_model_run
-from model_status import FALLBACK_FIT_POOLED, IFS_RUN_COMPLETED
-from tools.db.bigpopa_schema import ensure_current_bigpopa_schema
+from ifs import extract_compare
+from runtime.model_run_store import insert_model_run
+from runtime.model_status import FALLBACK_FIT_POOLED, IFS_RUN_COMPLETED
+from db.schema import ensure_current_bigpopa_schema
 
 
-def _create_fixture(root: Path, *, fit_metric: str) -> tuple[Path, Path, Path, Path]:
+def _create_fixture(root: Path, *, fit_metric: str) -> tuple[Path, Path, Path]:
     ifs_root = root / "ifs"
     runfiles_dir = ifs_root / "RUNFILES"
     runfiles_dir.mkdir(parents=True)
@@ -23,8 +23,6 @@ def _create_fixture(root: Path, *, fit_metric: str) -> tuple[Path, Path, Path, P
     model_dir = output_dir / "model-1"
     model_dir.mkdir(parents=True)
     model_db = model_dir / "Working.model-1.run.db"
-    input_file = output_dir / "StartingPointTable.xlsx"
-    input_file.write_text("placeholder", encoding="utf-8")
     bigpopa_db = output_dir / "bigpopa.db"
 
     with sqlite3.connect(bigpopa_db) as conn:
@@ -68,7 +66,7 @@ def _create_fixture(root: Path, *, fit_metric: str) -> tuple[Path, Path, Path, P
         conn.execute("CREATE TABLE hist_wgdp (year INTEGER, value REAL)")
         conn.execute("INSERT INTO hist_wgdp (year, value) VALUES (?, ?)", (2020, 1.0))
 
-    return ifs_root, model_db, input_file, bigpopa_db
+    return ifs_root, model_db, bigpopa_db
 
 
 def _fake_parquet_conversion(model_dir: Path):
@@ -85,7 +83,7 @@ def test_main_handles_missing_pooled_mse_fit_as_completed_with_fallback(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    ifs_root, model_db, input_file, bigpopa_db = _create_fixture(tmp_path, fit_metric="mse")
+    ifs_root, model_db, bigpopa_db = _create_fixture(tmp_path, fit_metric="mse")
     responses: list[dict[str, object]] = []
 
     monkeypatch.setattr(
@@ -114,8 +112,6 @@ def test_main_handles_missing_pooled_mse_fit_as_completed_with_fallback(
             str(ifs_root),
             "--model-db",
             str(model_db),
-            "--input-file",
-            str(input_file),
             "--model-id",
             "model-1",
             "--ifs-id",
@@ -151,7 +147,7 @@ def test_main_handles_missing_pooled_r2_fit_as_completed_with_fallback(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    ifs_root, model_db, input_file, bigpopa_db = _create_fixture(tmp_path, fit_metric="r2")
+    ifs_root, model_db, bigpopa_db = _create_fixture(tmp_path, fit_metric="r2")
     responses: list[dict[str, object]] = []
 
     monkeypatch.setattr(
@@ -187,8 +183,6 @@ def test_main_handles_missing_pooled_r2_fit_as_completed_with_fallback(
             str(ifs_root),
             "--model-db",
             str(model_db),
-            "--input-file",
-            str(input_file),
             "--model-id",
             "model-1",
             "--ifs-id",

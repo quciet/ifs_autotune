@@ -22,9 +22,9 @@ pythonpath = ["."]
 # We intentionally do not list app/tests because those directories do not exist.
 # Declaring non-existent package directories causes `pip install -e .` to fail.
 [tool.setuptools]
-py-modules = ["combine_var_hist", "common_sce_utils", "dataset_utils", "extract_compare", "log_ifs_version", "ml_driver", "ml_method", "ml_progress", "model_setup", "model_status", "prepare_coeff_param", "run_ifs", "validate_ifs"]
+py-modules = ["extract_compare", "ml_driver", "ml_progress", "model_setup", "run_ifs", "trend_analysis", "trend_dataset_options", "validate_ifs"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["optimization*", "analysis*"]
+include = ["optimization*", "analysis*", "db*", "runtime*", "ifs*"]
 exclude = ["*.egg-info", "*.egg-info.*"]

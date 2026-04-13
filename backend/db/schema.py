@@ -5,10 +5,15 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from model_status import MODEL_REUSED
+from runtime.model_status import MODEL_REUSED
 
 
 MODEL_RUN_TABLE = "model_run"
+INPUT_PROFILE_TABLE = "input_profile"
+INPUT_PROFILE_PARAMETER_TABLE = "input_profile_parameter"
+INPUT_PROFILE_COEFFICIENT_TABLE = "input_profile_coefficient"
+INPUT_PROFILE_OUTPUT_TABLE = "input_profile_output"
+INPUT_PROFILE_ML_SETTINGS_TABLE = "input_profile_ml_settings"
 LEGACY_TABLE_MODEL_INPUT = "model_input"
 LEGACY_TABLE_MODEL_OUTPUT = "model_output"
 LEGACY_TABLE_PROPOSAL_HISTORY = "ml_proposal_history"
@@ -18,7 +23,7 @@ LEGACY_TABLES = (
     LEGACY_TABLE_PROPOSAL_HISTORY,
 )
 
-UNIFIED_SCHEMA_VERSION = 2
+UNIFIED_SCHEMA_VERSION = 3
 BACKUP_BASENAME = "bigpopa.pre_model_run_unified.bak.db"
 
 
@@ -131,9 +136,107 @@ def ensure_ml_resume_state_table(cursor: sqlite3.Cursor) -> None:
     )
 
 
+def ensure_input_profile_tables(cursor: sqlite3.Cursor) -> None:
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {INPUT_PROFILE_TABLE} (
+            profile_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ifs_static_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            created_at_utc TEXT NOT NULL,
+            updated_at_utc TEXT NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0,
+            source_type TEXT NOT NULL DEFAULT 'app',
+            source_path TEXT
+        )
+        """
+    )
+    cursor.execute(
+        f"""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_input_profile_name_per_static
+        ON {INPUT_PROFILE_TABLE} (ifs_static_id, name)
+        """
+    )
+    cursor.execute(
+        f"""
+        CREATE INDEX IF NOT EXISTS idx_input_profile_static_archived
+        ON {INPUT_PROFILE_TABLE} (ifs_static_id, archived, updated_at_utc DESC)
+        """
+    )
+
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {INPUT_PROFILE_PARAMETER_TABLE} (
+            profile_id INTEGER NOT NULL,
+            param_name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            minimum REAL,
+            maximum REAL,
+            step REAL,
+            level_count INTEGER,
+            sort_order INTEGER,
+            PRIMARY KEY (profile_id, param_name),
+            FOREIGN KEY (profile_id) REFERENCES {INPUT_PROFILE_TABLE}(profile_id)
+        )
+        """
+    )
+
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {INPUT_PROFILE_COEFFICIENT_TABLE} (
+            profile_id INTEGER NOT NULL,
+            function_name TEXT NOT NULL,
+            x_name TEXT NOT NULL,
+            beta_name TEXT NOT NULL,
+            y_name TEXT,
+            source_sheet TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            minimum REAL,
+            maximum REAL,
+            step REAL,
+            level_count INTEGER,
+            sort_order INTEGER,
+            PRIMARY KEY (profile_id, function_name, x_name, beta_name),
+            FOREIGN KEY (profile_id) REFERENCES {INPUT_PROFILE_TABLE}(profile_id)
+        )
+        """
+    )
+
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {INPUT_PROFILE_OUTPUT_TABLE} (
+            profile_id INTEGER NOT NULL,
+            variable TEXT NOT NULL,
+            table_name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER,
+            PRIMARY KEY (profile_id, variable, table_name),
+            FOREIGN KEY (profile_id) REFERENCES {INPUT_PROFILE_TABLE}(profile_id)
+        )
+        """
+    )
+
+    cursor.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {INPUT_PROFILE_ML_SETTINGS_TABLE} (
+            profile_id INTEGER PRIMARY KEY,
+            ml_method TEXT NOT NULL,
+            fit_metric TEXT NOT NULL,
+            n_sample INTEGER NOT NULL DEFAULT 200,
+            n_max_iteration INTEGER NOT NULL DEFAULT 30,
+            n_convergence INTEGER NOT NULL DEFAULT 10,
+            min_convergence_pct REAL NOT NULL DEFAULT 0.0001,
+            FOREIGN KEY (profile_id) REFERENCES {INPUT_PROFILE_TABLE}(profile_id)
+        )
+        """
+    )
+
+
 def ensure_current_bigpopa_schema(cursor: sqlite3.Cursor) -> None:
     ensure_model_run_table(cursor)
     ensure_ml_resume_state_table(cursor)
+    ensure_input_profile_tables(cursor)
 
 
 def backup_bigpopa_db(db_path: Path) -> Path:
